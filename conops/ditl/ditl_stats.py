@@ -1,12 +1,13 @@
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 import numpy as np
 
 from ..common import ChargeState, normalize_acs_mode, unixtime2date
 from ..config.config import MissionConfig
+from ..config.observation_categories import ObservationCategories
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
@@ -57,6 +58,9 @@ class VisitRecord:
     status: str
     """``complete``, ``cut`` (less science than planned) or ``missed`` (a
     window with no visit)."""
+    attempts: int = 1
+    """How many times the visit was begun, in a per-window record: a visit
+    cut short and taken again within its window counts each attempt."""
 
 
 @dataclass(frozen=True)
@@ -111,10 +115,13 @@ class DITLStats:
 
     def _science_visits(self) -> list[_Visit]:
         """The run's science visits, in time order: each snapshot entry, or
-        the consecutive step entries of one visit of a sequence, as one."""
+        the step entries of one visit of a sequence, as one. Dispatch begins
+        a visit's next step at the simulation step after the last ended, so
+        steps up to a step apart belong to the same visit."""
         plan = getattr(self, "plan", None)
         if not isinstance(plan, Plan):
             return []
+        step = float(getattr(self, "step_size", 0) or 0)
         entries = sorted(
             (
                 e
@@ -132,7 +139,7 @@ class DITLStats:
                 and last.first.step is not None
                 and int(last.first.obsid) == int(entry.obsid)
                 and last.first.visit == entry.visit
-                and float(entry.begin) <= float(last.entries[-1].end) + 1e-6
+                and float(entry.begin) <= float(last.entries[-1].end) + step + 1e-6
             ):
                 last.entries.append(entry)
             else:
@@ -143,18 +150,29 @@ class DITLStats:
         """What each observation category got over the run, from the plan
         as executed: targets, visits, science and slew hours, the degrees
         slewed into its visits, its share of the run's science time, and
-        the fraction allocated to it where the category sets one. Empty
-        categories are left out; the list is in order of science hours."""
-        categories = self.config.observation_categories
+        the fraction allocated to it where the category sets one. One row
+        per configured category, in their order, a category that collected
+        nothing included, then any category science fell to outside them."""
+        categories = getattr(self.config, "observation_categories", None)
+        # A test double's configuration has no categories.
+        if not isinstance(categories, ObservationCategories):
+            return []
         visits = self._science_visits()
-        by_name: dict[str, list[_Visit]] = {}
+        by_name: dict[str, list[_Visit]] = {
+            category.name: [] for category in categories.categories
+        }
         for visit in visits:
             name = categories.get_category(int(visit.first.obsid)).name
             by_name.setdefault(name, []).append(visit)
         total = sum(v.exposure for v in visits)
         rows = []
         for name, taken in by_name.items():
-            category = categories.get_category(int(taken[0].first.obsid))
+            category = next(
+                (c for c in categories.categories if c.name == name),
+                categories.get_category(int(taken[0].first.obsid)) if taken else None,
+            )
+            if category is None:
+                continue
             science = sum(v.exposure for v in taken)
             rows.append(
                 CategorySummary(
@@ -169,17 +187,25 @@ class DITLStats:
                     time_share=category.time_share,
                 )
             )
-        return sorted(rows, key=lambda r: r.science_hours, reverse=True)
+        return rows
 
     def visit_table(
-        self, targets: Sequence[Pointing] | None = None
+        self, targets: Sequence[Pointing] | None = None, *, per_window: bool = False
     ) -> list[VisitRecord]:
         """Each visit of the run against its plan: the window it was taken
         in and when, its science against what was planned, the slew into it
         and its roll. ``targets``, or the run's own requests, give the
         windows; a window of theirs with no visit is a ``missed`` row.
-        A visit with less science than planned, less a step, is ``cut``."""
-        categories = self.config.observation_categories
+        A visit with less science than planned, less a step, is ``cut``.
+
+        Every attempt is a row, so a visit cut short and taken again within
+        its window is two. With ``per_window`` a window is one row, its
+        verdict: the whole visit where one was taken, with the attempts it
+        took, else the last attempt, cut; a target without windows keeps a
+        row per snapshot."""
+        categories = getattr(self.config, "observation_categories", None)
+        if not isinstance(categories, ObservationCategories):
+            return []
         requests = list(targets) if targets is not None else self._requests()
         by_obsid = {int(t.obsid): t for t in requests}
         step = float(getattr(self, "step_size", 0) or 0)
@@ -250,6 +276,8 @@ class DITLStats:
                         status="missed",
                     )
                 )
+        if per_window:
+            rows = self._per_window(rows)
         return sorted(
             rows,
             key=lambda r: (
@@ -257,6 +285,24 @@ class DITLStats:
                 r.obsid,
             ),
         )
+
+    @staticmethod
+    def _per_window(rows: list[VisitRecord]) -> list[VisitRecord]:
+        """One record per visit window: the whole visit taken in it, with
+        the attempts it took, else the last attempt."""
+        by_window: dict[tuple[int, int], list[VisitRecord]] = {}
+        verdicts: list[VisitRecord] = []
+        for record in rows:
+            if record.visit is None or record.window_start is None:
+                verdicts.append(record)
+                continue
+            by_window.setdefault((record.obsid, record.visit), []).append(record)
+        for attempts in by_window.values():
+            taken = [r for r in attempts if r.status == "complete"]
+            verdict = taken[0] if taken else attempts[-1]
+            begun = [r for r in attempts if r.status != "missed"]
+            verdicts.append(replace(verdict, attempts=len(begun)))
+        return verdicts
 
     def _print_reporting(self) -> None:
         """Print the category summary and, for targets with visit windows,
@@ -282,14 +328,16 @@ class DITLStats:
                     f"{row.visits:>6} {row.science_hours:>9.2f} {row.slew_hours:>6.2f} "
                     f"{row.slew_degrees:>8.1f} {row.share:>6.2f} {allocated}"
                 )
-        visits = [r for r in self.visit_table() if r.window_start is not None]
+        visits = [
+            r for r in self.visit_table(per_window=True) if r.window_start is not None
+        ]
         if visits:
             print("\n" + "-" * 70)
             print("VISITS IN WINDOWS")
             print("-" * 70)
             print(
                 f"{'Target':<16} {'Visit':>5} {'Window opens':<18} {'Collects':<18} "
-                f"{'Science s':>9} {'Status':<8}"
+                f"{'Science s':>9} {'Status':<8} {'Tries':>5}"
             )
             print("-" * 70)
             for record in visits:
@@ -303,7 +351,8 @@ class DITLStats:
                 )
                 print(
                     f"{record.name[:16]:<16} {(record.visit or 0) + 1:>5} {opens:<18} "
-                    f"{collects:<18} {record.exposure_seconds:>9.0f} {record.status:<8}"
+                    f"{collects:<18} {record.exposure_seconds:>9.0f} {record.status:<8} "
+                    f"{record.attempts:>5}"
                 )
 
     def instrument_mode_hours(self) -> dict[str, dict[str, float]]:
