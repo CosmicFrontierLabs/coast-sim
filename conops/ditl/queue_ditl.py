@@ -1009,8 +1009,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """End the activity under way once it is over, and begin the one due
         now. An activity due while a slew is under way waits for the slew to
         end and then runs its full length, unless it is ``fixed``, when it
-        begins at its start and the slew finishes inside it. Returns whether
-        the spacecraft's state changed."""
+        begins at its start and the slew finishes inside it. One due while
+        another activity is under way begins when that one ends, for its
+        full length. Returns whether the spacecraft's state changed."""
         changed = False
         active = self._active_activity
         if active is not None and utime >= self._activity_end:
@@ -1022,9 +1023,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 (
                     a
                     for a in self.activities
-                    if a.begin <= utime
-                    and a.begin > self._activity_started
-                    and (not a.fixed or utime < a.end)
+                    if a.begin <= utime and a.begin > self._activity_started
                 ),
                 None,
             )
@@ -1370,8 +1369,11 @@ class QueueDITL(DITLMixin, DITLStats):
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
-        # Delayed by a slew, the activity keeps its length from when it begins.
-        delayed = self._activity_waiting is activity
+        # Delayed by a slew, an observation or the activity that was under
+        # way at its start, the activity keeps its length from when it begins.
+        delayed = (
+            self._activity_waiting is activity or activity.begin < self._activity_end
+        )
         self._activity_waiting = None
         self._activity_end = (
             utime + activity.duration_seconds if delayed else activity.end

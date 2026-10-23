@@ -187,7 +187,11 @@ How a plan is built
    starts while the activity waits, and it keeps its length. The planners let the
    science before such an activity run into its window and hold the activity from
    when that science ends, within the window, reserving the time up to its latest end
-   so nothing is placed where it may still be. Safe mode is never scheduled: it is
+   so nothing is placed where it may still be. An activity due while another activity
+   is under way, ``fixed`` or not, begins when that one ends and keeps its length:
+   dispatch begins it then, and the planners reserve it after the activity already on
+   the timeline and settle it back to its own start where that activity slid and
+   ended sooner. Safe mode is never scheduled: it is
    entered through fault management alone. :func:`~conops.targets.activity.periodic_activities`
    builds a list of activities at a fixed interval from a first start, a count of them
    or as many as begin by a time, each with the same modes, data, ``fixed`` and slide.
