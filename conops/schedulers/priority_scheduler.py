@@ -398,6 +398,8 @@ class PriorityScheduler:
         self.dumps: list[ScheduledActivity] = []
         """The thruster dumps this scheduler has reserved where its momentum
         forecast reached the level, in time order."""
+        self._slidable: dict[int, ScheduledActivity] = {}
+        """The activities reserved with a slide window, by their block."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
         empty: not planned."""
@@ -880,6 +882,7 @@ class PriorityScheduler:
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
         """Record and return the plan for a finished timeline, with its charging."""
         timeline = self._plan_charging(list(timeline))
+        self._settle_sliding_activities(timeline)
         self.plan = Plan(
             entries=[
                 step for block in timeline for step in (block.steps or [block.entry])
@@ -1591,6 +1594,21 @@ class PriorityScheduler:
                 entry.obsid,
             )
 
+    def _settle_sliding_activities(self, timeline: Sequence[_Block]) -> None:
+        """Hold each activity with a slide window from when what precedes it
+        on the timeline has ended, at its start at the earliest and its
+        latest start at the latest, for its length."""
+        for index, block in enumerate(timeline):
+            activity = self._slidable.get(id(block))
+            if activity is None:
+                continue
+            begin = activity.begin
+            if index > 0:
+                begin = max(begin, self.ctx.ceil_step(float(timeline[index - 1].end)))
+            begin = min(begin, activity.latest_start)
+            block.entry.begin = begin
+            block.entry.end = begin + activity.duration_seconds
+
     def _place_activity(self, activity: ScheduledActivity) -> None:
         """Reserve an activity as a fixed block in IDLE mode.
 
@@ -1623,14 +1641,22 @@ class PriorityScheduler:
             )
             return
         entry = activity.plan_entry(self.config, attitude)
+        # An activity that may slide is reserved from its latest start to
+        # its latest end, so science before it may run into its window and
+        # nothing is placed where it may still be; its entry begins after
+        # what precedes it, within the window, when the plan is finished.
+        if activity.slides:
+            entry.end = activity.latest_start + activity.duration_seconds
         block = _Block(
             entry=entry,
             attitude_in=attitude,
             attitude_out=attitude,
-            ready=activity.begin,
-            end=activity.end,
+            ready=activity.latest_start,
+            end=activity.latest_start + activity.duration_seconds,
             follows=True,
         )
+        if activity.slides:
+            self._slidable[id(block)] = activity
         if not self._insert_fixed(block):
             self._log(
                 activity.begin,

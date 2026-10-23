@@ -178,7 +178,20 @@ How a plan is built
    activity is due, such as one into a charging attitude, delays the activity to the
    slew's end, and the activity then runs its full length from there; an activity that
    cannot move, such as a maintenance window, is ``fixed`` and begins at its start
-   with the slew finishing inside it. A thruster momentum dump is an activity
+   with the slew finishing inside it. An activity with ``slide_seconds`` may begin up
+   to that long after its start: dispatch lets an observation under way, a target of
+   opportunity's or an indivisible visit included, run on and begins the activity
+   when it ends, or at the latest start, ending what is still under way then; an
+   observation selected before the activity may run until its latest start, so a
+   response whose slew would cross the activity's start is observed before it; nothing
+   starts while the activity waits, and it keeps its length. The planners let the
+   science before such an activity run into its window and hold the activity from
+   when that science ends, within the window, reserving the time up to its latest end
+   so nothing is placed where it may still be. Safe mode is never scheduled: it is
+   entered through fault management alone. :func:`~conops.targets.activity.periodic_activities`
+   builds a list of activities at a fixed interval from a first start, a count of them
+   or as many as begin by a time, each with the same modes, data, ``fixed`` and slide.
+   A thruster momentum dump is an activity
    dispatch calls for itself, when the stored momentum reaches the planning level of
    the wheels' capacity (see the stored momentum under :doc:`configuration`), and
    the planners reserve where their forecast reaches it (see `Planning within the
