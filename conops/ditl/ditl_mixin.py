@@ -9,7 +9,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode, ObsType
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
 from ..common.ephemeris import position_vectors
@@ -21,6 +21,7 @@ from ..simulation.momentum import (
     MomentumSample,
     StoredMomentumTracker,
     build_torque_sources,
+    slew_sample_interval_s,
 )
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
@@ -29,6 +30,40 @@ from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
+
+
+class _MomentumInputs:
+    """The orbit at one momentum sample: what the tracker was given at a
+    step, kept so the orbit can be interpolated along a slew within the next."""
+
+    def __init__(
+        self,
+        utime: float,
+        position_eci_km: npt.NDArray[np.float64],
+        sun_eci_km: npt.NDArray[np.float64] | None,
+        position_ecef_km: npt.NDArray[np.float64] | None,
+    ) -> None:
+        self.utime = float(utime)
+        self.position_eci_km = position_eci_km
+        self.sun_eci_km = sun_eci_km
+        self.position_ecef_km = position_ecef_km
+
+    def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
+        """The orbit ``fraction`` of the way from this sample to ``later``."""
+
+        def lerp(
+            a: npt.NDArray[np.float64] | None, b: npt.NDArray[np.float64] | None
+        ) -> npt.NDArray[np.float64] | None:
+            if a is None or b is None:
+                return None
+            return a + fraction * (b - a)
+
+        return _MomentumInputs(
+            self.utime + fraction * (later.utime - self.utime),
+            np.asarray(lerp(self.position_eci_km, later.position_eci_km)),
+            lerp(self.sun_eci_km, later.sun_eci_km),
+            lerp(self.position_ecef_km, later.position_ecef_km),
+        )
 
 
 class _AttitudeRateViolation(BaseModel):
@@ -372,35 +407,17 @@ class DITLMixin:
                 "inertia_tensor_body_kg_m2 is required when stored-momentum "
                 "tracking is enabled"
             )
-        sources = build_torque_sources(self.config)
-        # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
-        # Bound possible motion, not just endpoint separation: a complete slew
-        # can occur between samples even when both endpoint torques are zero.
-        fastest_rate = (
-            max(attitude_control.max_slew_rate_body)
-            if attitude_control.max_slew_rate_body is not None
-            else attitude_control.max_slew_rate
-        )
-        if not math.isfinite(fastest_rate) or fastest_rate <= 0.0:
-            raise ValueError(
-                "momentum tracking requires a finite positive maximum slew rate"
-            )
+        self._momentum_slew_sample_s = slew_sample_interval_s(self.config)
         return StoredMomentumTracker(
             inertia_tensor_body_kg_m2=inertia,
             initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
-            max_sample_interval_s=min(
-                momentum_config.max_sample_interval_s,
-                momentum_config.max_attitude_step_deg / fastest_rate,
-            ),
-            sources=sources,
+            sources=build_torque_sources(self.config),
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
-        """Reload run inputs and fail before execution if sampling is too coarse."""
+        """Reload the run's inputs."""
         self._stored_momentum_tracker = self._build_stored_momentum_tracker()
-        if self._stored_momentum_tracker is not None:
-            self._stored_momentum_tracker.validate_sample_interval(self.step_size)
-            self._stored_momentum_tracker.validate_sample_interval(self.ephem.step_size)
+        self._momentum_previous: _MomentumInputs | None = None
 
     def _update_stored_momentum(
         self,
@@ -409,9 +426,18 @@ class DITLMixin:
         attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
         index: int | None = None,
     ) -> MomentumSample | None:
-        """Advance the tracker using values already computed for housekeeping;
-        ``index`` is the ephemeris sample, for the Sun vector and eclipse."""
-        if self._stored_momentum_tracker is None:
+        """Advance the tracker to this step using values already computed for
+        housekeeping; ``index`` is the ephemeris sample, for the Sun vector
+        and eclipse.
+
+        The step is the ephemeris resolution, which may be far coarser than
+        a slew. Where the attitude moved during the step, the slew flown is
+        sampled from the ACS at the configured attitude step, with the orbit
+        interpolated between the step's ends, so the torque along the slew is
+        integrated whatever the resolution.
+        """
+        tracker = self._stored_momentum_tracker
+        if tracker is None:
             return None
         sun_eci_km: npt.NDArray[np.float64] | None = None
         position_ecef_km: npt.NDArray[np.float64] | None = None
@@ -427,7 +453,29 @@ class DITLMixin:
             ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
             if ecef is not None and index < len(ecef):
                 position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
-        return self._stored_momentum_tracker.update(
+        inputs = _MomentumInputs(utime, position_eci_km, sun_eci_km, position_ecef_km)
+        previous = getattr(self, "_momentum_previous", None)
+        self._momentum_previous = inputs
+        elapsed = utime - previous.utime if previous is not None else 0.0
+        if (
+            previous is not None
+            and elapsed > self._momentum_slew_sample_s
+            and self.acs.attitude_moved(previous.utime, utime)
+        ):
+            count = math.ceil(elapsed / self._momentum_slew_sample_s)
+            for k in range(1, count):
+                fraction = k / count
+                between = previous.between(inputs, fraction)
+                ra, dec, roll = self.acs.executed_attitude(between.utime)
+                tracker.update(
+                    utime=between.utime,
+                    position_eci_km=between.position_eci_km,
+                    attitude_quaternion_eci_to_body=attitude_to_quat(ra, dec, roll),
+                    sun_eci_km=between.sun_eci_km,
+                    sunlit=sunlit,
+                    position_ecef_km=between.position_ecef_km,
+                )
+        return tracker.update(
             utime=utime,
             position_eci_km=position_eci_km,
             attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,

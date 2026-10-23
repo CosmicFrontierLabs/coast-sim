@@ -552,6 +552,9 @@ class PriorityScheduler:
                 self.config,
                 self.ctx,
                 start_momentum_eci_n_m_s=self.start_momentum_eci_n_m_s,
+                start_attitude=(
+                    self.start_state.attitude if self.start_state is not None else None
+                ),
             )
         self._gap_charges_cache: dict[
             tuple[object, ...], tuple[list[_Block], Slew | None]

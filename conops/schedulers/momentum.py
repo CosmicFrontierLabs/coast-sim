@@ -21,15 +21,16 @@ from ..common import ObsType
 from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
-from ..simulation.momentum import StoredMomentumTracker, tracker_from_config
+from ..simulation.momentum import (
+    StoredMomentumTracker,
+    slew_sample_interval_s,
+    tracker_from_config,
+)
 
 if TYPE_CHECKING:
     from ..config import MissionConfig
     from .context import Attitude, SchedulingContext
     from .priority_scheduler import _Block
-
-FORECAST_SAMPLE_S = 10.0
-"""How often the forecast samples the torques, within the tracker's guard."""
 
 
 @dataclass(frozen=True)
@@ -55,24 +56,21 @@ class MomentumForecast:
         ctx: SchedulingContext,
         *,
         start_momentum_eci_n_m_s: npt.ArrayLike | None = None,
+        start_attitude: Attitude | None = None,
     ) -> None:
         self.config = config
         self.ctx = ctx
-        acs = config.spacecraft_bus.attitude_control
-        momentum_config = acs.stored_momentum
-        fastest = (
-            max(acs.max_slew_rate_body)
-            if acs.max_slew_rate_body is not None
-            else acs.max_slew_rate
+        self.start_attitude = start_attitude
+        """The attitude held from the horizon's start until the first planned
+        slew, where the plan takes over part-way through a run; None where
+        the run starts fresh and the spacecraft idles until first commanded."""
+        self.tracker: StoredMomentumTracker | None = tracker_from_config(config)
+        # As the simulations sample: a slew at the configured attitude step,
+        # a held attitude at the ephemeris resolution.
+        self.slew_sample_s = (
+            slew_sample_interval_s(config) if self.tracker is not None else 0.0
         )
-        # The simulations' sampling guard: no more than a few degrees of
-        # motion between samples along a slew.
-        self.sample_s = min(
-            FORECAST_SAMPLE_S, momentum_config.max_attitude_step_deg / fastest
-        )
-        self.tracker: StoredMomentumTracker | None = tracker_from_config(
-            config, max_sample_interval_s=self.sample_s
-        )
+        self.hold_sample_s = float(ctx.ephem.step_size)
         self.start_momentum_eci_n_m_s = (
             np.asarray(start_momentum_eci_n_m_s, dtype=np.float64)
             if start_momentum_eci_n_m_s is not None
@@ -155,6 +153,8 @@ class MomentumForecast:
             return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
         if span.attitude is not None:
             return span.attitude
+        if self.start_attitude is not None:
+            return self.start_attitude
         return self.ctx.initial_attitude(utime)
 
     # ── Integration ───────────────────────────────────────────────────────
@@ -194,7 +194,10 @@ class MomentumForecast:
         times: list[float] = []
         norms: list[float] = []
         for span in self._spans(timeline):
-            samples = np.arange(span.begin, span.end, self.sample_s)
+            interval = (
+                self.slew_sample_s if span.slew is not None else self.hold_sample_s
+            )
+            samples = np.arange(span.begin, span.end, interval)
             if len(samples) == 0 or samples[-1] < span.end:
                 samples = np.append(samples, span.end)
             for utime in samples:

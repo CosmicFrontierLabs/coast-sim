@@ -141,40 +141,22 @@ def test_tracker_rejects_decreasing_timestamps() -> None:
         )
 
 
-@pytest.mark.parametrize("interval", [0.0, -1.0, np.nan, np.inf, 10.1])
-def test_tracker_rejects_invalid_sampling_limit(interval) -> None:
-    with pytest.raises(ValueError, match="max_sample_interval_s"):
-        StoredMomentumTracker(np.eye(3), max_sample_interval_s=interval)
-
-
-def test_rejected_gap_does_not_advance_tracker() -> None:
+def test_coarse_samples_integrate_a_held_attitude() -> None:
+    """A held attitude is sampled at whatever resolution the orbit has: the
+    tracker integrates across a 120 s gap, as a 120 s ephemeris gives it."""
     tracker = StoredMomentumTracker(np.diag([10.0, 8.0, 6.0]))
     arguments = dict(
         position_eci_km=(5000.0, 5000.0, 0.0),
         attitude_quaternion_eci_to_body=attitude_to_quat(0.0, 0.0, 0.0),
     )
     tracker.update(utime=0.0, **arguments)
-    with pytest.raises(ValueError, match="sample interval 60 s exceeds 10 s"):
-        tracker.update(utime=60.0, **arguments)
-    sample = tracker.update(utime=10.0, **arguments)
+    sample = tracker.update(utime=120.0, **arguments)
     assert sample.stored_momentum_body_n_m_s == pytest.approx(
-        np.asarray(sample.gravity_gradient_torque_body_n_m) * 10.0
+        np.asarray(sample.gravity_gradient_torque_body_n_m) * 120.0
     )
 
 
-def test_fractional_cadence_allows_unix_timestamp_roundoff() -> None:
-    tracker = StoredMomentumTracker(np.eye(3), max_sample_interval_s=0.1)
-    arguments = dict(
-        position_eci_km=(6878.0, 0.0, 0.0),
-        attitude_quaternion_eci_to_body=(1.0, 0.0, 0.0, 0.0),
-    )
-    for offset in range(11):
-        tracker.update(utime=1_700_000_000.0 + offset / 10.0, **arguments)
-    with pytest.raises(ValueError, match="sample interval"):
-        tracker.update(utime=1_700_000_001.101, **arguments)
-
-
-def test_fast_slew_rejects_coarse_samples_and_converges_at_fine_cadence() -> None:
+def test_fast_slew_converges_at_fine_cadence() -> None:
     radius = 6878.0
     orbit_rate = np.sqrt(EARTH_GRAVITATIONAL_PARAMETER_KM3_S2 / radius**3)
     slew = Slew(
@@ -187,9 +169,7 @@ def test_fast_slew_rejects_coarse_samples_and_converges_at_fine_cadence() -> Non
     assert slew.slewtime == 49.0
 
     def integrate(step: float):
-        tracker = StoredMomentumTracker(
-            np.diag([1000.0, 800.0, 600.0]), max_sample_interval_s=2.5
-        )
+        tracker = StoredMomentumTracker(np.diag([1000.0, 800.0, 600.0]))
         for time in np.arange(0.0, 60.0 + step / 2.0, step):
             sample = tracker.update(
                 utime=time,
@@ -199,8 +179,6 @@ def test_fast_slew_rejects_coarse_samples_and_converges_at_fine_cadence() -> Non
             )
         return sample.stored_momentum_norm_n_m_s
 
-    with pytest.raises(ValueError, match="sample interval 60 s exceeds 2.5 s"):
-        integrate(60.0)
     reference = integrate(0.1)
     assert reference == pytest.approx(0.01081989139, rel=1e-8)
     for step in (2.5, 1.0):

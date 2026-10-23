@@ -225,6 +225,17 @@ class ACS:
             else self._initial_attitude
         )
 
+    def executed_attitude(self, utime: float) -> Attitude:
+        """The attitude flown at ``utime``, a time up to the present, from
+        the motion that was flying then."""
+        if self._executor is None:
+            return (self.ra, self.dec, self.roll)
+        return self._executor.flown(utime).attitude
+
+    def attitude_moved(self, begin: float, end: float) -> bool:
+        """Whether the attitude moved at any time in ``(begin, end]``."""
+        return self._executor is not None and self._executor.moved_between(begin, end)
+
     def _log_or_print(
         self, utime: float, event_type: DITLEventType, description: str
     ) -> None:

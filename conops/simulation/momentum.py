@@ -315,9 +315,11 @@ class StoredMomentumTracker:
 
     Momentum is integrated in ECI so changing spacecraft attitude only changes
     its body-frame components; it does not create spurious stored momentum.
-    This is a sampled integrator, not a trajectory interpolator. Callers must
-    supply sufficiently fine executed-attitude and orbit samples, and lower
-    ``max_sample_interval_s`` for fast motion or convergence studies.
+    This is a sampled integrator, not a trajectory interpolator: the torque
+    is taken as linear between samples, so callers sample a slew finely
+    enough that the attitude moves only a few degrees between samples. A held
+    attitude needs no more than the orbit's resolution, since the torques
+    then vary only with the orbit.
 
     ``sources`` are the torques integrated; by default the gravity gradient
     on the inertia tensor alone.
@@ -328,17 +330,8 @@ class StoredMomentumTracker:
         inertia_tensor_body_kg_m2: npt.ArrayLike,
         initial_momentum_body_n_m_s: npt.ArrayLike = (0.0, 0.0, 0.0),
         *,
-        max_sample_interval_s: float = 10.0,
         sources: Sequence[TorqueSource] | None = None,
     ) -> None:
-        if (
-            not np.isfinite(max_sample_interval_s)
-            or not 0.0 < max_sample_interval_s <= 10.0
-        ):
-            raise ValueError(
-                "max_sample_interval_s must be finite, positive, and <= 10 s"
-            )
-        self.max_sample_interval_s = float(max_sample_interval_s)
         self.inertia_tensor_body_kg_m2 = _finite_matrix3(
             inertia_tensor_body_kg_m2, name="inertia_tensor_body_kg_m2"
         )
@@ -389,17 +382,6 @@ class StoredMomentumTracker:
             momentum_eci_n_m_s, name="momentum_eci_n_m_s"
         ).copy()
 
-    def validate_sample_interval(self, elapsed_s: float) -> None:
-        """Reject undersampling without changing integration state."""
-        if not np.isfinite(elapsed_s) or elapsed_s <= 0.0:
-            raise ValueError("momentum sample interval must be finite and positive")
-        if elapsed_s > self.max_sample_interval_s * (1.0 + 1e-12):
-            raise ValueError(
-                f"stored momentum sample interval {elapsed_s:g} s exceeds "
-                f"{self.max_sample_interval_s:g} s; supply finer executed-attitude "
-                "and ephemeris samples"
-            )
-
     def update(
         self,
         *,
@@ -426,10 +408,6 @@ class StoredMomentumTracker:
         )
         if elapsed_s < 0.0:
             raise ValueError("momentum samples must have nondecreasing timestamps")
-        # Subtracting Unix timestamps can round a nominally valid gap upward.
-        time_resolution = float(np.spacing(abs(utime))) * 2.0
-        if elapsed_s > self.max_sample_interval_s + time_resolution:
-            self.validate_sample_interval(elapsed_s)
 
         rotation_eci_to_body = quaternion_to_rotation_matrix(
             attitude_quaternion_eci_to_body
@@ -545,24 +523,35 @@ def build_torque_sources(config: MissionConfig) -> list[TorqueSource]:
     return sources
 
 
-def tracker_from_config(
-    config: MissionConfig, *, max_sample_interval_s: float | None = None
-) -> StoredMomentumTracker | None:
+def tracker_from_config(config: MissionConfig) -> StoredMomentumTracker | None:
     """A tracker for a configuration's stored-momentum tracking, or None
-    where it is off. The sample interval is the configured one unless a
-    finer one is given."""
+    where it is off."""
     momentum_config = config.spacecraft_bus.attitude_control.stored_momentum
     if not momentum_config.enabled:
         return None
     sources = build_torque_sources(config)
     inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
     assert inertia is not None
-    interval = momentum_config.max_sample_interval_s
-    if max_sample_interval_s is not None:
-        interval = min(interval, max_sample_interval_s)
     return StoredMomentumTracker(
         inertia_tensor_body_kg_m2=inertia,
         initial_momentum_body_n_m_s=momentum_config.initial_momentum_body_n_m_s,
-        max_sample_interval_s=interval,
         sources=sources,
     )
+
+
+def slew_sample_interval_s(config: MissionConfig) -> float:
+    """How often a slew is sampled for the tracker: the configured attitude
+    step at the fastest configured slew rate, so the attitude moves no more
+    than that step between samples. A coupled-axis ellipsoid cannot exceed its
+    fastest principal rate."""
+    attitude_control = config.spacecraft_bus.attitude_control
+    fastest = (
+        max(attitude_control.max_slew_rate_body)
+        if attitude_control.max_slew_rate_body is not None
+        else attitude_control.max_slew_rate
+    )
+    if not np.isfinite(fastest) or fastest <= 0.0:
+        raise ValueError(
+            "momentum tracking requires a finite positive maximum slew rate"
+        )
+    return float(attitude_control.stored_momentum.max_attitude_step_deg / fastest)

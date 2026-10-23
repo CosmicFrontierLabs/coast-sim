@@ -422,29 +422,23 @@ The tracker reloads the inertia, initial momentum, sampling limits, and enable
 flag at the start of every run. Configuration changes between runs therefore
 take effect without reconstructing the simulation.
 
-This is a sampled torque integrator, not an attitude-trajectory interpolator.
-To guard against missing torque between samples, enabled runs require both the
-executed-attitude and ephemeris intervals to be no greater than the smaller of:
+This is a sampled torque integrator: the torque is taken as linear between
+samples. A held attitude is sampled at the simulation's step, the ephemeris
+resolution, which is enough because the torques then vary only with the
+orbit. A slew is sampled more finely than the step wherever it falls: the
+simulations ask the ACS for the attitude flown at intermediate times within
+the step, every ``stored_momentum.max_attitude_step_deg`` (default 5 degrees)
+of motion at the fastest configured body-axis slew rate (or scalar
+``max_slew_rate`` when body-axis limits are absent), with the orbit interpolated
+between the step's ends. The planners' momentum forecast samples the same way.
+Tracking therefore works at whatever resolution the ephemeris has.
 
-* ``stored_momentum.max_sample_interval_s`` (default 10 seconds, configurable downward);
-* ``stored_momentum.max_attitude_step_deg`` (default 5 degrees, configurable
-  downward) divided by the fastest configured body-axis slew rate (or scalar
-  ``max_slew_rate`` when body-axis limits are absent).
-
-For example, with the default angular limit, a fastest rate of 2 degrees/second
-requires intervals of at most 2.5 seconds; lowering ``max_attitude_step_deg`` to
-2 degrees requires intervals of at most 1 second. Both settings can tighten,
-but not relax, the default sampling guards. Set ``DITL.step_size`` and generate
-an ephemeris at an appropriate resolution; ``QueueDITL`` uses the ephemeris step
-as its execution step. Coarse
-runs fail before ACS execution or power updates; a fine execution step cannot
-compensate for a coarse ephemeris. Disabled tracking leaves existing runs unchanged.
-
-These are conservative sampling guards, not a guaranteed integration-error
-tolerance. Verify convergence at finer cadence for final studies. The guard
-does not change scheduling cadence automatically or call the ACS state machine
-at synthetic intermediate times. Use fixed-plan replay when comparing numerical
-cadences without replanning the science schedule.
+For example, with the default attitude step, a fastest rate of 2 degrees/second
+samples slews every 2.5 seconds; lowering ``max_attitude_step_deg`` to 2 degrees
+samples them every second. The attitude step is not a guaranteed
+integration-error tolerance. Verify convergence at a finer step for final
+studies, using fixed-plan replay to compare numerical cadences without
+replanning the science schedule.
 
 .. code-block:: yaml
 
@@ -464,7 +458,6 @@ cadences without replanning the science schedule.
          thruster_dump:
            duration_seconds: 120.0
            residual_fraction: 0.0
-         max_sample_interval_s: 10.0
          max_attitude_step_deg: 5.0
          initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
 
