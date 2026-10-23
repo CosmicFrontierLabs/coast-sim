@@ -319,6 +319,178 @@ class TestDispatch:
         assert targets[0].visits_done == {0, 1, 2}
         assert targets[0].done
 
+    def test_a_window_points_and_rolls_on_its_own(self) -> None:
+        """Windows with their own pointing are observed there, in dispatch
+        and in the priority plan, and a window's roll offset turns the
+        visit's roll by that much from the roll it would otherwise have."""
+        positions = [PATCH[0], PATCH[4], (112.0, 15.0)]
+        windows = [
+            VisitWindow(
+                start=w.start,
+                deadline=w.deadline,
+                ra=ra,
+                dec=dec,
+                roll_offset_deg=5.0 if k == 1 else None,
+            )
+            for k, (w, (ra, dec)) in enumerate(zip(WINDOWS, positions, strict=True))
+        ]
+        plain = [
+            VisitWindow(start=w.start, deadline=w.deadline, ra=ra, dec=dec)
+            for w, (ra, dec) in zip(WINDOWS, positions, strict=True)
+        ]
+
+        def entries(plan) -> list:
+            return sorted(
+                (
+                    e
+                    for e in plan
+                    if int(e.obsid) == 900 and e.collection_begin is not None
+                ),
+                key=lambda e: float(e.begin),
+            )
+
+        rolls: dict[str, list[float]] = {}
+        for label, given in (("offset", windows), ("plain", plain)):
+            config = _config(HOURS)
+            target = _timed_target(config)
+            target.visit_windows = list(given)
+            ditl = create_ditl(config, [target, *_fillers(config)], BEGIN, END)
+            assert isinstance(ditl, QueueDITL)
+            ditl.step_size = STEP
+            assert ditl.calc()
+            visits = entries(ditl.plan)
+            assert len(visits) == 3
+            _in_windows(visits)
+            for entry, (ra, dec) in zip(visits, positions, strict=True):
+                assert (float(entry.ra), float(entry.dec)) == pytest.approx((ra, dec))
+            assert [e.visit for e in visits] == [0, 1, 2]
+            queued = next(t for t in ditl.queue.targets if int(t.obsid) == 900)
+            assert queued.visits_done == {0, 1, 2}
+            rolls[label] = [float(e.roll) for e in visits]
+        turned = (rolls["offset"][1] - rolls["plain"][1]) % 360.0
+        assert min(turned, 360.0 - turned) == pytest.approx(5.0, abs=0.5)
+        assert rolls["offset"][0] == pytest.approx(rolls["plain"][0], abs=0.5)
+
+        config = _config(HOURS)
+        target = _timed_target(config)
+        target.visit_windows = list(windows)
+        scheduler = PriorityScheduler(
+            config, [target, *_fillers(config)], BEGIN, END, step_size=STEP
+        )
+        planned = entries(scheduler.schedule())
+        assert len(planned) == 3
+        _in_windows(planned)
+        for entry, (ra, dec) in zip(planned, positions, strict=True):
+            assert (float(entry.ra), float(entry.dec)) == pytest.approx((ra, dec))
+        replay = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=Plan.model_validate_json(scheduler.plan.model_dump_json()),
+            begin=BEGIN,
+            end=END,
+        )
+        replay.step_size = STEP
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
+
+    def test_a_window_validates_its_own_request(self) -> None:
+        with pytest.raises(ValidationError, match="both ra and dec"):
+            VisitWindow(start=T0, deadline=T0 + SLACK, ra=10.0)
+        with pytest.raises(ValidationError, match="not both"):
+            VisitWindow(
+                start=T0, deadline=T0 + SLACK, roll_deg=10.0, roll_offset_deg=5.0
+            )
+        assert not VisitWindow(start=T0, deadline=T0 + SLACK).own_request
+        assert VisitWindow(start=T0, deadline=T0 + SLACK, roll_deg=10.0).own_request
+
+    def test_a_visit_cut_short_is_taken_again_in_its_window(self) -> None:
+        """A target of opportunity cuts the first visit: the window counts
+        as unvisited, the visit is taken again whole while the window is
+        open, the cut science still counts, and the retries do not end the
+        target before its last window."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        ditl = create_ditl(config, [target, *_fillers(config)], BEGIN, END)
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        cut_at = STARTS[0] + 6 * MIN
+        ditl.submit_too(
+            obsid=30001,
+            ra=PATCH[0][0] + 2.0,
+            dec=PATCH[0][1],
+            merit=1000.0,
+            exptime=5 * MIN,
+            deadline=cut_at + 30 * MIN,
+            name="Urgent",
+            submit_time=cut_at,
+        )
+        assert ditl.calc()
+        visits = sorted(
+            (
+                e
+                for e in ditl.plan
+                if int(e.obsid) == 900 and e.collection_begin is not None
+            ),
+            key=lambda e: float(e.begin),
+        )
+        assert len(visits) == 4
+        first, again = visits[0], visits[1]
+        assert first.visit == 0 and again.visit == 0
+        assert 0 < first.exposure < VISIT * MIN
+        assert again.exposure == VISIT * MIN
+        assert float(again.collection_begin) <= WINDOWS[0].deadline
+        assert [e.visit for e in visits[2:]] == [1, 2]
+        queued = next(t for t in ditl.queue.targets if int(t.obsid) == 900)
+        assert queued.visits_done == {0, 1, 2}
+        assert queued.done
+        assert queued.collected_seconds > 3 * VISIT * MIN
+        assert any(
+            "Visit 1 of V900 cut short: taken again" in e.description
+            for e in ditl.log.events
+        )
+
+    def test_the_planners_take_a_cut_visit_again_in_its_window(self) -> None:
+        """A target whose first visit was cut short before the plan keeps
+        that window open: the plan places the visit again within it."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        cut = STARTS[0] + 5 * MIN
+        target.record_collection(cut, 3 * MIN)
+        target.record_interruption(cut)
+        assert target.visits_done == set()
+        assert target.exptime == 3 * VISIT * MIN
+        scheduler = PriorityScheduler(
+            config,
+            [target, *_fillers(config)],
+            BEGIN + timedelta(minutes=70),
+            END,
+            step_size=STEP,
+        )
+        plan = scheduler.schedule()
+        visits = sorted(
+            (e for e in plan if int(e.obsid) == 900 and e.collection_begin is not None),
+            key=lambda e: float(e.begin),
+        )
+        assert [e.visit for e in visits] == [0, 1, 2]
+        _in_windows(visits)
+        assert all(e.exposure == VISIT * MIN for e in visits)
+
+    def test_an_interruption_reopens_only_an_incomplete_window(self) -> None:
+        config = _config(HOURS)
+        target = _timed_target(config)
+        begin = STARTS[0] + 60.0
+        target.record_collection(begin + 3 * MIN, 3 * MIN)
+        assert target.visits_done == {0}
+        target.record_interruption(begin + 3 * MIN)
+        assert target.visits_done == set()
+        target.record_collection(begin + 10 * MIN + 3 * MIN, VISIT * MIN)
+        target.record_interruption(begin + 10 * MIN + 3 * MIN + 30.0)
+        assert target.visits_done == {0}
+        assert not target.done
+        assert target.collected_seconds == 13 * MIN
+        target.exptime = 0
+        assert not target.done
+
     def test_a_rolling_horizon_run_keeps_the_visits_in_their_windows(self) -> None:
         config = _config(HOURS)
         targets = [_timed_target(config), *_fillers(config)]

@@ -101,6 +101,8 @@ class Pointing(PlanEntry):
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
     _visits_done: set[int] = PrivateAttr(default_factory=set)
+    _visit_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
+    _visit_parent: "Pointing | None" = PrivateAttr(default=None)
 
     @field_validator("deadline", "earliest_start", mode="before")
     @classmethod
@@ -182,8 +184,55 @@ class Pointing(PlanEntry):
 
     @property
     def visits_done(self) -> frozenset[int]:
-        """The visit windows a visit has collected science in."""
+        """The visit windows a whole visit has been collected in."""
         return frozenset(self._visits_done)
+
+    @property
+    def visit_parent(self) -> "Pointing | None":
+        """The target this is one visit of, where a window gave the visit a
+        pointing or roll of its own; None for a target itself."""
+        return self._visit_parent
+
+    def visit_pointing(self, index: int | None) -> "Pointing":
+        """The pointing visit ``index`` observes: this target itself, unless
+        the window gives the visit a pointing or roll of its own, when it is
+        a pointing of this target's request at the window's pointing with
+        the window's roll request, bounded by the window, with its own
+        visibility, crediting its science and its interruptions to this
+        target."""
+        if index is None or not self.visit_windows:
+            return self
+        window = self.visit_windows[index]
+        if not window.own_request:
+            return self
+        roll_deg, roll_offset = self.roll_deg, self.roll_offset_deg
+        if window.roll_deg is not None or window.roll_offset_deg is not None:
+            roll_deg, roll_offset = window.roll_deg, window.roll_offset_deg
+        pointing = Pointing(
+            config=self.config,
+            ra=window.ra if window.ra is not None else self.ra,
+            dec=window.dec if window.dec is not None else self.dec,
+            obsid=self.obsid,
+            name=self.name,
+            merit=self.merit,
+            instrument_name=self.instrument_name,
+            science_data=dict(self.science_data),
+            instrument_modes=dict(self.instrument_modes),
+            sequence=self.sequence,
+            ss_min=self.ss_min,
+            ss_max=self.ss_max,
+            earliest_start=window.start,
+            deadline=window.deadline,
+            visit=index,
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset,
+        )
+        pointing.exptime = self.per_visit_seconds
+        pointing.merit_breakdown = self.merit_breakdown
+        pointing._visit_parent = self
+        if self.ephem is not None:
+            pointing.visibility()
+        return pointing
 
     def visit_index_at(self, utime: float) -> int | None:
         """The visit window that a collection at ``utime`` belongs to: the
@@ -234,10 +283,47 @@ class Pointing(PlanEntry):
 
     def record_collection(self, utime: float, seconds: float) -> None:
         super().record_collection(utime, seconds)
+        if self._visit_parent is not None:
+            self._visit_parent.record_collection(utime, seconds)
         if seconds > 0 and self.visit_windows:
             index = self.visit_index_at(utime - seconds)
             if index is not None:
+                self._visit_seconds[index] = (
+                    self._visit_seconds.get(index, 0.0) + seconds
+                )
                 self._visits_done.add(index)
+            self._exposure_is_the_visits_left()
+
+    def _exposure_is_the_visits_left(self) -> None:
+        """A windowed target's exposure is the science of the whole visits
+        still to take, whatever a visit cut short collected."""
+        left = len(self.visit_windows) - len(self._visits_done)
+        self.exptime = self.per_visit_seconds * max(0, left)
+
+    def record_calibration(self, utime: float, seconds: float) -> None:
+        super().record_calibration(utime, seconds)
+        if self._visit_parent is not None:
+            self._visit_parent.record_calibration(utime, seconds)
+
+    def record_interruption(self, utime: float) -> None:
+        """A visit cut short is taken again, whole, while its window is
+        open: the window counts as visited only once a whole visit's science
+        has been collected in it. The science collected still counts."""
+        super().record_interruption(utime)
+        if self._visit_parent is not None:
+            self._visit_parent.record_interruption(utime)
+        if self.visit_windows:
+            index = self.visit_index_at(utime)
+            if (
+                index is not None
+                and self._visit_seconds.get(index, 0.0) < self.per_visit_seconds - 1e-6
+            ):
+                self._visits_done.discard(index)
+                self._exposure_is_the_visits_left()
+
+    def visit_complete(self, index: int) -> bool:
+        """Whether a whole visit's science has been collected in window ``index``."""
+        return index in self._visits_done
 
     @model_validator(mode="after")
     def _instrument_modes_are_known(self) -> "Pointing":
@@ -285,7 +371,8 @@ class Pointing(PlanEntry):
         this target's obsid and merit."""
         assert self.sequence is not None
         step = self.sequence.steps[index]
-        ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
+        base_ra, base_dec = self.visit_base_pointing
+        ra, dec = self.sequence.pointing_of(index, base_ra, base_dec)
         base = self.observation_timing
         roll_deg, roll_offset = self._step_roll_request(step.roll_offset_deg)
         pointing = Pointing(
@@ -323,17 +410,39 @@ class Pointing(PlanEntry):
             pointing.visibility()
         return pointing
 
+    @property
+    def visit_base_pointing(self) -> tuple[float, float]:
+        """The pointing the visit under way is at: the current visit window's
+        where it has its own, else this target's."""
+        if self.visit_windows and self.visit is not None:
+            window = self.visit_windows[self.visit]
+            if window.ra is not None and window.dec is not None:
+                return window.ra, window.dec
+        return self.ra, self.dec
+
+    @property
+    def visit_roll_request(self) -> tuple[float | None, float | None]:
+        """The roll request of the visit under way, as ``(roll_deg,
+        roll_offset_deg)``: the current visit window's where it has its own,
+        else this target's."""
+        if self.visit_windows and self.visit is not None:
+            window = self.visit_windows[self.visit]
+            if window.roll_deg is not None or window.roll_offset_deg is not None:
+                return window.roll_deg, window.roll_offset_deg
+        return self.roll_deg, self.roll_offset_deg
+
     def _step_roll_request(
         self, offset: float | None
     ) -> tuple[float | None, float | None]:
         """The roll request a step carries, as ``(roll_deg, roll_offset_deg)``:
-        this target's, with the step's offset added to an absolute roll or
+        the visit's, with the step's offset added to an absolute roll or
         to the offset."""
+        roll_deg, roll_offset = self.visit_roll_request
         if offset is None:
-            return self.roll_deg, self.roll_offset_deg
-        if self.roll_deg is not None:
-            return (self.roll_deg + offset) % 360.0, None
-        return None, (self.roll_offset_deg or 0.0) + offset
+            return roll_deg, roll_offset
+        if roll_deg is not None:
+            return (roll_deg + offset) % 360.0, None
+        return None, (roll_offset or 0.0) + offset
 
     def sequence_overhead_seconds(
         self, acs: AttitudeControlSystem, timing: ObservationTiming
@@ -454,10 +563,14 @@ class Pointing(PlanEntry):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def done(self) -> bool:
+        if self.visit_windows:
+            # One visit per window, and every window has had its whole
+            # visit; a visit cut short and taken again collects more than
+            # the exposure, which does not end the target early.
+            if len(self._visits_done) >= len(self.visit_windows):
+                self._done = True
+            return self._done
         if self.exptime is not None and self.exptime <= 0:
-            self._done = True
-        if self.visit_windows and len(self._visits_done) >= len(self.visit_windows):
-            # One visit per window, and every window has had its visit.
             self._done = True
         return self._done
 
@@ -474,6 +587,7 @@ class Pointing(PlanEntry):
         self._interruptions = []
         self._merit_breakdown = None
         self._visits_done = set()
+        self._visit_seconds = {}
         self.visit = None
         self.begin = 0
         self.end = 0

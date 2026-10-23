@@ -643,6 +643,12 @@ class TargetQueue:
                 target
             ):
                 continue
+            windows = getattr(target, "visit_windows", None)
+            if isinstance(windows, list) and windows:
+                # The visit this selection would be, evaluated at the
+                # visit's own pointing and roll where its window gives one.
+                target.visit = target.next_visit(utime)
+                target = target.visit_pointing(target.visit)
 
             # Reject score-bound losers before the deadline callback can compute
             # their roll and ground-pass ingress geometry.

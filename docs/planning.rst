@@ -94,6 +94,19 @@ for the look-ahead described under dispatch. A plan entry's ``visit`` says which
 window it observes in, and the target records the windows its visits have
 collected in.
 
+A window can give its visit a pointing and a roll request of its own: ``ra`` and
+``dec`` where the visit points elsewhere than the target, as a moving target's
+visits do, and ``roll_deg`` or ``roll_offset_deg`` in place of the target's
+request. The visit is then observed at the window's pointing with the window's
+roll, visible when that pointing is, in dispatch and in every planner, and a
+sequence visit's steps are taken from it; a window that sets none observes the
+target's own request. A visit cut short, by a target of opportunity or an emergency
+dump, is taken again whole while its window is open: the window counts as visited
+only once a whole visit's science has been collected in it, the science collected
+before the cut still counts in the totals, and a window that closes before the
+visit can be taken again is missed, logged by dispatch, and the target goes on to
+its later windows.
+
 A target's ``own_timing`` replaces its category's setup, cleanup and handoff
 budgets for that target alone, calibration steps included: a long dark after one
 deep field is a cleanup step of that target's own timing, with its mode and its
