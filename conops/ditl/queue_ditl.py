@@ -3660,8 +3660,9 @@ class QueueDITL(DITLMixin, DITLStats):
     def _request_of(ppt: Pointing) -> Pointing:
         """The queue's own target ``ppt`` observes: itself, or the target a
         visit with a pointing of its own is one visit of."""
-        parent = ppt.visit_parent
-        while parent is not None:
+        # A test double's target has no parent.
+        parent = getattr(ppt, "visit_parent", None)
+        while isinstance(parent, Pointing):
             ppt = parent
             parent = ppt.visit_parent
         return ppt
