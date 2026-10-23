@@ -224,6 +224,37 @@ class TestRolling:
         assert sum(
             1 for e in ditl.log.events if "Thruster dump unloads" in e.description
         ) == len(dumps)
-        assert any(
-            r.utime > T0 and ditl._momentum_start() is not None for r in ditl.replans
+        assert any(r.utime > T0 for r in ditl.replans)
+        assert ditl._momentum_start(ditl.uend, ditl.uend, []) is not None
+
+
+class TestResolution:
+    @pytest.mark.parametrize("step", [60, 120])
+    def test_plans_and_tracks_at_the_ephemeris_resolution(self, step: int) -> None:
+        """At a coarse ephemeris the run is kept within the capacity as at a
+        fine one: slews are integrated from the attitude the ACS flew within
+        each step, and each replan forecasts from the attitude held and the
+        momentum stored when its horizon starts, the committed entries'
+        contribution included."""
+        config = _dumping()
+        config.constraint.ephem = TLEEphemeris(
+            tle="examples/example.tle", begin=BEGIN, end=END, step_size=step
         )
+        ditl = RollingHorizonDITL(
+            config,
+            _targets(config),
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=timedelta(hours=2),
+        )
+        ditl.step_size = step
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        norm = np.array(
+            ditl.telemetry.housekeeping.stored_momentum_norm_n_m_s, dtype=float
+        )
+        assert len(norm) == HOURS * 3600 // step
+        assert norm.max() < CAPACITY
+        assert norm.max() < LEVEL + 0.15
+        assert len(_dumps(ditl.plan)) >= 5

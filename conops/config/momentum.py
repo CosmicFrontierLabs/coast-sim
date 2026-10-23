@@ -43,26 +43,17 @@ class StoredMomentumConfig(ConfigModel):
             "or a placeholder model built from the bus, panels and telescopes)"
         ),
     )
-    max_sample_interval_s: float = Field(
-        default=10.0,
-        gt=0.0,
-        le=10.0,
-        allow_inf_nan=False,
-        description=(
-            "Maximum executed-attitude and ephemeris sample interval in seconds. "
-            "Further limited by max_attitude_step_deg at the fastest configured "
-            "slew rate. Coarser runs fail instead of aliasing torque."
-        ),
-    )
     max_attitude_step_deg: float = Field(
         default=5.0,
         gt=0.0,
-        le=5.0,
         allow_inf_nan=False,
         description=(
-            "Maximum possible attitude motion between momentum samples in degrees. "
-            "Default five-degree sampling guard; lower for convergence studies. "
-            "This is not an integration-error guarantee."
+            "How far the attitude may move between momentum samples along a "
+            "slew, in degrees. The simulations and the planners' forecast sample "
+            "each slew at this step over the fastest configured slew rate, "
+            "whatever the ephemeris resolution; a held attitude is sampled at "
+            "the ephemeris resolution. Lower for convergence studies. This is "
+            "not an integration-error guarantee."
         ),
     )
     initial_momentum_body_n_m_s: tuple[float, float, float] = Field(

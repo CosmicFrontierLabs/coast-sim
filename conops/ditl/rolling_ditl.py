@@ -10,6 +10,8 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType, unixtime_from
+from ..common.ephemeris import position_vectors
+from ..common.vector import attitude_to_quat
 from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
@@ -17,6 +19,7 @@ from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
+from ..simulation.momentum import tracker_from_config
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
@@ -661,7 +664,7 @@ class RollingHorizonDITL(DITL):
             reserved_visits=self._reserved_visits(leading, utime),
             held=[int(t.obsid) for t in held],
             start_volume_gb=self._recorder_volume_at(utime, start, committed),
-            start_momentum_eci_n_m_s=self._momentum_start(),
+            start_momentum_eci_n_m_s=self._momentum_start(utime, start, committed),
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
             passes=self._run_passes,
@@ -874,18 +877,67 @@ class RollingHorizonDITL(DITL):
             ledger.drive_state_at(energy, start) or drive,
         )
 
-    def _momentum_start(self) -> tuple[float, float, float] | None:
-        """The stored momentum now, in inertial coordinates, for the plan's
-        forecast; what the committed activities add before the plan takes
-        over is left out. None where momentum is not tracked or no sample
-        has set it yet."""
+    def _momentum_start(
+        self, utime: float, start: float, committed: Sequence[PlanEntry]
+    ) -> tuple[float, float, float] | None:
+        """The stored momentum when the plan takes over at ``start``, in
+        inertial coordinates, for the plan's forecast: the momentum now,
+        with what the committed activities add until then integrated at the
+        attitudes they hold, the spacecraft's own where none is under way.
+        None where momentum is not tracked or no sample has set it yet."""
         tracker = self._stored_momentum_tracker
         if tracker is None:
             return None
         momentum = tracker.momentum_eci_n_m_s
         if momentum is None:
             return None
-        return (float(momentum[0]), float(momentum[1]), float(momentum[2]))
+        forecast = tracker_from_config(self.config)
+        if forecast is None or start <= utime:
+            return (float(momentum[0]), float(momentum[1]), float(momentum[2]))
+        forecast.start_from_eci(momentum)
+        holds = sorted(
+            (
+                (float(e.begin), float(e.end), e)
+                for e in committed
+                if float(e.end) > utime and float(e.begin) < start
+            ),
+            key=lambda hold: hold[0],
+        )
+
+        def attitude_at(at: float) -> Attitude:
+            for begin, end, entry in holds:
+                if begin <= at < end:
+                    if entry.spacecraft_attitude is not None:
+                        return entry.spacecraft_attitude
+                    return (float(entry.ra), float(entry.dec), float(entry.roll))
+            return self.acs.predicted_attitude(at)
+
+        positions = position_vectors(self.ephem, "gcrs")
+        suns = position_vectors(self.ephem, "sun")
+        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
+        samples = np.arange(utime, start, self.step_size)
+        if len(samples) == 0 or samples[-1] < start:
+            samples = np.append(samples, start)
+        for at in samples:
+            index = self.ephem.index(datetime.fromtimestamp(float(at), tz=timezone.utc))
+            position = np.asarray(positions[index], dtype=np.float64)
+            forecast.update(
+                utime=float(at),
+                position_eci_km=position,
+                attitude_quaternion_eci_to_body=attitude_to_quat(
+                    *attitude_at(float(at))
+                ),
+                sun_eci_km=np.asarray(suns[index], dtype=np.float64) - position,
+                sunlit=not self.constraint.in_eclipse(0.0, 0.0, float(at)),
+                position_ecef_km=(
+                    np.asarray(ecef[index], dtype=np.float64)
+                    if ecef is not None
+                    else None
+                ),
+            )
+        ahead = forecast.momentum_eci_n_m_s
+        assert ahead is not None
+        return (float(ahead[0]), float(ahead[1]), float(ahead[2]))
 
     def _committed_slew(
         self, entry: PlanEntry, start: Attitude, utime: float
