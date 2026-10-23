@@ -79,6 +79,12 @@ class SchedulingContext:
         config.spacecraft_bus.radiators.set_ephem(ephem)
         self.config = config
         self.ephem: rust_ephem.Ephemeris = ephem
+        # Nothing can be planned, or checked, past the ephemeris's last
+        # sample: a horizon that reaches further ends there.
+        last_sample = ephem.timestamp[-1]
+        self.ephem_end = float(last_sample.timestamp())
+        if end.timestamp() > self.ephem_end:
+            end = last_sample
         self.begin = begin
         self.end = end
         self.ustart = begin.timestamp()
@@ -122,8 +128,11 @@ class SchedulingContext:
         return self.origin + float(steps) * self.step_size
 
     def steps(self, begin: float, end: float) -> np.ndarray:
-        """Return the grid steps in ``[begin, end)``."""
+        """Return the grid steps in ``[begin, end)``, within the ephemeris:
+        a slew or a hold that reaches past its last sample is checked up to
+        it, since the ephemeris has nothing beyond."""
         first = self.ceil_step(begin)
+        end = min(end, self.ephem_end + 1e-6)
         if first >= end:
             return np.empty(0)
         return np.arange(first, end, self.step_size, dtype=float)
