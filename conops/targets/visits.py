@@ -26,7 +26,9 @@ from ..common import unixtime_from
 
 
 class VisitWindow(BaseModel):
-    """When one visit of a target may begin collecting science."""
+    """When one visit of a target may begin collecting science, and, where
+    the visit differs from the target's own request, where it points and
+    the roll it asks for."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -35,6 +37,35 @@ class VisitWindow(BaseModel):
     )
     deadline: float = Field(
         description="Latest time (Unix seconds) the visit's collection may begin"
+    )
+    ra: float | None = Field(
+        default=None,
+        ge=0.0,
+        lt=360.0,
+        description=(
+            "Right ascension this visit points at, in degrees, where it differs "
+            "from the target's, as a moving target's does; set with dec"
+        ),
+    )
+    dec: float | None = Field(
+        default=None,
+        ge=-90.0,
+        le=90.0,
+        description="Declination this visit points at, in degrees; set with ra",
+    )
+    roll_deg: float | None = Field(
+        default=None,
+        description=(
+            "The instrument roll this visit asks for, in degrees, in place of "
+            "the target's request; not with roll_offset_deg"
+        ),
+    )
+    roll_offset_deg: float | None = Field(
+        default=None,
+        description=(
+            "The offset from the power-optimal roll this visit asks for, in "
+            "degrees, in place of the target's request; not with roll_deg"
+        ),
     )
 
     @field_validator("start", "deadline", mode="before")
@@ -51,7 +82,22 @@ class VisitWindow(BaseModel):
     def _ordered(self) -> VisitWindow:
         if self.deadline < self.start:
             raise ValueError("a visit window's deadline must not be before its start")
+        if (self.ra is None) != (self.dec is None):
+            raise ValueError("a visit window's pointing needs both ra and dec")
+        if self.roll_deg is not None and self.roll_offset_deg is not None:
+            raise ValueError(
+                "a visit window asks for a roll or an offset from the optimum, not both"
+            )
         return self
+
+    @property
+    def own_request(self) -> bool:
+        """Whether the visit points or rolls differently from its target."""
+        return (
+            self.ra is not None
+            or self.roll_deg is not None
+            or self.roll_offset_deg is not None
+        )
 
     def contains(self, utime: float) -> bool:
         """Whether a visit may begin collecting at ``utime``."""

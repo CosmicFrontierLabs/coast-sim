@@ -156,6 +156,20 @@ class _Request(BaseModel):
     """The visit window the snapshot being placed is for."""
 
     @property
+    def pointing(self) -> Pointing:
+        """The pointing the snapshot being placed observes: the target's,
+        or the visit's own where its window gives it one."""
+        return self.target.visit_pointing(self.visit)
+
+    def select_visit(self, visit: int | None, ctx: SchedulingContext) -> None:
+        """Place the next snapshot in visit window ``visit``: a visit with a
+        pointing of its own is visible when that pointing is."""
+        if visit == self.visit:
+            return
+        self.visit = visit
+        self.windows = ctx.visibility_windows(self.pointing)
+
+    @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
         return self.remaining > 0 and self.remaining >= float(
@@ -905,8 +919,12 @@ class PriorityScheduler:
                 )
             if request.timed:
                 # The next window to visit; none left ends the request.
-                request.visit = request.next_visit(
-                    self._last_visit.get(int(request.target.obsid)), self.ctx.ustart
+                request.select_visit(
+                    request.next_visit(
+                        self._last_visit.get(int(request.target.obsid)),
+                        self.ctx.ustart,
+                    ),
+                    self.ctx,
                 )
                 if request.visit is None:
                     request.remaining = 0.0
@@ -1064,9 +1082,16 @@ class PriorityScheduler:
             if seconds > 0.0:
                 program = merit_model.category(target).program_name
                 self._delivered[program] = self._delivered.get(program, 0.0) + seconds
+            last_collection = target.last_collection_time
+            if last_collection is not None and target.visit_windows:
+                # A visit cut short is taken again in its window: it is
+                # the last visit only once a whole visit has been collected.
+                index = target.visit_index_at(last_collection)
+                if index is not None and not target.visit_complete(index):
+                    last_collection = None
             visits = [
                 t
-                for t in (target.last_collection_time, self.reserved_visits.get(obsid))
+                for t in (last_collection, self.reserved_visits.get(obsid))
                 if t is not None
             ]
             if visits:
@@ -2100,7 +2125,7 @@ class PriorityScheduler:
         after it must be reachable from there too.
         """
         self._successor_blocked = False
-        target = request.target
+        target = request.pointing
         timing = self.ctx.timing_for(int(target.obsid))
         ss_min = float(snapshot_min_seconds(target))
         earliest = self._earliest_start(pred)
@@ -2371,7 +2396,7 @@ class PriorityScheduler:
         before anything is sampled past it: the horizon can end with the
         ephemeris, which has nothing beyond.
         """
-        target = request.target
+        target = request.pointing
         assert target.sequence is not None
         sequence = target.sequence
         steps: list[PlanEntry] = []
@@ -2507,7 +2532,7 @@ class PriorityScheduler:
         collection_end: float,
     ) -> PlanEntry:
         """Build the plan entry for one science snapshot."""
-        target = request.target
+        target = request.pointing
         mounted = target.uses_mounted_attitude()
         telescope = target.science_telescope()
         end = collection_end + self.ctx.post_collection_for(int(target.obsid))

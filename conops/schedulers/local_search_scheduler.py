@@ -383,8 +383,9 @@ class LocalSearchScheduler(PriorityScheduler):
                 if state.cursor > 0
                 else self.ctx.ustart
             )
-            request.visit = request.next_visit(
-                last, max(cursor_time, not_before or cursor_time)
+            request.select_visit(
+                request.next_visit(last, max(cursor_time, not_before or cursor_time)),
+                self.ctx,
             )
             if request.visit is None:
                 return state

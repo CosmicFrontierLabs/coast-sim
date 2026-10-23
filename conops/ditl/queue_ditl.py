@@ -1258,7 +1258,7 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             if len(from_empty) and from_empty.max() >= capacity:
                 assert self._sequence is not None
-                parent = self._sequence.parent
+                parent = self._request_of(self._sequence.parent)
                 self.log.log_event(
                     utime=utime,
                     event_type="MOMENTUM",
@@ -1575,13 +1575,16 @@ class QueueDITL(DITLMixin, DITLStats):
         if collection_seconds > 0 and self.ppt is not None:
             # Credit the visit at the end of what was collected, not the tick
             # start, so cadence scoring sees how recently the target was observed.
-            self.ppt.record_collection(collection_stop, collection_seconds)
+            visit = self.ppt.visit
+            self.ppt.record_collection(collection_stop, collection_seconds, visit=visit)
             if self._sequence is not None and self.ppt.step is not None:
                 parent = self._sequence.parent
                 if self.ppt.calibration:
                     parent.record_calibration(collection_stop, collection_seconds)
                 else:
-                    parent.record_collection(collection_stop, collection_seconds)
+                    parent.record_collection(
+                        collection_stop, collection_seconds, visit=visit
+                    )
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
             utime, mode, self.step_size, collection_seconds=collection_seconds
@@ -3171,6 +3174,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         if interrupted:
             self.ppt.record_interruption(utime)
+            self._log_cut_visit(utime)
         if mark_done:
             self.ppt.done = True
 
@@ -3180,6 +3184,33 @@ class QueueDITL(DITLMixin, DITLStats):
         # at the science target; clearing last_slew would cause pointing() to call
         # roll optimization and jump the roll on the next tick. Roll stays locked to
         # last_slew.endroll until the next executed slew replaces last_slew.
+
+    def _log_cut_visit(self, utime: float) -> None:
+        """Say what becomes of a visit cut short: taken again while its
+        window is open, else missed."""
+        assert self.ppt is not None
+        request = self._request_of(self.ppt)
+        if not request.visit_windows:
+            return
+        index = request.visit_index_at(utime)
+        if index is None or request.visit_complete(index):
+            return
+        deadline = request.visit_windows[index].deadline
+        self.log.log_event(
+            utime=utime,
+            event_type="OBSERVATION",
+            description=(
+                f"Visit {index + 1} of {request.name} cut short: "
+                + (
+                    f"taken again whole while its window is open, until "
+                    f"{unixtime2date(deadline)}"
+                    if utime <= deadline
+                    else "its window has closed, so it is missed"
+                )
+            ),
+            obsid=request.obsid,
+            acs_mode=self.acs.acsmode,
+        )
 
     def _get_constraint_name(
         self,
@@ -3628,6 +3659,17 @@ class QueueDITL(DITLMixin, DITLStats):
         returning the same one"""
         return len(self.queue.targets) > 1
 
+    @staticmethod
+    def _request_of(ppt: Pointing) -> Pointing:
+        """The queue's own target ``ppt`` observes: itself, or the target a
+        visit with a pointing of its own is one visit of."""
+        # A test double's target has no parent.
+        parent = getattr(ppt, "visit_parent", None)
+        while isinstance(parent, Pointing):
+            ppt = parent
+            parent = ppt.visit_parent
+        return ppt
+
     def _retry_fetch_without_current_ppt(
         self, utime: float, ra: float, dec: float
     ) -> None:
@@ -3640,6 +3682,8 @@ class QueueDITL(DITLMixin, DITLStats):
             # The step stands in for its sequence target: reject that.
             rejected_ppt = self._sequence.parent
             self._sequence = None
+        if rejected_ppt is not None:
+            rejected_ppt = self._request_of(rejected_ppt)
         if rejected_ppt is None or not self._can_retry_without_current_ppt():
             self.ppt = None
             self._ppt_unavailable = True
