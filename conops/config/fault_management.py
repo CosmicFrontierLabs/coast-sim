@@ -148,7 +148,7 @@ class FaultEvent(BaseModel):
     Attributes:
         utime: Unix timestamp when the event occurred
         event_type: Type of event (threshold_transition, constraint_violation,
-            operational_fault, safe_mode_trigger)
+            operational_fault, safe_mode_trigger, momentum_capacity)
         name: Name of the parameter or constraint that triggered the event
         cause: Human-readable description of what happened
         metadata: Optional additional data (e.g., current values, thresholds, durations)
@@ -507,6 +507,65 @@ class FaultManagementRun(FaultManagement):
             )
         self._trigger_safe_mode(
             utime=utime, name=name, cause=cause, metadata=metadata, acs=acs
+        )
+
+    def report_momentum_capacity(
+        self,
+        *,
+        utime: float,
+        stored_n_m_s: float,
+        capacity_n_m_s: float,
+        obsid: int | None,
+    ) -> None:
+        """Latch the reaction wheels at their capacity: the ``stored_momentum``
+        state goes red and an event records it, saying whether an observation
+        was under way, since the emergency thruster dump that follows
+        interrupts it. No safe mode is requested: the dump is the response.
+        Repeated reports while red add nothing; the unload clears it."""
+        state = self.ensure_state("stored_momentum")
+        if state.current == "red":
+            return
+        state.current = "red"
+        state.in_violation = True
+        during = (
+            f" during observation {obsid}; the emergency thruster dump interrupts it"
+            if obsid is not None
+            else "; emergency thruster dump"
+        )
+        self.events.append(
+            FaultEvent(
+                utime=utime,
+                event_type="momentum_capacity",
+                name="stored_momentum",
+                cause=(
+                    f"Stored momentum {stored_n_m_s:.3f} N m s reached the "
+                    f"{capacity_n_m_s} N m s capacity{during}"
+                ),
+                metadata={
+                    "stored_n_m_s": stored_n_m_s,
+                    "capacity_n_m_s": capacity_n_m_s,
+                    "obsid": obsid,
+                    "during_observation": int(obsid is not None),
+                },
+            )
+        )
+
+    def clear_momentum_capacity(self, *, utime: float, stored_n_m_s: float) -> None:
+        """The wheels are unloaded: the ``stored_momentum`` state returns to
+        nominal, with an event, where it was red."""
+        state = self.states.get("stored_momentum")
+        if state is None or state.current != "red":
+            return
+        state.current = "nominal"
+        state.in_violation = False
+        self.events.append(
+            FaultEvent(
+                utime=utime,
+                event_type="momentum_capacity",
+                name="stored_momentum",
+                cause=f"Stored momentum unloaded to {stored_n_m_s:.3f} N m s, within capacity",
+                metadata={"stored_n_m_s": stored_n_m_s},
+            )
         )
 
     def _trigger_safe_mode(

@@ -395,17 +395,31 @@ coordinates (``geomagnetic_field_body_t``).
 The wheels' capacity, ``capacity_n_m_s`` (taken as the same about every axis), and
 ``thruster_dump`` (:class:`~conops.config.ThrusterDumpConfig`: a ``duration_seconds``
 hold and the ``residual_fraction`` left in the wheels) give the spacecraft thruster
-dumps. Dispatch calls for one the moment the stored momentum reaches
-``planning_level`` of the capacity: a desaturation activity due at that step, which
-ends the observation under way, holds the attitude the spacecraft has for the dump's
-length, starts no observation meanwhile, and unloads the wheels when it ends. An
-observation collecting, or paying its cleanup budget, when the dump is called for
-finishes paying its cleanup and handoff budget first (see `Observation Timing Budgets`_):
-its collection stops a budget before the step the dump begins at, as before a
-target-of-opportunity preemption. The momentum goes on building through the wait
-and the dump, so the level's margin should cover what the budget and the dump's
-length add. The dump waits for a slew under way as any activity does. A planned
-simulation unloads
+dumps. Dispatch calls for one when the stored momentum reaches ``planning_level`` of
+the capacity: a desaturation activity that holds the attitude the spacecraft has for
+the dump's length, starts no observation meanwhile, and unloads the wheels when it
+ends. The dump goes between observations. The observation under way runs on, and the
+dump begins once it has ended and before another starts; the margin between the
+level and the capacity is what the wait draws on. Before dispatch begins an
+observation it forecasts the momentum over it from the wheels as they are. Where the
+forecast reaches the level during the observation but not the capacity, the
+observation runs and the dump follows it. Where it would reach the capacity, a plain
+observation is bounded to end where the level is reached, or where its minimum
+snapshot is collected if that comes later and still fits within the capacity, and
+the dump follows; a visit, which is not cut, has the wheels emptied first where it
+fits from empty, and is rejected and marked done where it does not, with the reason
+logged. Where the level is reached before the observation would collect, the wheels
+are emptied first.
+
+The capacity itself is a red line. Where the stored momentum reaches it, fault
+management records a ``momentum_capacity`` event against the ``stored_momentum``
+state, naming the observation under way if any, and the dump is an emergency: it
+begins once the observation's cleanup and handoff budget is paid (see `Observation
+Timing Budgets`_), with its collection stopped a budget before, as before a
+target-of-opportunity preemption. No safe mode is requested; the unload clears the
+state with a second event. A planned simulation records the event the same way,
+against the plan entry under way, and relies on the plan's dumps. The dump waits
+for a slew under way as any activity does. A planned simulation unloads
 the wheels at the end of each plan entry marked ``desaturation``. The planners
 forecast the stored momentum along their plan and reserve dumps where it reaches
 the level (see :doc:`planning`, Planning within the wheels). Without thrusters the

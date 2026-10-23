@@ -102,10 +102,11 @@ def _science(plan: Plan | list) -> list:
 
 class TestPriorityScheduler:
     def test_dumps_are_reserved_where_the_forecast_reaches_the_level(self) -> None:
-        """Each pass reserves a dump where the forecast along the plan reaches
-        the level; the final plan's forecast never passes the level by more
-        than the dump's own build-up, science runs up to each dump, and the
-        executed plan matches the forecast."""
+        """Each pass reserves a dump for the forecast's next crossing of the
+        level, between observations: after the observation the crossing falls
+        in, or before it where the capacity would be reached inside it. The
+        final plan's forecast stays within the capacity, no dump cuts an
+        observation, and the executed plan matches the forecast."""
         config = _dumping()
         scheduler = PriorityScheduler(
             config, _targets(config), BEGIN, END, step_size=60
@@ -123,26 +124,38 @@ class TestPriorityScheduler:
         times, norms = scheduler._momentum.profile(scheduler.timeline)
         assert norms.max() < CAPACITY
         assert norms.max() >= LEVEL
-        # Each dump begins at the level and the wheels are empty after it.
+        assert not any(
+            "forecast reaches the" in e.description for e in scheduler.log.events
+        )
+        # The wheels are empty after each dump.
         for dump in dumps:
-            before = norms[times < float(dump.begin)][-1]
             after = norms[times > float(dump.end)][0]
-            assert before >= LEVEL - 0.05
             assert after < 0.05
-        # Science before a dump ends at the dump and takes its attitude.
+        placements = [e.description for e in reserved]
+        assert any("after observation" in d for d in placements)
+        assert any("before observation" in d for d in placements)
+        # Dumps go between observations: none cuts one, and each follows one
+        # within a step or precedes one within a slew, holding the attitude
+        # of what precedes it.
         science = _science(plan)
         assert len(science) >= 4
-        adjoining = [
-            (s, d)
-            for d in dumps
-            for s in science
-            if abs(float(s.end) - float(d.begin)) < 1e-6
-        ]
-        assert adjoining
-        for entry, dump in adjoining:
-            assert (float(dump.ra), float(dump.dec)) == pytest.approx(
-                (float(entry.ra), float(entry.dec))
+        for dump in dumps:
+            assert not any(
+                float(s.begin) < float(dump.end) and float(s.end) > float(dump.begin)
+                for s in science
             )
+            assert any(
+                0.0 <= float(dump.begin) - float(s.end) <= 60.0
+                or 0.0 <= float(s.begin) - float(dump.end) <= 600.0
+                for s in science
+            )
+        for dump in dumps:
+            preceding = [s for s in science if float(s.end) <= float(dump.begin)]
+            if preceding:
+                entry = max(preceding, key=lambda s: float(s.end))
+                assert (float(dump.ra), float(dump.dec)) == pytest.approx(
+                    (float(entry.ra), float(entry.dec))
+                )
         replay = Plan.model_validate_json(plan.model_dump_json())
         ditl = DITL(
             config=_dumping(),

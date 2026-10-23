@@ -284,6 +284,9 @@ class QueueDITL(DITLMixin, DITLStats):
         self._activity_waiting: ScheduledActivity | None = None
         """The activity due now that waits for the slew under way to end."""
         self._desaturations = 0
+        self._dump_pending = False
+        """A thruster dump called for at the planning level, to begin once the
+        observation under way has ended and before another starts."""
         """How many thruster dumps dispatch has called for."""
         self._sequence: _SequenceRun | None = None
         """The sequence visit under way, if the observation is one of its steps."""
@@ -1045,14 +1048,15 @@ class QueueDITL(DITLMixin, DITLStats):
         return changed
 
     def _call_for_desaturation(self, utime: float) -> None:
-        """Call for a thruster dump when the stored momentum has reached the
-        planning level of the capacity: a desaturation activity, which ends
-        the observation under way and holds the attitude it has for the
-        dump's length. It is due at this step, unless the observation is
-        collecting or cleaning up: then its collection stops, its cleanup
-        and handoff budget is paid, and the dump is due at the step that
-        follows. One at a time: none is called for while one waits for a
-        slew or is still to begin."""
+        """Call for a thruster dump where the stored momentum asks for one.
+        At the planning level of the capacity a dump is pending: it begins
+        between observations, once the one under way has ended and before
+        another starts, holding the attitude the spacecraft has for the
+        dump's length. At the capacity itself the dump is an emergency,
+        recorded in fault management: it begins now, interrupting the
+        observation under way once its cleanup and handoff budget is paid.
+        One at a time: none is called for while one waits for a slew or is
+        still to begin."""
         level = self._dump_level_n_m_s()
         tracker = self._stored_momentum_tracker
         if level is None or tracker is None:
@@ -1062,32 +1066,230 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             return
         stored = tracker.stored_momentum_norm_n_m_s
-        if stored < level:
-            return
-        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
-        assert dump is not None
         capacity = (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
         )
-        self.log.log_event(
-            utime=utime,
-            event_type="MOMENTUM",
-            description=(
-                f"Stored momentum {stored:.3f} N m s has reached the planning "
-                f"level {level:.3f} of the {capacity} N m s capacity: thruster dump"
-            ),
-            obsid=DESATURATION_OBSID + self._desaturations,
-            acs_mode=self.acs.acsmode,
-        )
+        assert capacity is not None
+        observing = self.ppt is not None and self.ppt is not self.charging_ppt
+        obsid = self.ppt.obsid if observing and self.ppt is not None else None
+        if self._momentum_at_capacity(utime, obsid):
+            self.log.log_event(
+                utime=utime,
+                event_type="MOMENTUM",
+                description=(
+                    f"Stored momentum {stored:.3f} N m s has reached the "
+                    f"{capacity} N m s capacity: emergency thruster dump"
+                    + (f" interrupts observation {obsid}" if obsid is not None else "")
+                ),
+                obsid=obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            self._dump_pending = False
+            self._add_dump(self._dump_begin(utime))
+            return
+        if stored >= level and not self._dump_pending:
+            self._dump_pending = True
+            self.log.log_event(
+                utime=utime,
+                event_type="MOMENTUM",
+                description=(
+                    f"Stored momentum {stored:.3f} N m s has reached the planning "
+                    f"level {level:.3f} of the {capacity} N m s capacity: thruster dump"
+                    + (f" after observation {obsid}" if obsid is not None else "")
+                ),
+                obsid=obsid,
+                acs_mode=self.acs.acsmode,
+            )
+        if self._dump_pending and self.ppt is None:
+            self._dump_pending = False
+            self._add_dump(utime)
+
+    def _add_dump(self, begin: float) -> None:
+        """Add a thruster dump due at ``begin`` to the activities."""
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
         activity = ScheduledActivity(
             name="Desaturation",
-            begin=self._dump_begin(utime),
+            begin=begin,
             duration_seconds=dump.duration_seconds,
             desaturation=True,
             obsid=DESATURATION_OBSID + self._desaturations,
         )
         self._desaturations += 1
         self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
+
+    def _within_momentum(self, utime: float, ra: float, dec: float, slew: Slew) -> bool:
+        """Whether the observation just selected begins as bounded, given
+        the stored momentum forecast over it from the wheels as they are.
+
+        It does where momentum is not tracked, where the forecast stays
+        under the planning level, and where it reaches the level during
+        the observation but not the capacity: the dump then follows the
+        observation. Where the level is reached before the observation
+        collects, the wheels are emptied first. Where the capacity would be
+        reached, a plain observation ends where the level is reached, so
+        the dump follows it and the rest is revisited, unless that leaves
+        too little science, when the wheels are emptied first. A visit is
+        indivisible: the wheels are emptied first where it fits from empty,
+        and it is rejected where it does not. Returns False where the
+        observation does not begin now."""
+        tracker = self._stored_momentum_tracker
+        level = self._dump_level_n_m_s()
+        capacity = (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
+        )
+        ppt = self.ppt
+        assert ppt is not None
+        if tracker is None or level is None or capacity is None:
+            return True
+        end = float(ppt.end)
+        slew_end = float(slew.slewstart) + float(slew.slewtime)
+
+        def attitude_at(at: float) -> tuple[float, float, float]:
+            if at < float(slew.slewstart):
+                return (
+                    float(slew.startra),
+                    float(slew.startdec),
+                    float(slew.startroll),
+                )
+            if at < slew_end:
+                sampled = slew.attitude(at)
+                return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
+            return (float(slew.endra), float(slew.enddec), float(slew.endroll))
+
+        # The tracker holds the momentum at its last sample, a step ago.
+        previous = getattr(self, "_momentum_previous", None)
+        begin = min(utime, previous.utime) if previous is not None else utime
+        times, norms, _ = self._forecast_momentum(
+            begin,
+            end,
+            attitude_at,
+            start_eci_n_m_s=tracker.momentum_eci_n_m_s,
+            slew=slew,
+        )
+        if len(norms) == 0 or norms.max() < level:
+            return True
+        visit = self._sequence is not None
+        name = (
+            f"the visit of {self._sequence.parent.obsid}"
+            if self._sequence is not None
+            else f"observation {ppt.obsid}"
+        )
+        at_level = float(times[int(np.argmax(norms >= level))])
+        collects = (
+            float(ppt.collection_begin)
+            if ppt.collection_begin is not None
+            else slew_end
+        )
+        if at_level <= collects:
+            reason = (
+                f"Stored momentum {norms[0]:.3f} N m s reaches the planning level "
+                f"{level:.3f} before {name} collects: thruster dump first"
+            )
+        elif norms.max() < capacity:
+            return True
+        elif not visit:
+            # The observation ends where the level is reached, with its minimum
+            # snapshot collected: past the level, within the capacity, where
+            # the level comes first. Too little within the capacity: from
+            # empty wheels if that gives the minimum, else not at all.
+            timing = self._ppt_timing(ppt)
+            was_end = ppt.end
+            floor_cut = (
+                utime + floor((at_level - utime) / self.step_size) * self.step_size
+            )
+            ppt.end = floor_cut
+            ppt.set_collection_window(timing)
+            if ppt.exposure < snapshot_min_seconds(ppt):
+                assert ppt.collection_begin is not None
+                least = ppt.collection_begin + snapshot_min_seconds(ppt)
+                least += timing.post_collection_seconds
+                ppt.end = (
+                    utime + ceil((least - utime) / self.step_size) * self.step_size
+                )
+                ppt.set_collection_window(timing)
+            cut = float(ppt.end)
+            within = cut <= was_end and bool(norms[times <= cut].max() < capacity)
+            if within:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="MOMENTUM",
+                    description=(
+                        f"Observation {ppt.obsid} ends at {unixtime2date(cut)}, "
+                        + (
+                            "where the stored momentum reaches the planning level"
+                            if cut == floor_cut
+                            else "with its minimum snapshot, past the planning level"
+                        )
+                        + "; the thruster dump follows it"
+                    ),
+                    obsid=ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return True
+            ppt.end = was_end
+            ppt.set_collection_window(timing)
+            _, from_empty, _ = self._forecast_momentum(
+                begin, cut, attitude_at, start_eci_n_m_s=None, slew=slew
+            )
+            if cut > was_end or (len(from_empty) and from_empty.max() >= capacity):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="MOMENTUM",
+                    description=(
+                        f"Observation {ppt.obsid} held out: its minimum snapshot "
+                        f"stores more than the {capacity} N m s capacity from empty "
+                        "wheels now"
+                    ),
+                    obsid=ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                # Held out of this selection: the torque varies around the
+                # orbit, so the minimum may fit later.
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return False
+            reason = (
+                f"Stored momentum would reach the {capacity} N m s capacity before "
+                f"{name} collects its minimum snapshot: thruster dump first"
+            )
+        else:
+            _, from_empty, _ = self._forecast_momentum(
+                begin, end, attitude_at, start_eci_n_m_s=None, slew=slew
+            )
+            if len(from_empty) and from_empty.max() >= capacity:
+                assert self._sequence is not None
+                parent = self._sequence.parent
+                self.log.log_event(
+                    utime=utime,
+                    event_type="MOMENTUM",
+                    description=(
+                        f"Visit of {parent.obsid} rejected: its loading of "
+                        f"{from_empty.max():.3f} N m s from empty wheels exceeds "
+                        f"the {capacity} N m s capacity"
+                    ),
+                    obsid=parent.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                parent.done = True
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return False
+            reason = (
+                f"Stored momentum would reach the {capacity} N m s capacity during "
+                f"{name}: thruster dump first"
+            )
+        self.log.log_event(
+            utime=utime,
+            event_type="MOMENTUM",
+            description=reason,
+            obsid=ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._sequence = None
+        self.ppt = None
+        self._ppt_unavailable = True
+        # Activities are managed before the fetch at each step: due at the next.
+        self._add_dump(utime + self.step_size)
+        return False
 
     def _dump_begin(self, utime: float) -> float:
         """When a dump called for at ``utime`` begins: now, unless the
@@ -2143,7 +2345,11 @@ class QueueDITL(DITLMixin, DITLStats):
         self._manage_ppt_lifecycle(utime, mode)
 
         # Fetch new PPT if none is active
-        if self.ppt is None and self._active_activity is None:
+        if (
+            self.ppt is None
+            and self._active_activity is None
+            and not self._dump_pending
+        ):
             if self._gsp_activity_in_progress(utime):
                 self._ppt_unavailable = None
                 return
@@ -3894,6 +4100,8 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.set_collection_window(timing)
             if self.ppt.exposure < snapshot_min_seconds(self.ppt):
                 self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return None
+            if not self._within_momentum(utime, ra, dec, slew):
                 return None
             if not enqueue_slew:
                 return slew
