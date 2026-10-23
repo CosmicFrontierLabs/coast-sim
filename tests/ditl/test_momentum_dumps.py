@@ -9,14 +9,18 @@ from pydantic import ValidationError
 from rust_ephem import EarthLimbConstraint, SunConstraint, TLEEphemeris
 
 from conops import DITL, QueueDITL, create_ditl
-from conops.common import ObsType
+from conops.common import ACSMode, ObsType
 from conops.config import (
+    AttitudeConstraintScope,
     AttitudeControlSystem,
     Battery,
     Constraint,
     GroundStationRegistry,
+    Instrument,
+    InstrumentMode,
     MissionConfig,
     ObservationTiming,
+    Payload,
     RadiatorConfiguration,
     SolarPanelSet,
     SpacecraftBus,
@@ -140,6 +144,28 @@ def _load_to_capacity_at(monkeypatch: pytest.MonkeyPatch, load_at: float) -> Non
 
 
 class TestConfiguration:
+    def test_desat_holds_under_hardware_safety_unless_configured(self) -> None:
+        """A thruster dump holds as idle does: the DESAT mode is checked
+        against hardware safety by default, also for a configuration that
+        sets scopes for other modes only, and against its own where set."""
+        config = _config()
+        assert config.attitude_constraint_scopes_for_mode(ACSMode.DESAT) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
+        older = _config()
+        older.attitude_constraint_scopes = {
+            ACSMode.IDLE.name: [
+                AttitudeConstraintScope.HARDWARE_SAFETY,
+                AttitudeConstraintScope.POWER_GENERATION,
+            ]
+        }
+        assert older.attitude_constraint_scopes_for_mode(ACSMode.DESAT) == [
+            AttitudeConstraintScope.HARDWARE_SAFETY
+        ]
+        own = _config()
+        own.attitude_constraint_scopes = {ACSMode.DESAT.name: []}
+        assert own.attitude_constraint_scopes_for_mode(ACSMode.DESAT) == []
+
     def test_dumps_need_a_capacity(self) -> None:
         with pytest.raises(ValidationError, match="capacity"):
             StoredMomentumConfig(thruster_dump=ThrusterDumpConfig())
@@ -399,6 +425,65 @@ class TestDispatch:
         )
         assert faults[1].utime == float(next_dump.end)
         assert not replay.fault_management.safe_mode_requested
+
+    def test_a_dump_holds_in_desat_mode(self) -> None:
+        """Telemetry reports DESAT through each dump and never outside one,
+        in dispatch and in the planned simulation replaying its plan, and
+        an instrument that defines a DESAT mode is in it, at its power,
+        while the dump holds."""
+        config = _config(
+            capacity_n_m_s=CAPACITY,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+        )
+        config.payload = Payload(
+            instruments=[
+                Instrument(
+                    name="camera",
+                    modes=[
+                        InstrumentMode(name="IDLE", power_w=5.0),
+                        InstrumentMode(name="SCIENCE", power_w=50.0),
+                        InstrumentMode(name="DESAT", power_w=1.0),
+                    ],
+                )
+            ]
+        )
+        ditl = _dispatch(config)
+        dumps = [e for e in ditl.plan if e.desaturation]
+        assert len(dumps) >= 2
+        replay = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=Plan.model_validate_json(ditl.plan.model_dump_json()),
+            begin=BEGIN,
+            end=END,
+        )
+        replay.step_size = STEP
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
+        for run in (ditl, replay):
+            records = run.telemetry.housekeeping
+            times = np.array([hk.timestamp.timestamp() for hk in records])
+            modes = [ACSMode(int(m)) for m in records.acs_mode if m is not None]
+            assert len(modes) == len(times)
+            inside = np.zeros(len(times), dtype=bool)
+            for dump in dumps:
+                inside |= (times >= float(dump.begin)) & (times < float(dump.end))
+            assert inside.any()
+            assert all(modes[i] is ACSMode.DESAT for i in np.flatnonzero(inside))
+            assert not any(modes[i] is ACSMode.DESAT for i in np.flatnonzero(~inside))
+            instrument_modes = records.instrument_modes
+            assert all(
+                instrument_modes[i] == {"camera": "DESAT"}
+                for i in np.flatnonzero(inside)
+            )
+            assert all(
+                float(run.power_payload[i]) == pytest.approx(1.0)
+                for i in np.flatnonzero(inside)
+            )
+            assert any(
+                float(run.power_payload[i]) > 1.0 for i in np.flatnonzero(~inside)
+            )
 
     def test_without_thrusters_the_wheels_fill(self) -> None:
         config = _config(capacity_n_m_s=CAPACITY)

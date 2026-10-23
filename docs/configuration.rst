@@ -398,8 +398,12 @@ hold and the ``residual_fraction`` left in the wheels) give the spacecraft thrus
 dumps. Dispatch calls for one when the stored momentum reaches ``planning_level`` of
 the capacity: a desaturation activity that holds the attitude the spacecraft has for
 the dump's length, starts no observation meanwhile, and unloads the wheels when it
-ends. The dump goes between observations. The observation under way runs on, and the
-dump begins once it has ended and before another starts; the margin between the
+ends. While it holds, the ACS mode is ``DESAT``: telemetry reports it, an instrument
+that defines a mode named ``DESAT`` is in it, and the attitude constraint scopes
+(hardware safety unless set) and the bus power table (the nominal power unless set)
+take an entry for it. The dump goes between observations. The observation under way
+runs on, and the dump begins once it has ended and before another starts; the margin
+between the
 level and the capacity is what the wait draws on. Before dispatch begins an
 observation it forecasts the momentum over it from the wheels as they are. Where the
 forecast reaches the level during the observation but not the capacity, the
@@ -1093,7 +1097,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 * ``name`` (str): Instrument identifier
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption by ACS mode, for an instrument without modes
-* ``modes`` (list[:class:`~conops.config.InstrumentMode`]): The instrument's operating modes, each a ``name``, a ``power_w`` and an optional ``eclipse_power_w``. With modes, the instrument draws its mode's power and ``power_draw`` is unused. During an observation it is in the mode the request names for it (``instrument_modes`` on the target), or ``SCIENCE`` when the request uses it without naming a mode; a request naming no modes uses the instrument it names, or every instrument with modes, in ``SCIENCE``. Outside the observation, and during an observation that does not use it, the instrument is in ``IDLE``, unless it defines a mode named like the ACS mode (``SAFE``, ``SLEWING``, ``PASS``, ``CHARGING``), which then applies. ``IDLE`` and ``SCIENCE`` must be defined when any mode is; other modes are free to add, and a mode's ``observing`` flag, ``True`` unless set, says whether the instrument counts as observing in it for the payload's concurrency rules. A mode's ``science_data`` is what the instrument generates while collecting in that mode (a full frame against a region of interest, say); a mode without it generates the instrument's ``data_generation`` science data, and an instrument with modes that an observation does not use generates nothing during it
+* ``modes`` (list[:class:`~conops.config.InstrumentMode`]): The instrument's operating modes, each a ``name``, a ``power_w`` and an optional ``eclipse_power_w``. With modes, the instrument draws its mode's power and ``power_draw`` is unused. During an observation it is in the mode the request names for it (``instrument_modes`` on the target), or ``SCIENCE`` when the request uses it without naming a mode; a request naming no modes uses the instrument it names, or every instrument with modes, in ``SCIENCE``. Outside the observation, and during an observation that does not use it, the instrument is in ``IDLE``, unless it defines a mode named like the ACS mode (``SAFE``, ``SLEWING``, ``PASS``, ``CHARGING``, ``DESAT``), which then applies. ``IDLE`` and ``SCIENCE`` must be defined when any mode is; other modes are free to add, and a mode's ``observing`` flag, ``True`` unless set, says whether the instrument counts as observing in it for the payload's concurrency rules. A mode's ``science_data`` is what the instrument generates while collecting in that mode (a full frame against a region of interest, say); a mode without it generates the instrument's ``data_generation`` science data, and an instrument with modes that an observation does not use generates nothing during it
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater, by ACS mode
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Science data the instrument generates while collecting, and its housekeeping data; targets can set their own science data for it by its ``name``. See :doc:`data_management`
 

@@ -1344,6 +1344,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     interrupted=True,
                 )
         self.acs.end_science_observation()
+        if activity.desaturation:
+            self.acs.begin_desaturation()
         self._add_activity_data(float(activity.data_gb))
         self._active_activity = activity
         self._activity_started = utime
@@ -1382,6 +1384,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self._active_activity = None
         if activity.desaturation:
+            self.acs.end_desaturation()
             self._unload_stored_momentum(utime, activity.obsid)
 
     def _ppt_deadline(self) -> float | None:

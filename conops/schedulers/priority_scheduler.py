@@ -1585,13 +1585,14 @@ class PriorityScheduler:
                 else self.ctx.initial_attitude(self.ctx.ustart)
             )
         )
+        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
         violation = self.ctx.first_hold_violation(
-            attitude, activity.begin, self.ctx.ceil_step(activity.end), ACSMode.IDLE
+            attitude, activity.begin, self.ctx.ceil_step(activity.end), mode
         )
         if violation is not None:
             self._log(
                 activity.begin,
-                f"Activity {activity.name} cannot hold its attitude in IDLE at "
+                f"Activity {activity.name} cannot hold its attitude in {mode.name} at "
                 f"{unixtime2date(violation)}; leaving it out",
                 activity.obsid,
             )
