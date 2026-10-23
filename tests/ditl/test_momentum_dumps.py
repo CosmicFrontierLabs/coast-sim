@@ -16,6 +16,7 @@ from conops.config import (
     Constraint,
     GroundStationRegistry,
     MissionConfig,
+    ObservationTiming,
     RadiatorConfiguration,
     SolarPanelSet,
     SpacecraftBus,
@@ -33,9 +34,9 @@ STEP = 10
 CAPACITY = 1.0
 
 
-def _config(**momentum: object) -> MissionConfig:
+def _config(step: int = STEP, **momentum: object) -> MissionConfig:
     ephem = TLEEphemeris(
-        tle="examples/example.tle", begin=BEGIN, end=END, step_size=STEP
+        tle="examples/example.tle", begin=BEGIN, end=END, step_size=step
     )
     config = MissionConfig(
         constraint=Constraint(
@@ -82,10 +83,10 @@ def _held(config: MissionConfig) -> Pointing:
     return target
 
 
-def _dispatch(config: MissionConfig) -> QueueDITL:
+def _dispatch(config: MissionConfig, step: int = STEP) -> QueueDITL:
     ditl = create_ditl(config, [_held(config)], BEGIN, END)
     assert isinstance(ditl, QueueDITL)
-    ditl.step_size = STEP
+    ditl.step_size = step
     assert ditl.calc()
     return ditl
 
@@ -162,6 +163,61 @@ class TestDispatch:
                 float(e.begin) < float(dump.end) and float(e.end) > float(dump.begin)
                 for e in science
             )
+
+    @pytest.mark.parametrize("step", [STEP, 120])
+    def test_a_dump_called_for_while_collecting_waits_for_the_cleanup(
+        self, step: int
+    ) -> None:
+        """The momentum reaches the level while the observation collects,
+        with a cleanup budget to pay: its collection stops a budget before
+        the step at which the budget is paid, and the dump begins at that
+        step. The exported plan replays without a mismatch, and the level's
+        margin covers the wait."""
+        cleanup = 60.0
+        config = _config(
+            step,
+            capacity_n_m_s=CAPACITY,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+        )
+        config.payload.observation_timing = ObservationTiming(cleanup_seconds=cleanup)
+        ditl = _dispatch(config, step)
+        plan = list(ditl.plan)
+        dumps = [e for e in plan if e.desaturation]
+        assert len(dumps) >= 2
+        cut = 0
+        for dump in dumps:
+            before = plan[plan.index(dump) - 1]
+            if before.obstype == ObsType.ACTIVITY or float(before.end) < float(
+                dump.begin
+            ):
+                continue
+            cut += 1
+            assert float(before.end) == float(dump.begin)
+            assert before.collection_end == float(dump.begin) - cleanup
+            assert (float(dump.begin) - ditl.ustart) % step == 0
+        assert cut >= 2
+        reserved = [
+            e
+            for e in ditl.log.events
+            if e.event_type == "MOMENTUM"
+            and e.description.startswith("Reserved thruster dump cleanup")
+        ]
+        assert len(reserved) == cut
+        norm = np.array(
+            ditl.telemetry.housekeeping.stored_momentum_norm_n_m_s, dtype=float
+        )
+        assert norm.max() < CAPACITY
+        replay = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=Plan.model_validate_json(ditl.plan.model_dump_json()),
+            begin=BEGIN,
+            end=END,
+        )
+        replay.step_size = step
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
 
     def test_without_thrusters_the_wheels_fill(self) -> None:
         config = _config(capacity_n_m_s=CAPACITY)
