@@ -243,8 +243,12 @@ How a plan is built
    where its target's visibility ends; that is allowed only if the new snapshot's
    value-weighted seconds exceed those lost. Exposure cut short is left for the
    request to plan elsewhere. Ground passes and locked entries are never moved. A
-   cadence target's visit moves only if it is the target's latest, and never earlier
-   than it was, so its visits stay a cadence apart.
+   cadence target's visit never moves earlier than it was, and no later than leaves
+   its next visit a cadence after it, so its visits stay a cadence apart; a visit in a
+   window of its own moves only if it is the target's latest. A cadence visit placed
+   at the opening of its visibility window is otherwise an anchor nothing can precede,
+   since a slew into it from another attitude would start before the target is
+   visible.
 
    **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
    ACS configuration lets a slew start early enough to arrive as its target rises,

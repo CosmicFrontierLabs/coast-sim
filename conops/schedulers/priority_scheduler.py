@@ -2012,19 +2012,28 @@ class PriorityScheduler:
         """Whether a block may be placed again later to make room before it.
 
         Only science snapshots this scheduler placed may move. A cadence
-        target's visit may move only if it is the target's latest, as its
-        next visit is spaced from it; visits are placed in time order, so it
-        usually is. Locked entries and passes never move.
+        target's visit may move as far as its next visit's spacing allows
+        (see :meth:`_fit_delaying_run`); a visit in a window of its own may
+        move only if it is the target's latest. Locked entries and passes
+        never move.
         """
         request = self._movable.get(id(block))
         if request is None:
             return False
-        if request.cadence is None and not request.timed:
+        if not request.timed:
             return True
         end = block.entry.collection_end
         return end is not None and self._last_visit.get(
             int(request.target.obsid)
         ) == float(end)
+
+    def _next_visit_after(self, block: _Block, start: int) -> _Block | None:
+        """The next placed visit of ``block``'s target from timeline position
+        ``start`` on, if any."""
+        obsid = int(block.entry.obsid)
+        return next(
+            (b for b in self.timeline[start:] if int(b.entry.obsid) == obsid), None
+        )
 
     def _fit_delaying_successors(
         self, request: _Request, index: int, not_before: float | None
@@ -2092,6 +2101,19 @@ class PriorityScheduler:
                 update={"remaining": seconds, "visit": old_block.entry.visit}
             )
             last = position == len(run) - 1
+            moved_until = None if last else until
+            if old_request.cadence is not None:
+                # A cadence visit moves no further than its next visit's
+                # spacing allows: that visit's slew starts a cadence after
+                # this one's collection ends, and does not move.
+                following = self._next_visit_after(old_block, end)
+                if following is not None:
+                    latest_end = float(following.entry.begin) - old_request.cadence
+                    moved_until = (
+                        latest_end
+                        if moved_until is None
+                        else min(moved_until, latest_end)
+                    )
             moved_fit = self._fit_in_gap(
                 same_length,
                 previous,
@@ -2101,7 +2123,7 @@ class PriorityScheduler:
                 not_before=float(old_block.entry.begin)
                 if old_request.cadence is not None
                 else None,
-                until=None if last else until,
+                until=moved_until,
                 beyond=self.timeline[end + 1 :] if last else (),
             )
             if moved_fit is None:
@@ -2153,10 +2175,18 @@ class PriorityScheduler:
             # It keeps the value it was selected at.
             move.new_block.entry.merit = move.old_block.entry.merit
             moved_end = move.new_block.entry.collection_end
-            if move.request.cadence is not None and moved_end is not None:
-                # Only a cadence target's latest visit moves (see
-                # _may_move): its next visit is spaced from the new end.
-                self._last_visit[int(move.request.target.obsid)] = float(moved_end)
+            old_end = move.old_block.entry.collection_end
+            obsid = int(move.request.target.obsid)
+            if (
+                move.request.cadence is not None
+                and moved_end is not None
+                and old_end is not None
+                and self._last_visit.get(obsid) == float(old_end)
+            ):
+                # The target's latest visit moved: its next visit is spaced
+                # from the new end. An earlier visit kept its spacing to the
+                # next (see _fit_delaying_run).
+                self._last_visit[obsid] = float(moved_end)
             # Exposure cut short is left for the request to plan elsewhere,
             # and no longer counts towards its program's share.
             move.request.remaining += move.lost

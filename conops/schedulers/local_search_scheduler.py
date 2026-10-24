@@ -22,6 +22,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from ..common import ObsType
 from ..config import MissionConfig
 from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from ..targets import Plan, Pointing
@@ -229,6 +230,8 @@ class LocalSearchScheduler(PriorityScheduler):
         self.initial_score = self._timeline_score(science)
 
         self._fixed = fixed
+        if self.start_plan is not None:
+            self._settle_from(self.start_plan)
         # Released at their priority-first times, the snapshots decode to
         # the priority-first plan; moves release them one at a time.
         start = self._decode(
@@ -248,6 +251,26 @@ class LocalSearchScheduler(PriorityScheduler):
             if self.seed_score > self.start_score:
                 start, self.start_score = seeded, self.seed_score
         return start
+
+    def _settle_from(self, plan: Plan) -> None:
+        """Hold each fixed block that may begin late where ``plan`` held its
+        activity, within the block's reservation, and reserve it there: the
+        plan's science around the activity then decodes at its own times,
+        before and after the block as the plan had it."""
+        held = {
+            int(entry.obsid): float(entry.begin)
+            for entry in plan
+            if entry_obstype(entry) == ObsType.ACTIVITY
+        }
+        for block in self._fixed:
+            activity = block.activity
+            if activity is None or activity.obsid is None:
+                continue
+            begin = held.get(int(activity.obsid))
+            if begin is None:
+                continue
+            self._settle_block(block, begin)
+            block.latest_ready = block.ready
 
     def _decode_plan(self, plan: Plan) -> _Decoded:
         """Decode a plan's science as a start sequence: one snapshot per
@@ -295,19 +318,27 @@ class LocalSearchScheduler(PriorityScheduler):
                 snapshots.append(
                     _Snapshot(obsid=obsid, seconds=seconds, release=float(entry.begin))
                 )
-        # Each snapshot at its own time, within a step: one the timeline
-        # cannot take there is left out, where decoding it at its next fit
-        # would push everything after it later; so is one it cannot take at
-        # all, such as a remainder shorter than the request's minimum.
+        # Each snapshot where the plan had it, before the plan's next one
+        # begins: one the timeline cannot take there is left out, where
+        # decoding it at its next fit would push everything after it later;
+        # so is one it cannot take at all, such as a remainder shorter than
+        # the request's minimum.
         kept: list[_Snapshot] = []
         states = [self._initial_state()]
-        for snapshot in snapshots:
+        for snapshot, following in zip(snapshots, [*snapshots[1:], None], strict=True):
             state = self._step(states[-1], snapshot)
             if state.cursor == states[-1].cursor:
                 continue
             block = state.timeline[state.cursor - 1]
             assert snapshot.release is not None
-            if float(block.entry.begin) > snapshot.release + self.ctx.step_size:
+            before = (
+                following.release
+                if following is not None and following.release is not None
+                else self.ctx.uend
+            )
+            if float(block.entry.begin) >= max(
+                before, snapshot.release + self.ctx.step_size
+            ):
                 continue
             kept.append(snapshot)
             states.append(state)
