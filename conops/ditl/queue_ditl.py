@@ -2192,6 +2192,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 and momentum_sample.geomagnetic_field_body_t is not None
                 else None
             ),
+            atmosphere_density_kg_m3=(
+                momentum_sample.atmosphere_density_kg_m3
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:

@@ -29,7 +29,7 @@ from .instrument import (
     TelescopeConfig,
     TelescopeType,
 )
-from .momentum import StoredMomentumConfig, ThrusterDumpConfig
+from .momentum import AtmosphereConfig, StoredMomentumConfig, ThrusterDumpConfig
 from .observation_categories import ObservationCategories, ObservationCategory
 from .observation_timing import BudgetStep, ObservationTiming
 from .power import PowerDraw
@@ -128,6 +128,7 @@ __all__ = [
     "SolarArrayDriveState",
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
+    "AtmosphereConfig",
     "StoredMomentumConfig",
     "Surface",
     "ThrusterDumpConfig",

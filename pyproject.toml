@@ -67,9 +67,11 @@ dev = [
     "plotly-stubs>=0.0.6",
     "ortools>=9.15",
 ]
-test = ["pytest>=8", "pytest-cov>=7", "ortools>=9.15"]
+test = ["pytest>=8", "pytest-cov>=7", "ortools>=9.15", "pymsis>=0.13", "ppigrf>=2.0"]
 # The CP-SAT scheduler (CpSatScheduler).
 cpsat = ["ortools>=9.15"]
+# The NRLMSIS atmosphere and the IGRF field for stored-momentum tracking.
+momentum = ["pymsis>=0.13", "ppigrf>=2.0"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",

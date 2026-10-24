@@ -68,6 +68,7 @@ class Housekeeping(BaseModel):
         disturbance_torques_body_n_m: Each tracked torque source's body torque, by name (N m)
         disturbance_torque_body_n_m: The tracked sources' total body torque (N m)
         geomagnetic_field_body_t: The geomagnetic field in body coordinates (T), where used
+        atmosphere_density_kg_m3: The atmosphere's density (kg/m³), where drag is tracked
         stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
         stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
     """
@@ -267,6 +268,10 @@ class Housekeeping(BaseModel):
             "The geomagnetic field in body coordinates [x, y, z], in tesla, "
             "where a tracked source uses it"
         ),
+    )
+    atmosphere_density_kg_m3: float | None = Field(
+        default=None,
+        description="The atmosphere's density at the sample, in kg/m³, where drag is tracked",
     )
 
     @classmethod
@@ -578,6 +583,11 @@ class HousekeepingList(list[Housekeeping]):
     def geomagnetic_field_body_t(self) -> list[list[float] | None]:
         """Get the body-frame geomagnetic field from all records."""
         return [hk.geomagnetic_field_body_t for hk in self]
+
+    @property
+    def atmosphere_density_kg_m3(self) -> list[float | None]:
+        """The atmosphere's density at each sample, in kg/m³, where drag is tracked."""
+        return [hk.atmosphere_density_kg_m3 for hk in self]
 
 
 class Telemetry(BaseModel):

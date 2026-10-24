@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from ..common.geodesy import EARTH_ROTATION_RATE_RAD_S
 from ..common.vector import quaternion_to_rotation_matrix
-from .geomagnetic import TiltedDipoleField
+from .atmosphere import AtmosphereModel, atmosphere_from_config
+from .geomagnetic import GeomagneticField, field_from_name
 
 if TYPE_CHECKING:
     from ..config import MissionConfig
@@ -130,6 +132,43 @@ def solar_radiation_pressure_torque_body(
     return torque
 
 
+def aerodynamic_drag_torque_body(
+    flow_body_km_s: npt.ArrayLike,
+    density_kg_m3: float,
+    surfaces: SurfaceModel,
+) -> npt.NDArray[np.float64]:
+    """Return the torque of the atmosphere on the spacecraft's surfaces, in
+    body coordinates, about the surface model's centre of mass.
+
+    ``flow_body_km_s`` is the spacecraft's velocity relative to the
+    atmosphere in the body frame, so the flow comes from that direction.
+    Each plate facing the flow takes the free-molecular drag of its
+    projected area along the flow, with its own drag coefficient; plates
+    facing away take none. Self-shadowing is not modelled.
+    """
+    flow = _finite_vector3(flow_body_km_s, name="flow_body_km_s")
+    speed_m_s = float(np.linalg.norm(flow)) * 1000.0
+    if speed_m_s <= 0.0 or density_kg_m3 <= 0.0:
+        return np.zeros(3, dtype=np.float64)
+    if not np.isfinite(density_kg_m3):
+        raise ValueError("density must be finite")
+    direction = flow / float(np.linalg.norm(flow))
+    pressure = 0.5 * density_kg_m3 * speed_m_s**2
+    center_of_mass = np.asarray(surfaces.center_of_mass_m, dtype=np.float64)
+    torque = np.zeros(3, dtype=np.float64)
+    for surface in surfaces.surfaces:
+        normal = np.asarray(surface.normal, dtype=np.float64)
+        cosine = float(normal @ direction)
+        if cosine <= 0.0:
+            continue
+        force = (
+            -pressure * surface.drag_coefficient * surface.area_m2 * cosine * direction
+        )
+        arm = np.asarray(surface.center_m, dtype=np.float64) - center_of_mass
+        torque += np.cross(arm, force)
+    return torque
+
+
 @dataclass(frozen=True)
 class OrbitSample:
     """The orbit, Sun and attitude at one instant, as the torque sources
@@ -155,14 +194,26 @@ class OrbitSample:
         )
 
     def geomagnetic_field_body_t(
-        self, field: TiltedDipoleField
+        self, field: GeomagneticField
     ) -> npt.NDArray[np.float64] | None:
         """The field at the sample in the body frame; None without an
         Earth-fixed position."""
         if self.position_ecef_km is None:
             return None
         return self.to_body(
-            field.field_eci_t(self.position_eci_km, self.position_ecef_km)
+            field.field_eci_t(self.position_eci_km, self.position_ecef_km, self.utime)
+        )
+
+    def flow_eci_km_s(self) -> npt.NDArray[np.float64] | None:
+        """The spacecraft's velocity relative to the atmosphere, which
+        rotates with the Earth, in inertial coordinates; None without the
+        orbital velocity."""
+        if self.velocity_eci_km_s is None:
+            return None
+        rotation = np.array([0.0, 0.0, EARTH_ROTATION_RATE_RAD_S], dtype=np.float64)
+        return np.asarray(
+            self.velocity_eci_km_s - np.cross(rotation, self.position_eci_km),
+            dtype=np.float64,
         )
 
 
@@ -216,6 +267,32 @@ class SolarRadiationPressureTorque:
         )
 
 
+class AerodynamicDragTorque:
+    """The atmosphere on the spacecraft's surfaces, at the density an
+    atmosphere model gives; nothing where the orbital velocity is unknown."""
+
+    name = "aerodynamic_drag"
+
+    def __init__(self, surfaces: SurfaceModel, atmosphere: AtmosphereModel) -> None:
+        self.surfaces = surfaces
+        self.atmosphere = atmosphere
+        self.last_density_kg_m3: float | None = None
+        """The density at the last sample, for telemetry."""
+
+    def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]:
+        flow = sample.flow_eci_km_s()
+        if flow is None:
+            self.last_density_kg_m3 = None
+            return np.zeros(3, dtype=np.float64)
+        density = self.atmosphere.density_kg_m3(
+            sample.utime, sample.position_eci_km, sample.position_ecef_km
+        )
+        self.last_density_kg_m3 = density
+        return aerodynamic_drag_torque_body(
+            sample.to_body(flow), density, self.surfaces
+        )
+
+
 class MagnetorquerUnloading:
     """Magnetorquers unloading the wheels against the geomagnetic field.
 
@@ -232,7 +309,7 @@ class MagnetorquerUnloading:
 
     def __init__(
         self,
-        field: TiltedDipoleField,
+        field: GeomagneticField,
         max_dipole_a_m2: float,
         time_constant_s: float,
     ) -> None:
@@ -277,7 +354,7 @@ class ResidualDipoleTorque:
     name = "residual_dipole"
 
     def __init__(
-        self, field: TiltedDipoleField, dipole_body_a_m2: npt.ArrayLike
+        self, field: GeomagneticField, dipole_body_a_m2: npt.ArrayLike
     ) -> None:
         self.field = field
         self.dipole_body_a_m2 = _finite_vector3(
@@ -304,6 +381,8 @@ class MomentumSample:
     """The sources' total torque in body coordinates."""
     geomagnetic_field_body_t: tuple[float, float, float] | None = None
     """The geomagnetic field in body coordinates where a source uses one."""
+    atmosphere_density_kg_m3: float | None = None
+    """The atmosphere's density at the sample where drag is tracked."""
 
 
 def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
@@ -506,12 +585,15 @@ class StoredMomentumTracker:
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
 
         field_body: tuple[float, float, float] | None = None
+        density: float | None = None
         for source in self.sources:
-            field_model = getattr(source, "field", None)
-            if isinstance(field_model, TiltedDipoleField):
-                field = sample.geomagnetic_field_body_t(field_model)
+            if field_body is None and isinstance(
+                source, (MagnetorquerUnloading, ResidualDipoleTorque)
+            ):
+                field = sample.geomagnetic_field_body_t(source.field)
                 field_body = _as_tuple(field) if field is not None else None
-                break
+            if isinstance(source, AerodynamicDragTorque):
+                density = source.last_density_kg_m3
         return MomentumSample(
             gravity_gradient_torque_body_n_m=torques.get(
                 GravityGradientTorque.name, (0.0, 0.0, 0.0)
@@ -521,15 +603,16 @@ class StoredMomentumTracker:
             torques_body_n_m=torques,
             torque_body_n_m=_as_tuple(torque_body),
             geomagnetic_field_body_t=field_body,
+            atmosphere_density_kg_m3=density,
         )
 
 
 def build_torque_sources(config: MissionConfig) -> list[TorqueSource]:
     """The torque sources a configuration's stored-momentum tracking enables,
     in the order they are reported: gravity gradient, solar radiation
-    pressure on the configured or placeholder surfaces, the residual dipole
-    and the magnetorquers' unloading, the last two in a tilted dipole field.
-    Empty where tracking is off."""
+    pressure and aerodynamic drag on the configured or placeholder surfaces,
+    the residual dipole and the magnetorquers' unloading, the last two in
+    the configured geomagnetic field. Empty where tracking is off."""
     from ..config.surfaces import guess_surfaces
 
     momentum_config = config.spacecraft_bus.attitude_control.stored_momentum
@@ -544,12 +627,23 @@ def build_torque_sources(config: MissionConfig) -> list[TorqueSource]:
         )
     if momentum_config.gravity_gradient_enabled:
         sources.append(GravityGradientTorque(inertia))
+    surfaces = config.spacecraft_bus.surfaces
+    if surfaces is None and (
+        momentum_config.solar_radiation_pressure_enabled
+        or momentum_config.aerodynamic_drag_enabled
+    ):
+        surfaces = guess_surfaces(config.solar_panel, config.payload)
     if momentum_config.solar_radiation_pressure_enabled:
-        surfaces = config.spacecraft_bus.surfaces
-        if surfaces is None:
-            surfaces = guess_surfaces(config.solar_panel, config.payload)
+        assert surfaces is not None
         sources.append(SolarRadiationPressureTorque(surfaces))
-    field = TiltedDipoleField()
+    if momentum_config.aerodynamic_drag_enabled:
+        assert surfaces is not None
+        sources.append(
+            AerodynamicDragTorque(
+                surfaces, atmosphere_from_config(momentum_config.atmosphere)
+            )
+        )
+    field = field_from_name(momentum_config.geomagnetic_field)
     if momentum_config.residual_dipole_body_a_m2 is not None:
         sources.append(
             ResidualDipoleTorque(field, momentum_config.residual_dipole_body_a_m2)

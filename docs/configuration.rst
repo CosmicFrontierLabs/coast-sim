@@ -357,170 +357,26 @@ fields retain their existing behavior, including legacy RA/Dec-only estimates.
 
 .. _Stored momentum:
 
-Stored-momentum tracking is disabled by default. Enable it by supplying
-a physical body-frame inertia tensor about the spacecraft center of mass and
-setting ``gravity_gradient_enabled``, ``solar_radiation_pressure_enabled``, or
-both. Each enabled torque source is evaluated in the body frame at every sample
-and the sources' sum is integrated; the telemetry reports each source's torque
-by name (``disturbance_torques_body_n_m``) and their total, so a run shows
-which term fills the wheels. Solar radiation pressure acts on the spacecraft's
-surfaces: ``spacecraft_bus.surfaces`` lists them as flat plates (a centre, an
-outward normal, an area, specular and diffuse reflectivities, a drag
-coefficient) about ``center_of_mass_m``; :func:`~conops.config.box_surfaces`,
-:func:`~conops.config.panel_surfaces` and :func:`~conops.config.telescope_surfaces`
-build plates from a box, the solar panels with a ``geometry`` and the
-telescopes' apertures. With no ``surfaces`` configured,
-:func:`~conops.config.guess_surfaces` builds a placeholder: a 1.5 × 1.5 × 2 m
-box at the body origin, the panels and the apertures, about a centre of mass
-5 cm behind the boresight. Its torques are of the right order and nothing
-more; a mission's mass properties replace it. Each sunlit plate takes the force
-of what it absorbs and reflects, specularly and diffusely, plates facing away
-from the Sun take none, and nothing does in eclipse; plates do not shadow one
-another. Aerodynamic drag is not yet a source.
-
-Two more sources use the geomagnetic field, a tilted dipole
-(:class:`~conops.simulation.TiltedDipoleField`: 31.2 µT at the magnetic equator on
-the surface, falling with the cube of the radius, its axis through the geomagnetic
-poles). ``magnetorquer_max_dipole_a_m2`` gives the spacecraft magnetorquers: they
-unload the wheels continuously, commanding the dipole that would remove the stored
-momentum over ``magnetorquer_time_constant_s`` and no more than their greatest
-dipole, so at the cap the unloading torque is the cap times the field. Torquers only
-turn the spacecraft about axes across the field, so they take out the momentum's
-component across it and leave the component along it, which turns as the field
-turns round the orbit. ``residual_dipole_body_a_m2`` is the spacecraft's own
-dipole, torqued by the field. Both are reported as sources by name
-(``magnetorquer_unloading``, ``residual_dipole``), and the field itself in body
-coordinates (``geomagnetic_field_body_t``).
-
-The wheels' capacity, ``capacity_n_m_s`` (taken as the same about every axis), and
-``thruster_dump`` (:class:`~conops.config.ThrusterDumpConfig`: a ``duration_seconds``
-hold and the ``residual_fraction`` left in the wheels) give the spacecraft thruster
-dumps. Dispatch calls for one when the stored momentum reaches ``planning_level`` of
-the capacity: a desaturation activity that holds the attitude the spacecraft has for
-the dump's length, starts no observation meanwhile, and unloads the wheels when it
-ends. While it holds, the ACS mode is ``DESAT``: telemetry reports it, an instrument
-that defines a mode named ``DESAT`` is in it, and the attitude constraint scopes
-(hardware safety unless set) and the bus power table (the nominal power unless set)
-take an entry for it. The dump goes between observations. The observation under way
-runs on, and the dump begins once it has ended and before another starts; the margin
-between the
-level and the capacity is what the wait draws on. Before dispatch begins an
-observation it forecasts the momentum over it from the wheels as they are: over a
-visit of a sequence, which is taken whole, every step at its own pointing, the slews
-between them and the cleanup after the last. Where the
-forecast reaches the level during the observation but not the capacity, the
-observation runs and the dump follows it. Where it would reach the capacity, a plain
-observation is bounded to end where the level is reached, or where its minimum
-snapshot is collected if that comes later and still fits within the capacity, and
-the dump follows; a visit, which is not cut, has the wheels emptied first where it
-fits from empty, and is rejected and marked done where it does not, with the reason
-logged. Where the level is reached before the observation would collect, the wheels
-are emptied first.
-
-The capacity itself is a red line. Where the stored momentum reaches it, fault
-management records a ``momentum_capacity`` event against the ``stored_momentum``
-state, naming the observation under way if any, and the dump is an emergency: it
-begins once the observation's cleanup and handoff budget is paid (see `Observation
-Timing Budgets`_), with its collection stopped a budget before, as before a
-target-of-opportunity preemption. No safe mode is requested; the unload clears the
-state with a second event. A planned simulation records the event the same way,
-against the plan entry under way, and relies on the plan's dumps. The dump waits
-for a slew under way as any activity does. A planned simulation unloads
-the wheels at the end of each plan entry marked ``desaturation``. The planners
-forecast the stored momentum along their plan and reserve dumps where it reaches
-the level (see :doc:`planning`, Planning within the wheels). Without thrusters the
-wheels fill, the telemetry shows it, and a plan's log says where its forecast
-passes the capacity. Its principal moments must be positive and
-satisfy the triangle inequalities; a planar-body equality is allowed, including
-relative rounding of approximately 1.5e-8 (the square root of float64 machine
-epsilon). The named ``INERTIA_RELATIVE_TOLERANCE`` allows roughly eight significant
-digits of input precision, not physical mass-properties uncertainty. Symmetry
-uses the same tolerance relative to the largest tensor entry; accepted rounding
-asymmetry is averaged before validation and storage.
-COAST integrates the angular impulse in inertial coordinates, then reports the
-stored-momentum vector in the current body frame. This prevents attitude changes
-alone from appearing to generate momentum. Capacity enforcement and desaturation
-scheduling are not part of this tracking model.
-
-The tracker reloads the inertia, initial momentum, sampling limits, and enable
-flag at the start of every run. Configuration changes between runs therefore
-take effect without reconstructing the simulation.
-
-This is a sampled torque integrator: the torque is taken as linear between
-samples. A held attitude is sampled at the simulation's step, the ephemeris
-resolution, which is enough because the torques then vary only with the
-orbit. A slew is sampled more finely than the step wherever it falls: the
-simulations ask the ACS for the attitude flown at intermediate times within
-the step, every ``stored_momentum.max_attitude_step_deg`` (default 5 degrees)
-of motion at the fastest configured body-axis slew rate (or scalar
-``max_slew_rate`` when body-axis limits are absent), with the orbit interpolated
-between the step's ends. The planners' momentum forecast samples the same way.
-Tracking therefore works at whatever resolution the ephemeris has.
-
-For example, with the default attitude step, a fastest rate of 2 degrees/second
-samples slews every 2.5 seconds; lowering ``max_attitude_step_deg`` to 2 degrees
-samples them every second. The attitude step is not a guaranteed
-integration-error tolerance. Verify convergence at a finer step for final
-studies, using fixed-plan replay to compare numerical cadences without
-replanning the science schedule.
-
-.. code-block:: yaml
-
-   spacecraft_bus:
-     inertia_tensor_body_kg_m2:
-       - [1000.0, 0.0, 0.0]
-       - [0.0, 1200.0, 0.0]
-       - [0.0, 0.0, 800.0]
-     attitude_control:
-       stored_momentum:
-         gravity_gradient_enabled: true
-         solar_radiation_pressure_enabled: true
-         magnetorquer_max_dipole_a_m2: 10.0
-         magnetorquer_time_constant_s: 1800.0
-         capacity_n_m_s: 4.0
-         planning_level: 0.8
-         thruster_dump:
-           duration_seconds: 120.0
-           residual_fraction: 0.0
-         max_attitude_step_deg: 5.0
-         initial_momentum_body_n_m_s: [0.0, 0.0, 0.0]
-
-.. code-block:: python
-
-   from conops.config import SpacecraftBus, PowerDraw, AttitudeControlSystem, Heater
-   from conops.common.enums import SlewAlgorithm
-   import rust_ephem
-
-   spacecraft_bus = SpacecraftBus(
-       name="Observatory Bus",
-       power_draw=PowerDraw(
-           nominal_power=50.0,      # Watts - normal operations
-           peak_power=300.0,        # Watts - maximum draw
-           power_mode={0: 70.0, 1: 100.0},  # Mode-specific power
-           eclipse_power=75.0,      # Power draw during eclipse
-       ),
-       attitude_control=AttitudeControlSystem(
-           slew_acceleration=0.01,  # deg/s² - angular acceleration
-           max_slew_rate=0.3,       # deg/s - maximum slew rate
-           # Optional ellipsoidal (+X, +Y, +Z) body-axis envelopes:
-           slew_acceleration_body=(0.02, 0.02, 0.2),  # deg/s²
-           max_slew_rate_body=(0.2, 0.2, 2.0),        # deg/s
-           slew_accuracy=0.01,      # deg - pointing accuracy
-           settle_time=10.0,        # seconds - time to settle after slew
-           slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,  # Avoid all constraints
-           slew_constraint=(  # Optional: separate constraint for slewing
-               rust_ephem.SunConstraint(min_angle=30.0)  # Relaxed Sun angle during slews
-               | rust_ephem.EarthLimbConstraint(min_angle=20.0)  # Relaxed Earth limb during slews
-           ),
-       ),
-       heater=Heater(
-           name="Bus Heaters",
-           power_draw=PowerDraw(
-               nominal_power=25.0,
-               eclipse_power=75.0,  # Higher power in eclipse
-           ),
-       ),
-   )
+Stored-momentum tracking is disabled by default; :doc:`momentum` describes the
+model, the dumps and the planners' use of it in full. In short: supplying a
+physical body-frame inertia tensor and enabling one or more torque sources tracks
+the momentum the wheels store, in inertial coordinates, reported in the body frame
+at every sample with each source's torque by name. The sources are the gravity
+gradient (``gravity_gradient_enabled``), sunlight and the atmosphere on the
+spacecraft's surfaces (``solar_radiation_pressure_enabled``,
+``aerodynamic_drag_enabled``, with ``spacecraft_bus.surfaces`` or a placeholder built
+from the bus, panels and telescopes, and the atmosphere ``atmosphere`` selects: the
+built-in table or NRLMSIS through the optional ``pymsis``), the spacecraft's residual
+dipole (``residual_dipole_body_a_m2``) and the magnetorquers' unloading
+(``magnetorquer_max_dipole_a_m2``, ``magnetorquer_time_constant_s``), the last two in
+the ``geomagnetic_field`` selected: the built-in tilted dipole or the IGRF through the
+optional ``ppigrf``. ``capacity_n_m_s``, ``planning_level`` and ``thruster_dump`` give
+the wheels a capacity and the spacecraft thruster dumps, which dispatch calls for
+and the planners reserve where the stored momentum reaches the planning level, held
+in the ``DESAT`` ACS mode; the capacity itself is a red line fault management
+records. A held attitude is sampled at the ephemeris resolution and a slew every
+``max_attitude_step_deg`` of motion, so tracking works at whatever resolution the
+ephemeris has.
 
 solar_panel
 ~~~~~~~~~~~

@@ -13,7 +13,7 @@ from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
-from ..common.ephemeris import position_vectors
+from ..common.ephemeris import position_vectors, velocity_vectors
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.acs import ACS
@@ -45,11 +45,13 @@ class _MomentumInputs:
         position_eci_km: npt.NDArray[np.float64],
         sun_eci_km: npt.NDArray[np.float64] | None,
         position_ecef_km: npt.NDArray[np.float64] | None,
+        velocity_eci_km_s: npt.NDArray[np.float64] | None = None,
     ) -> None:
         self.utime = float(utime)
         self.position_eci_km = position_eci_km
         self.sun_eci_km = sun_eci_km
         self.position_ecef_km = position_ecef_km
+        self.velocity_eci_km_s = velocity_eci_km_s
 
     def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
         """The orbit ``fraction`` of the way from this sample to ``later``."""
@@ -66,6 +68,7 @@ class _MomentumInputs:
             np.asarray(lerp(self.position_eci_km, later.position_eci_km)),
             lerp(self.sun_eci_km, later.sun_eci_km),
             lerp(self.position_ecef_km, later.position_ecef_km),
+            lerp(self.velocity_eci_km_s, later.velocity_eci_km_s),
         )
 
 
@@ -445,8 +448,12 @@ class DITLMixin:
             return None
         sun_eci_km: npt.NDArray[np.float64] | None = None
         position_ecef_km: npt.NDArray[np.float64] | None = None
+        velocity_eci_km_s: npt.NDArray[np.float64] | None = None
         sunlit = True
         if index is not None:
+            velocities = velocity_vectors(self.ephem)
+            if velocities is not None and index < len(velocities):
+                velocity_eci_km_s = np.asarray(velocities[index], dtype=np.float64)
             sun_positions = position_vectors(self.ephem, "sun")
             if index < len(sun_positions):
                 sun_eci_km = (
@@ -457,7 +464,9 @@ class DITLMixin:
             ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
             if ecef is not None and index < len(ecef):
                 position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
-        inputs = _MomentumInputs(utime, position_eci_km, sun_eci_km, position_ecef_km)
+        inputs = _MomentumInputs(
+            utime, position_eci_km, sun_eci_km, position_ecef_km, velocity_eci_km_s
+        )
         previous = getattr(self, "_momentum_previous", None)
         self._momentum_previous = inputs
         elapsed = utime - previous.utime if previous is not None else 0.0
@@ -477,6 +486,7 @@ class DITLMixin:
                     attitude_quaternion_eci_to_body=attitude_to_quat(ra, dec, roll),
                     sun_eci_km=between.sun_eci_km,
                     sunlit=sunlit,
+                    velocity_eci_km_s=between.velocity_eci_km_s,
                     position_ecef_km=between.position_ecef_km,
                 )
         return tracker.update(
@@ -485,6 +495,7 @@ class DITLMixin:
             attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
             sun_eci_km=sun_eci_km,
             sunlit=sunlit,
+            velocity_eci_km_s=velocity_eci_km_s,
             position_ecef_km=position_ecef_km,
         )
 
@@ -590,6 +601,7 @@ class DITLMixin:
         suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
         ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
         ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
+        velocities = velocity_vectors(self.ephem)
 
         def interpolate(
             table: npt.NDArray[np.float64], at: float
@@ -616,6 +628,11 @@ class DITLMixin:
                 sun_eci_km=interpolate(suns, float(at)) - position,
                 sunlit=not self.config.constraint.in_eclipse(
                     0.0, 0.0, float(utimes[nearest])
+                ),
+                velocity_eci_km_s=(
+                    interpolate(velocities, float(at))
+                    if velocities is not None
+                    else None
                 ),
                 position_ecef_km=(
                     interpolate(ecefs, float(at)) if ecefs is not None else None

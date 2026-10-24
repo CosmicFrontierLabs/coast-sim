@@ -79,3 +79,37 @@ class TestTiltedDipoleField:
             TiltedDipoleField(surface_field_t=0.0)
         with pytest.raises(ValueError, match="nonzero"):
             _untilted().field_eci_t(np.zeros(3), np.zeros(3))
+
+
+class TestIGRFField:
+    def test_the_igrf_is_the_dipole_to_a_third(self) -> None:
+        """At 600 km over the equator the IGRF and the tilted dipole agree
+        in strength to a third and in direction to forty degrees, the South
+        Atlantic anomaly's longitude included: the dipole is the field's
+        leading term."""
+        pytest.importorskip("ppigrf")
+        from conops.simulation.geomagnetic import IGRFField, field_from_name
+
+        igrf = field_from_name("igrf")
+        assert isinstance(igrf, IGRFField) and igrf.name == "igrf"
+        dipole = TiltedDipoleField()
+        for longitude in (0.0, 90.0, 180.0, 270.0):
+            lon = np.radians(longitude)
+            ecef = np.array([np.cos(lon), np.sin(lon), 0.0]) * (EARTH_RADIUS_KM + 600.0)
+            eci = ecef.copy()
+            real = igrf.field_eci_t(eci, ecef, 1.76e9)
+            model = dipole.field_eci_t(eci, ecef)
+            assert np.linalg.norm(real) == pytest.approx(
+                np.linalg.norm(model), rel=0.35
+            )
+            cosine = float(
+                real @ model / (np.linalg.norm(real) * np.linalg.norm(model))
+            )
+            assert cosine > np.cos(np.radians(40.0))
+        with pytest.raises(ValueError):
+            field_from_name("other")
+
+    def test_the_dipole_is_the_default_name(self) -> None:
+        from conops.simulation.geomagnetic import field_from_name
+
+        assert field_from_name("dipole").name == "dipole"

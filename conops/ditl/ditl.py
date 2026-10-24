@@ -541,6 +541,11 @@ class DITL(DITLMixin, DITLStats):
                     and momentum_sample.geomagnetic_field_body_t is not None
                     else None
                 ),
+                atmosphere_density_kg_m3=(
+                    momentum_sample.atmosphere_density_kg_m3
+                    if momentum_sample is not None
+                    else None
+                ),
             )
 
             # Check fault management thresholds and red limit constraints

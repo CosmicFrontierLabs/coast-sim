@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 from pydantic import Field, field_validator, model_validator
 
@@ -25,6 +27,47 @@ class ThrusterDumpConfig(ConfigModel):
     )
 
 
+class AtmosphereConfig(ConfigModel):
+    """The atmosphere aerodynamic drag is computed in."""
+
+    model: Literal["table", "msis"] = Field(
+        default="table",
+        description=(
+            "The density model: 'table', the built-in piecewise exponential "
+            "profile by height for moderate solar activity; or 'msis', "
+            "NRLMSIS 2.1 through the optional pymsis package, at the solar "
+            "flux and geomagnetic activity below"
+        ),
+    )
+    f107: float = Field(
+        default=150.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The daily 10.7 cm solar flux the 'msis' model assumes, in sfu",
+    )
+    f107a: float = Field(
+        default=150.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The 81-day average 10.7 cm solar flux the 'msis' model assumes",
+    )
+    ap: float = Field(
+        default=4.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The geomagnetic activity index the 'msis' model assumes",
+    )
+    density_scale: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "A factor on the density, for sensitivity studies: the density "
+            "varies by a factor of twenty between solar minimum and maximum"
+        ),
+    )
+
+
 class StoredMomentumConfig(ConfigModel):
     """Configuration for planning-level stored-momentum tracking."""
 
@@ -41,6 +84,27 @@ class StoredMomentumConfig(ConfigModel):
             "Accumulate stored momentum required to reject the torque of "
             "sunlight on the spacecraft's surfaces (spacecraft_bus.surfaces, "
             "or a placeholder model built from the bus, panels and telescopes)"
+        ),
+    )
+    aerodynamic_drag_enabled: bool = Field(
+        default=False,
+        description=(
+            "Accumulate stored momentum required to reject the torque of the "
+            "atmosphere on the spacecraft's surfaces (spacecraft_bus.surfaces, "
+            "or a placeholder model built from the bus, panels and telescopes), "
+            "at the density the atmosphere model gives"
+        ),
+    )
+    atmosphere: AtmosphereConfig = Field(
+        default_factory=AtmosphereConfig,
+        description="The atmosphere drag is computed in",
+    )
+    geomagnetic_field: Literal["dipole", "igrf"] = Field(
+        default="dipole",
+        description=(
+            "The field the magnetorquers unload against and the residual dipole "
+            "is torqued by: 'dipole', the built-in tilted dipole; or 'igrf', the "
+            "IGRF through the optional ppigrf package"
         ),
     )
     max_attitude_step_deg: float = Field(
@@ -138,6 +202,7 @@ class StoredMomentumConfig(ConfigModel):
         return (
             self.gravity_gradient_enabled
             or self.solar_radiation_pressure_enabled
+            or self.aerodynamic_drag_enabled
             or self.magnetorquer_max_dipole_a_m2 is not None
             or self.residual_dipole_body_a_m2 is not None
         )

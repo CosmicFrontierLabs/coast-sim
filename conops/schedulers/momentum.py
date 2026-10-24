@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..common import ObsType
-from ..common.ephemeris import position_vectors
+from ..common.ephemeris import position_vectors, velocity_vectors
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.momentum import (
@@ -120,6 +120,7 @@ class MomentumForecast:
         self._sun = np.asarray(position_vectors(ephem, "sun"), dtype=np.float64)
         ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
         self._ecef = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
+        self._velocities = velocity_vectors(ephem)
 
     @property
     def active(self) -> bool:
@@ -277,6 +278,11 @@ class MomentumForecast:
                     attitude_quaternion_eci_to_body=attitude_to_quat(*attitude),
                     sun_eci_km=self._interpolate(self._sun, float(utime)) - position,
                     sunlit=self._sunlit(float(utime)),
+                    velocity_eci_km_s=(
+                        self._interpolate(self._velocities, float(utime))
+                        if self._velocities is not None
+                        else None
+                    ),
                     position_ecef_km=(
                         self._interpolate(self._ecef, float(utime))
                         if self._ecef is not None
