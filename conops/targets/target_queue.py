@@ -450,8 +450,36 @@ class TargetQueue:
             return False
         if not self._cadence_due(target, utime):
             return False
+        if not self._within_budget(target):
+            return False
         # Selected now, it collects after now.
         return start is None or utime >= start
+
+    def science_budget_left(self, target: Pointing) -> float | None:
+        """Science the target's category may still collect within its time
+        budget, from what the queue's targets have collected; None without
+        a budget."""
+        # Cached for the selection under way: the same time is checked for
+        # every candidate.
+        utime = self.utime
+        if getattr(self, "_collected_at", None) != utime:
+            self._collected_at = utime
+            self._collected = self.merit_model.collected_by_category(self.targets)
+        return self.merit_model.budget_left(target, self._collected)
+
+    def _within_budget(self, target: Pointing) -> bool:
+        """Whether the target's category has budget left for a visit of it:
+        a visit of a sequence whole, else the target's minimum snapshot."""
+        left = self.science_budget_left(target)
+        if left is None:
+            return True
+        sequence = getattr(target, "sequence", None)
+        need = (
+            float(sequence.science_seconds)
+            if sequence is not None
+            else float(snapshot_min_seconds(target))
+        )
+        return left >= need
 
     def _cadence_due(self, target: Pointing, utime: float) -> bool:
         """Whether a cadence target's next visit is due: a cadence after its

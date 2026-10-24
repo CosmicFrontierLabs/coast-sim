@@ -165,6 +165,19 @@ class _Request(BaseModel):
     """Whether the plan has placed a snapshot of the target already: its
     remainder may then be shorter than ``ss_min``, as a target that has
     collected anything finishes with one in dispatch."""
+    budget_left: float | None = None
+    """Science the target's category may still collect within its time
+    budget, as the plan stands; None without a budget."""
+
+    @property
+    def budget_takes(self) -> float:
+        """The least a placement must be able to collect within the
+        category's budget: a visit of a sequence whole, else the minimum
+        snapshot."""
+        sequence = self.target.sequence
+        if sequence is not None:
+            return float(sequence.science_seconds)
+        return self.minimum_snapshot
 
     @property
     def minimum_snapshot(self) -> float:
@@ -194,7 +207,9 @@ class _Request(BaseModel):
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot: a remainder
         of any length once one has been placed."""
-        return self.remaining > 0 and self.remaining >= self.minimum_snapshot
+        if self.remaining <= 0 or self.remaining < self.minimum_snapshot:
+            return False
+        return self.budget_left is None or self.budget_left >= self.budget_takes
 
     @property
     def timed(self) -> bool:
@@ -955,6 +970,7 @@ class PriorityScheduler:
                 )
                 if request.visit is None:
                     request.remaining = 0.0
+            request.budget_left = self._budget_left(request)
             block = (
                 self._place_snapshot(request, self._cadence_release(request))
                 if request.wants_more
@@ -989,7 +1005,25 @@ class PriorityScheduler:
         for request in requests:
             self._return_allocated_time(request, None, order)
         for request in requests:
-            if id(request) not in self._rest_of and request.wants_more:
+            if id(request) in self._rest_of:
+                continue
+            request.budget_left = self._budget_left(request)
+            if (
+                request.remaining > 0
+                and not request.wants_more
+                and (
+                    request.budget_left is not None
+                    and request.budget_left < request.budget_takes
+                )
+            ):
+                self._log(
+                    self.ctx.ustart,
+                    f"Target {request.target.obsid} left {request.remaining:.0f}s "
+                    f"unplanned: its category's time budget leaves "
+                    f"{request.budget_left:.0f}s",
+                    request.target.obsid,
+                )
+            if request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
                     self.ctx.ustart,
@@ -1076,6 +1110,14 @@ class PriorityScheduler:
             None,
         )
 
+    def _budget_left(self, request: _Request) -> float | None:
+        """Science the request's category may still collect within its time
+        budget, as the plan stands; None without a budget."""
+        cap = request.category.time_budget_seconds
+        if cap is None:
+            return None
+        return max(0.0, cap - self._category_seconds.get(request.category.name, 0.0))
+
     def _record_visit(self, request: _Request, block: _Block) -> None:
         """Count a placed snapshot towards its program and the target's last visit."""
         entry = block.entry
@@ -1084,6 +1126,8 @@ class PriorityScheduler:
         self._program_seconds[program] = (
             self._program_seconds.get(program, 0.0) + seconds
         )
+        name = request.category.name
+        self._category_seconds[name] = self._category_seconds.get(name, 0.0) + seconds
         if (
             request.cadence is not None or request.timed
         ) and entry.collection_end is not None:
@@ -1102,14 +1146,21 @@ class PriorityScheduler:
         seed = self.config.random_seed if self.config.random_seed is not None else 0
         self._delivered: dict[str, float] = {}
         """Science already collected, by program."""
+        self._category_seconds: dict[str, float] = {}
+        """Science collected, committed and planned so far, by category, for
+        the categories' time budgets."""
         self._last_visit: dict[int, float] = {}
         """When each cadence target was last observed, collected or planned."""
         for target in self.targets:
             obsid = int(target.obsid)
             seconds = target.collected_seconds + reserved.get(obsid, 0.0)
             if seconds > 0.0:
-                program = merit_model.category(target).program_name
+                category = merit_model.category(target)
+                program = category.program_name
                 self._delivered[program] = self._delivered.get(program, 0.0) + seconds
+                self._category_seconds[category.name] = (
+                    self._category_seconds.get(category.name, 0.0) + seconds
+                )
             last_collection = target.last_collection_time
             if last_collection is not None and target.visit_windows:
                 # A visit cut short is taken again in its window: it is
@@ -1959,6 +2010,8 @@ class PriorityScheduler:
         until = succ.ready if succ is not None else self.ctx.uend
         target = request.target
         snapshot = min(float(target.ss_max), request.remaining)
+        if request.budget_left is not None:
+            snapshot = min(snapshot, request.budget_left)
         # The latest a slew can start and still fit the whole snapshot before
         # ``until``, with the longest slew; a later gap holds it otherwise.
         latest = self.ctx.floor_step(
@@ -2112,7 +2165,11 @@ class PriorityScheduler:
             old_request = self._movable[id(old_block)]
             seconds = _collection_seconds(old_block)
             same_length = old_request.model_copy(
-                update={"remaining": seconds, "visit": old_block.entry.visit}
+                update={
+                    "remaining": seconds,
+                    "visit": old_block.entry.visit,
+                    "budget_left": None,
+                }
             )
             last = position == len(run) - 1
             moved_until = None if last else until
@@ -2206,6 +2263,7 @@ class PriorityScheduler:
             move.request.remaining += move.lost
             program = move.request.category.program_name
             self._program_seconds[program] -= move.lost
+            self._category_seconds[move.request.category.name] -= move.lost
             if move.lost:
                 self._cut_short.append(move.request)
             moved = move.new_block.entry
@@ -2271,6 +2329,9 @@ class PriorityScheduler:
         target = request.pointing
         timing = self.ctx.timing_for(int(target.obsid))
         ss_min = request.minimum_snapshot
+        budget_left = request.budget_left
+        if budget_left is not None and budget_left < request.budget_takes:
+            return None
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = self._reserved_ready(succ) if succ is not None else horizon_end
@@ -2281,6 +2342,8 @@ class PriorityScheduler:
             return None
         idle_limit = self._idle_limit(pred, earliest, gap_end)
         snapshot = min(float(target.ss_max), request.remaining)
+        if budget_left is not None:
+            snapshot = min(snapshot, budget_left)
         # Starts at which the snapshot fitted but its successor was unreachable.
         unreachable = 0
         search_end = min(idle_limit, gap_end)
@@ -2394,6 +2457,12 @@ class PriorityScheduler:
                     steps=visit.steps,
                     step_slews=visit.slews,
                 )
+                if (
+                    budget_left is not None
+                    and _collection_seconds(block) > budget_left + 1e-6
+                ):
+                    # A visit is taken whole: not within the budget.
+                    return None
                 fitted = self._check_snapshot(block, slew, ss_min)
                 if fitted is not None:
                     succ_slew = None

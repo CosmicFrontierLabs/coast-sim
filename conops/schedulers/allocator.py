@@ -146,6 +146,8 @@ class _Demand(BaseModel):
     remaining: float
     ss_min: float
     deadline: float | None
+    category: str | None = None
+    """The name of its category where that has a time budget."""
     spread: bool
     """Whether its exposure should be spread across bins, as for a cadence."""
     visible: dict[int, float]
@@ -370,21 +372,22 @@ class LongRangeAllocator:
             if (demand := self._demand(target, start, reserved)) is not None
         ]
         budget = self._budget(start, demands, start_volume_gb)
+        caps = self._category_caps(targets, reserved)
         unplanned_set = set(unplanned)
         empty: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
         if self.solver == "greedy" or not demands:
             seconds = self._greedy(
-                demands, capacity, held, unplanned_set, empty, budget
+                demands, capacity, held, unplanned_set, empty, budget, caps
             )
         else:
             seconds, unsolved = self._solve(
-                demands, capacity, held, unplanned_set, budget
+                demands, capacity, held, unplanned_set, budget, caps
             )
             if unsolved:
                 # Levels the solver found no solution for go greedily into
                 # the room the solved levels leave.
                 seconds = self._greedy(
-                    unsolved, capacity, held, unplanned_set, seconds, budget
+                    unsolved, capacity, held, unplanned_set, seconds, budget, caps
                 )
         allocation = Allocation(
             bins=list(self.bins),
@@ -408,6 +411,7 @@ class LongRangeAllocator:
         unplanned_set: Collection[int],
         allocated: Mapping[int, Mapping[int, float]],
         budget: _Budget,
+        caps: Mapping[str, float] | None = None,
     ) -> dict[int, dict[int, float]]:
         """Add ``demands`` to ``allocated`` in priority order, each where it fits.
 
@@ -420,6 +424,14 @@ class LongRangeAllocator:
         there allows, keeping every later bin's carry-over within the limit.
         """
         seconds = {obsid: dict(bins) for obsid, bins in allocated.items()}
+        # What each capped category has left: its budget less what is
+        # allocated to its requests already.
+        left: dict[str, float] = dict(caps or {})
+        by_obsid = {d.obsid: d for d in demands}
+        for obsid, per_bin in seconds.items():
+            demand = by_obsid.get(obsid)
+            if demand is not None and demand.category in left:
+                left[demand.category] -= sum(per_bin.values())
         # Seconds allocated in each bin to unplanned requests, and to the rest.
         surprise = [0.0] * len(self.bins)
         planned = [0.0] * len(self.bins)
@@ -452,6 +464,8 @@ class LongRangeAllocator:
             load[k] += part
             if budget.active:
                 science[k] += demand.rate * part + (demand.fixed if first else 0.0)
+            if demand.category in left:
+                left[demand.category] -= part
 
         order = sorted(
             demands,
@@ -464,6 +478,11 @@ class LongRangeAllocator:
             for k, part in self._shares(demand).items():
                 pressure[k] -= part
             need = demand.remaining
+            if demand.category in left:
+                # No more than the category's time budget leaves.
+                need = min(need, max(0.0, left[demand.category]))
+                if need < demand.ss_min:
+                    continue
             bins = sorted(demand.visible)
             if demand.deadline is None and not demand.spread:
                 bins.sort(
@@ -498,6 +517,7 @@ class LongRangeAllocator:
         held: Sequence[float],
         unplanned: Collection[int],
         budget: _Budget,
+        caps: Mapping[str, float] | None = None,
     ) -> tuple[dict[int, dict[int, float]], list[_Demand]]:
         """Solve the allocation as a MILP with HiGHS, level by level.
 
@@ -528,6 +548,7 @@ class LongRangeAllocator:
         previous = self._previous.seconds if self._previous is not None else {}
         terms: dict[bool, list[variables.LinearTerm]] = {}
         planned_in: dict[int, list[variables.Variable]] = {}
+        capped: dict[str, list[variables.Variable]] = {}
         unplanned_in: dict[int, list[variables.Variable]] = {}
         planned_by_level: dict[bool, dict[int, list[variables.Variable]]]
         planned_by_level = {}
@@ -585,6 +606,14 @@ class LongRangeAllocator:
                     level_terms.append(variables.LinearTerm(stays, 0.01 * demand.value))
             if own:
                 model.add_linear_constraint(expressions.fast_sum(own) <= remaining)
+                if demand.category is not None and demand.category in (caps or {}):
+                    capped.setdefault(demand.category, []).extend(own)
+        for name, capped_x in capped.items():
+            # A category's time budget: its requests share what is left.
+            assert caps is not None
+            model.add_linear_constraint(
+                expressions.fast_sum(capped_x) <= max(0.0, caps[name])
+            )
         for k in range(len(self.bins)):
             planned_x = planned_in.get(k, [])
             if planned_x:
@@ -801,6 +830,24 @@ class LongRangeAllocator:
                 result[obsid][k] = float(round(value))
         return result, unsolved
 
+    def _category_caps(
+        self, targets: Sequence[Pointing], reserved: Mapping[int, float]
+    ) -> dict[str, float]:
+        """Seconds each category with a time budget may still be allocated:
+        its budget less what its targets have collected and have reserved."""
+        used: dict[str, float] = {}
+        caps: dict[str, float] = {}
+        for target in targets:
+            category = self.merit_model.category(target)
+            if category.time_budget_seconds is None:
+                continue
+            caps[category.name] = category.time_budget_seconds
+            collected = getattr(target, "collected_seconds", 0.0)
+            seconds = float(collected) if isinstance(collected, (int, float)) else 0.0
+            seconds += reserved.get(int(target.obsid), 0.0)
+            used[category.name] = used.get(category.name, 0.0) + seconds
+        return {name: max(0.0, cap - used.get(name, 0.0)) for name, cap in caps.items()}
+
     def _demand(
         self, target: Pointing, start: float, reserved: Mapping[int, float]
     ) -> _Demand | None:
@@ -837,6 +884,9 @@ class LongRangeAllocator:
             remaining=remaining,
             ss_min=float(snapshot_min_seconds(target)),
             deadline=target.deadline,
+            category=category.name
+            if category.time_budget_seconds is not None
+            else None,
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
             visible=visible,

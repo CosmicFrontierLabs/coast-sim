@@ -289,10 +289,14 @@ class _ChunkModel:
         allocated_left: Mapping[SpanKey, float] | None = None,
         recorder: _ChunkRecorder | None = None,
         battery: _ChunkBattery | None = None,
+        category_caps: Sequence[tuple[int, Sequence[int]]] = (),
     ) -> None:
         from ortools.sat.python import cp_model
 
         self.tasks = tasks
+        self.category_caps = list(category_caps)
+        """For each category with a time budget: the seconds its candidates
+        may collect in this chunk together, and the candidates' indices."""
         self.recorder = recorder
         self.battery = battery
         self.slews = slews
@@ -531,6 +535,9 @@ class _ChunkModel:
                 objective.append(-task.late * product)
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
+        for cap, members in self.category_caps:
+            # A category's time budget: its candidates share what is left.
+            model.add(sum(self.counted[k] for k in members) <= cap)
         # Allocated seconds: collection that starts in a span of the request's
         # allocated time, up to what is left of it, is worth allocation_bonus
         # more.
@@ -1154,6 +1161,7 @@ class CpSatScheduler(LocalSearchScheduler):
             state.allocated_left,
             recorder,
             battery,
+            self._category_caps(tasks, state),
         )
         chunk.add_hint(
             self._hint(tasks, planned, origin_time, slews, budget, chunk_seconds)
@@ -1384,6 +1392,32 @@ class CpSatScheduler(LocalSearchScheduler):
                     )
                     break
         return planned
+
+    def _category_caps(
+        self, tasks: Sequence[_Task], state: _State
+    ) -> list[tuple[int, list[int]]]:
+        """For each category with a time budget among the chunk's candidates:
+        the seconds left of it, with what ``state`` has collected and
+        planned, and the candidates' indices."""
+        members: dict[str, list[int]] = {}
+        budgets: dict[str, float] = {}
+        for k, task in enumerate(tasks):
+            if task.obsid is None:
+                continue
+            category = self._by_obsid[task.obsid].category
+            if category.time_budget_seconds is None:
+                continue
+            members.setdefault(category.name, []).append(k)
+            budgets[category.name] = category.time_budget_seconds
+        return [
+            (
+                int(
+                    np.floor(max(0.0, budgets[name] - state.categories.get(name, 0.0)))
+                ),
+                indices,
+            )
+            for name, indices in members.items()
+        ]
 
     def _candidates(
         self,

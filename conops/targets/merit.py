@@ -130,6 +130,28 @@ class MeritModel:
         """Return the observation category a target belongs to."""
         return self.categories.get_category(int(target.obsid))
 
+    def collected_by_category(self, targets: Iterable["Pointing"]) -> dict[str, float]:
+        """Science collected so far by each category's targets, by category
+        name, for the categories' time budgets."""
+        collected: dict[str, float] = defaultdict(float)
+        for target in targets:
+            seconds = getattr(target, "collected_seconds", 0.0)
+            if isinstance(seconds, (int, float)) and seconds > 0.0:
+                collected[self.category(target).name] += float(seconds)
+        return dict(collected)
+
+    def budget_left(
+        self, target: "Pointing", collected: Mapping[str, float]
+    ) -> float | None:
+        """Science the target's category may still collect within its time
+        budget, given ``collected`` by category; None without a budget."""
+        category = self.category(target)
+        if category.time_budget_seconds is None:
+            return None
+        return max(
+            0.0, category.time_budget_seconds - collected.get(category.name, 0.0)
+        )
+
     def delivered_shares(self, targets: Iterable["Pointing"]) -> dict[str, float]:
         """Return each program's fraction of the science collected so far."""
         collected: dict[str, float] = defaultdict(float)

@@ -66,6 +66,9 @@ class _State(BaseModel):
     """Merit-weighted science seconds."""
     programs: dict[str, float]
     """Science collected and planned so far, by program."""
+    categories: dict[str, float] = {}
+    """Science collected and planned so far, by category, for the
+    categories' time budgets."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
     allocated_left: dict[tuple[int, int], float]
@@ -227,6 +230,7 @@ class LocalSearchScheduler(PriorityScheduler):
             for n, span in enumerate(spans)
         }
         self._initial_last_visit = dict(self._last_visit)
+        self._initial_categories = dict(self._category_seconds)
         self._initial_volumes = tuple(self._volumes)
         self._initial_energy = tuple(self._energy)
 
@@ -461,6 +465,7 @@ class LocalSearchScheduler(PriorityScheduler):
             remaining=dict(self._initial_remaining),
             score=0.0,
             programs=dict(self._delivered),
+            categories=dict(self._initial_categories),
             last_visit=dict(self._initial_last_visit),
             allocated_left=dict(self._initial_allocated),
             volumes=self._initial_volumes,
@@ -489,6 +494,12 @@ class LocalSearchScheduler(PriorityScheduler):
         # _fit_in_gap sizes the snapshot from the request's remaining exposure.
         request.remaining = min(remaining, snapshot.seconds)
         request.placed_before = remaining < exposure
+        request.budget_left = self._budget_left_in(request, state.categories)
+        if (
+            request.budget_left is not None
+            and request.budget_left < request.budget_takes
+        ):
+            return state
         not_before = snapshot.release
         last = state.last_visit.get(obsid)
         if request.cadence is not None and last is not None:
@@ -554,6 +565,9 @@ class LocalSearchScheduler(PriorityScheduler):
             left[obsid] = remaining - _collection_seconds(block)
             programs = dict(state.programs)
             self._add_program_seconds(programs, request, block)
+            categories = dict(state.categories)
+            name = request.category.name
+            categories[name] = categories.get(name, 0.0) + _collection_seconds(block)
             last_visit = state.last_visit
             if (
                 request.cadence is not None or request.timed
@@ -565,12 +579,24 @@ class LocalSearchScheduler(PriorityScheduler):
                 remaining=left,
                 score=score,
                 programs=programs,
+                categories=categories,
                 last_visit=last_visit,
                 allocated_left=allocated_left,
                 volumes=self._ledger.add_all(state.volumes, additions),
                 energy=self._charged_energy(placed),
             )
         return state
+
+    @staticmethod
+    def _budget_left_in(
+        request: _Request, categories: Mapping[str, float]
+    ) -> float | None:
+        """Science the request's category may still collect within its time
+        budget, with ``categories`` collected and planned; None without one."""
+        cap = request.category.time_budget_seconds
+        if cap is None:
+            return None
+        return max(0.0, cap - categories.get(request.category.name, 0.0))
 
     def _same_state(self, a: _State, b: _State) -> bool:
         """Return whether decoding continues identically from two states.
@@ -649,6 +675,7 @@ class LocalSearchScheduler(PriorityScheduler):
                     remaining=later.remaining,
                     score=score,
                     programs=later.programs,
+                    categories=later.categories,
                     last_visit=later.last_visit,
                     allocated_left=later.allocated_left,
                     volumes=tuple(

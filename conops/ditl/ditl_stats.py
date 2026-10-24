@@ -35,6 +35,10 @@ class CategorySummary:
     """The category's fraction of the run's science time."""
     time_share: float | None
     """The fraction allocated to it, where the category sets one."""
+    budget_hours: float | None = None
+    """Its time budget over the run, where the category sets one."""
+    budget_used: float | None = None
+    """The fraction of that budget the run's science used."""
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,16 @@ class DITLStats:
                     slew_degrees=sum(float(v.first.slewdist) for v in taken),
                     share=science / total if total > 0 else 0.0,
                     time_share=category.time_share,
+                    budget_hours=(
+                        category.time_budget_seconds / 3600.0
+                        if category.time_budget_seconds is not None
+                        else None
+                    ),
+                    budget_used=(
+                        science / category.time_budget_seconds
+                        if category.time_budget_seconds
+                        else None
+                    ),
                 )
             )
         return rows
@@ -314,7 +328,8 @@ class DITLStats:
             print("-" * 70)
             print(
                 f"{'Category':<18} {'Program':<12} {'Targets':>7} {'Visits':>6} "
-                f"{'Science h':>9} {'Slew h':>6} {'Slew deg':>8} {'Share':>6} {'Alloc':>6}"
+                f"{'Science h':>9} {'Slew h':>6} {'Slew deg':>8} {'Share':>6} {'Alloc':>6} "
+                f"{'Budget h':>8} {'Used':>5}"
             )
             print("-" * 70)
             for row in rows:
@@ -323,10 +338,15 @@ class DITLStats:
                     if row.time_share is not None
                     else "     -"
                 )
+                budget = (
+                    f"{row.budget_hours:>8.2f} {row.budget_used:>5.2f}"
+                    if row.budget_hours is not None and row.budget_used is not None
+                    else "       -     -"
+                )
                 print(
                     f"{row.category:<18} {row.program:<12} {row.targets:>7} "
                     f"{row.visits:>6} {row.science_hours:>9.2f} {row.slew_hours:>6.2f} "
-                    f"{row.slew_degrees:>8.1f} {row.share:>6.2f} {allocated}"
+                    f"{row.slew_degrees:>8.1f} {row.share:>6.2f} {allocated} {budget}"
                 )
         visits = [
             r for r in self.visit_table(per_window=True) if r.window_start is not None
