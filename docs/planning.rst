@@ -211,7 +211,8 @@ How a plan is built
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
-   longer fits. A request whose deadline is close gains urgency and so is placed
+   longer fits; once any of it is placed, or the target has collected anything, its
+   remainder is placed however short, as dispatch finishes such a target. A request whose deadline is close gains urgency and so is placed
    ahead of flexible requests with higher base merit. Cadence and completion deficit
    follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
