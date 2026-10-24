@@ -1220,10 +1220,10 @@ or a cleanup/handoff budget longer than the available recharge warning time.
 
 Charging and ground-contact interruptions end the current visit, not the target's
 remaining integration allocation. A target with positive remaining ``exptime``
-stays eligible for later visits, subject to visibility and ``ss_min``. Exhausted
-or explicitly completed targets are not reopened. This does not automatically
-relax ``ss_min`` for a short final remainder, nor reset integration budgets at
-day boundaries.
+stays eligible for later visits, subject to visibility and ``ss_min``, which relaxes
+to the remainder once the target has collected anything, in dispatch and in the
+plans alike. Exhausted or explicitly completed targets are not reopened, and
+integration budgets are not reset at day boundaries.
 
 Locked-attitude validation includes the ephemeris samples bracketing the whole
 planned interval, including the first sample at or after a fractional end time.

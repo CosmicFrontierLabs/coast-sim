@@ -215,7 +215,11 @@ class TestSnapshots:
         assert len(snapshots) == 2
         assert all(entry.exposure == 20 * MIN for entry in snapshots)
 
-    def test_remainder_below_minimum_snapshot_is_dropped(self) -> None:
+    def test_remainder_below_minimum_snapshot_follows_a_full_one(self) -> None:
+        """Twenty-five minutes in snapshots of twenty with a minimum of ten:
+        the five-minute remainder is placed too, as dispatch finishes a
+        target that has collected anything; a first snapshot is never
+        shorter than the minimum."""
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=20, ss_min=10)
 
@@ -224,8 +228,13 @@ class TestSnapshots:
         )
         plan = scheduler.schedule()
 
-        assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
+        assert [entry.exposure for entry in _science(plan)] == [20 * MIN, 5 * MIN]
         assert scheduler.unplaced == []
+        short = _target(config, 2, 105.0, 10.0, minutes=5, snapshot=20, ss_min=10)
+        scheduler = PriorityScheduler(
+            config, [short], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        assert _science(scheduler.schedule()) == []
 
     def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
         config = _config(2)

@@ -161,6 +161,20 @@ class _Request(BaseModel):
     """Visit windows no placement could meet."""
     visit: int | None = None
     """The visit window the snapshot being placed is for."""
+    placed_before: bool = False
+    """Whether the plan has placed a snapshot of the target already: its
+    remainder may then be shorter than ``ss_min``, as a target that has
+    collected anything finishes with one in dispatch."""
+
+    @property
+    def minimum_snapshot(self) -> float:
+        """The least a snapshot of the request may collect now: ``ss_min``,
+        or what remains where that is less and a snapshot has been placed,
+        or the target has collected, before (see :func:`snapshot_min_seconds`)."""
+        least = float(snapshot_min_seconds(self.target))
+        if self.placed_before:
+            least = min(least, self.remaining)
+        return least
 
     @property
     def pointing(self) -> Pointing:
@@ -178,10 +192,9 @@ class _Request(BaseModel):
 
     @property
     def wants_more(self) -> bool:
-        """Whether enough exposure is left for another snapshot."""
-        return self.remaining > 0 and self.remaining >= float(
-            snapshot_min_seconds(self.target)
-        )
+        """Whether enough exposure is left for another snapshot: a remainder
+        of any length once one has been placed."""
+        return self.remaining > 0 and self.remaining >= self.minimum_snapshot
 
     @property
     def timed(self) -> bool:
@@ -961,6 +974,7 @@ class PriorityScheduler:
                 block.entry.merit = self._value(request, shares)
                 collected = _collection_seconds(block)
                 request.remaining -= collected
+                request.placed_before = True
                 placed[id(request)] += 1
                 self._record_visit(request, block)
                 if request.wants_more:
@@ -2256,7 +2270,7 @@ class PriorityScheduler:
         self._successor_blocked = False
         target = request.pointing
         timing = self.ctx.timing_for(int(target.obsid))
-        ss_min = float(snapshot_min_seconds(target))
+        ss_min = request.minimum_snapshot
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = self._reserved_ready(succ) if succ is not None else horizon_end
@@ -2647,7 +2661,7 @@ class PriorityScheduler:
             obsid=target.obsid,
             obstype=target.obstype,
             merit=request.merit.value,
-            ss_min=snapshot_min_seconds(target),
+            ss_min=request.minimum_snapshot,
             ss_max=target.ss_max,
         )
         visit_entry.exptime = sequence.science_seconds
@@ -2687,7 +2701,7 @@ class PriorityScheduler:
             obsid=target.obsid,
             obstype=target.obstype,
             merit=request.merit.value,
-            ss_min=snapshot_min_seconds(target),
+            ss_min=request.minimum_snapshot,
             ss_max=target.ss_max,
             visit=request.visit if request.timed else None,
         )

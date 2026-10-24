@@ -1415,7 +1415,12 @@ class CpSatScheduler(LocalSearchScheduler):
             # A snapshot must collect something, as in the priority-first
             # scheduler, even with an ss_min of zero; this also keeps the
             # snapshot counts below from dividing by zero.
-            shortest = max(1, int(np.ceil(snapshot_min_seconds(target))))
+            shortest = int(np.ceil(snapshot_min_seconds(target)))
+            if remaining < self._initial_remaining[obsid]:
+                # Some of the exposure is placed already: the remainder may
+                # be shorter than ss_min, as in the other planners.
+                shortest = min(shortest, int(np.ceil(remaining)))
+            shortest = max(1, shortest)
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue

@@ -91,9 +91,15 @@ class _Decoded(BaseModel):
         return self.states[-1]
 
 
-def _wants_more(request: _Request, remaining: float) -> bool:
-    """Whether ``remaining`` seconds are enough for another snapshot of ``request``."""
-    return remaining > 0 and remaining >= float(snapshot_min_seconds(request.target))
+def _wants_more(request: _Request, remaining: float, exposure: float) -> bool:
+    """Whether ``remaining`` seconds are enough for another snapshot of
+    ``request``, of ``exposure`` to place at the start: a remainder of any
+    length once some of the exposure has been placed."""
+    if remaining <= 0:
+        return False
+    if remaining < exposure:
+        return True
+    return remaining >= float(snapshot_min_seconds(request.target))
 
 
 class LocalSearchScheduler(PriorityScheduler):
@@ -438,7 +444,7 @@ class LocalSearchScheduler(PriorityScheduler):
         self.unplaced = [
             request.target
             for obsid, request in self._by_obsid.items()
-            if _wants_more(request, remaining[obsid])
+            if _wants_more(request, remaining[obsid], self._initial_remaining[obsid])
         ]
 
     # ── Decoding ─────────────────────────────────────────────────────────
@@ -476,11 +482,13 @@ class LocalSearchScheduler(PriorityScheduler):
         obsid = snapshot.obsid
         request = self._by_obsid[obsid]
         remaining = state.remaining[obsid]
-        if not _wants_more(request, remaining):
+        exposure = self._initial_remaining[obsid]
+        if not _wants_more(request, remaining, exposure):
             return state
 
         # _fit_in_gap sizes the snapshot from the request's remaining exposure.
         request.remaining = min(remaining, snapshot.seconds)
+        request.placed_before = remaining < exposure
         not_before = snapshot.release
         last = state.last_visit.get(obsid)
         if request.cadence is not None and last is not None:
@@ -767,7 +775,9 @@ class LocalSearchScheduler(PriorityScheduler):
         return [
             obsid
             for obsid, request in self._by_obsid.items()
-            if _wants_more(request, current.final.remaining[obsid])
+            if _wants_more(
+                request, current.final.remaining[obsid], self._initial_remaining[obsid]
+            )
         ]
 
     def _idle_before(self, current: _Decoded) -> list[float]:
