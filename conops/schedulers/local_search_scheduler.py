@@ -23,6 +23,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
+from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from ..targets import Plan, Pointing
 from ..targets.plan_entry import snapshot_min_seconds
 from .battery import Additions
@@ -154,9 +155,18 @@ class LocalSearchScheduler(PriorityScheduler):
         neighborhood: int = 3,
         history_length: int = 50,
         earliness_weight: float = 0.5,
+        start_plan: Plan | None = None,
         **options: object,
     ) -> None:
         super().__init__(config, targets, begin, end, **options)  # type: ignore[arg-type]
+        self.start_plan = start_plan
+        """A plan to start from where it scores higher than the priority-first
+        plan: its science entries decoded in time order at their own times,
+        such as the plan a dispatch run of the same requests executed. The
+        search, or the solver, then improves on the better of the two, so the
+        plan returned scores at least as well as either."""
+        self.seed_score: float | None = None
+        """Objective of ``start_plan`` decoded, where one was given."""
         if time_limit < 0:
             raise ValueError("time_limit must not be negative")
         if max_iterations is not None and max_iterations < 0:
@@ -232,7 +242,76 @@ class LocalSearchScheduler(PriorityScheduler):
             ]
         )
         self.start_score = self._objective(start.final)
+        if self.start_plan is not None:
+            seeded = self._decode_plan(self.start_plan)
+            self.seed_score = self._objective(seeded.final)
+            if self.seed_score > self.start_score:
+                start, self.start_score = seeded, self.seed_score
         return start
+
+    def _decode_plan(self, plan: Plan) -> _Decoded:
+        """Decode a plan's science as a start sequence: one snapshot per
+        observation, a visit's steps as one, each released at its entry's
+        start, for the requests being planned; entries of other targets,
+        such as the ToOs a dispatch run observed, are left out."""
+        snapshots: list[_Snapshot] = []
+        visit_of: int | None = None
+        """The target whose visit the last snapshot is, while its steps follow."""
+        entries = sorted(
+            (e for e in plan if entry_obstype(e) in PLAN_SCIENCE_OBSTYPES),
+            key=lambda e: float(e.begin),
+        )
+        for entry in entries:
+            obsid = int(entry.obsid)
+            request = self._by_obsid.get(obsid)
+            if request is None:
+                visit_of = None
+                continue
+            seconds = (
+                0.0
+                if entry.calibration
+                else entry.collection_seconds_between(
+                    float(entry.begin), float(entry.end)
+                )
+            )
+            sequence = request.target.sequence
+            if entry.step is not None and sequence is not None:
+                if visit_of == obsid and entry.step != sequence.steps[0].name:
+                    # Another step of the visit under way.
+                    last = snapshots[-1]
+                    snapshots[-1] = _Snapshot(
+                        obsid=obsid,
+                        seconds=last.seconds + seconds,
+                        release=last.release,
+                    )
+                    continue
+                visit_of = obsid
+                snapshots.append(
+                    _Snapshot(obsid=obsid, seconds=seconds, release=float(entry.begin))
+                )
+                continue
+            visit_of = None
+            if seconds > 0.0:
+                snapshots.append(
+                    _Snapshot(obsid=obsid, seconds=seconds, release=float(entry.begin))
+                )
+        # Each snapshot at its own time, within a step: one the timeline
+        # cannot take there is left out, where decoding it at its next fit
+        # would push everything after it later; so is one it cannot take at
+        # all, such as a remainder shorter than the request's minimum.
+        kept: list[_Snapshot] = []
+        states = [self._initial_state()]
+        for snapshot in snapshots:
+            state = self._step(states[-1], snapshot)
+            if state.cursor == states[-1].cursor:
+                continue
+            block = state.timeline[state.cursor - 1]
+            assert snapshot.release is not None
+            if float(block.entry.begin) > snapshot.release + self.ctx.step_size:
+                continue
+            kept.append(snapshot)
+            states.append(state)
+        return _Decoded.model_construct(sequence=kept, states=states)
 
     def _finish_best(self, best: _Decoded) -> Plan:
         """Return the best plan found, or the priority-first plan if better."""

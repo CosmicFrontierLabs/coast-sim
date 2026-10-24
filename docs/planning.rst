@@ -186,8 +186,9 @@ How a plan is built
    response whose slew would cross the activity's start is observed before it; nothing
    starts while the activity waits, and it keeps its length. The planners let the
    science before such an activity run into its window and hold the activity from
-   when that science ends, within the window, reserving the time up to its latest end
-   so nothing is placed where it may still be. An activity due while another activity
+   when that science ends, within the window: the block is reserved at its latest
+   start, settles to follow whatever is placed before it as the plan is built, and
+   the time after its settled end is open to what follows. An activity due while another activity
    is under way, ``fixed`` or not, begins when that one ends and keeps its length:
    dispatch begins it then, and the planners reserve it after the activity already on
    the timeline and settle it back to its own start where that activity slid and
@@ -613,6 +614,12 @@ priority-first scheduler.
 
 ``LocalSearchScheduler`` takes the same arguments as ``PriorityScheduler``, plus:
 
+* ``start_plan``: a plan to start from where it scores higher than the priority-first
+  plan, such as the plan a dispatch run of the same requests executed: its science
+  entries are decoded in time order, each at its own start, a visit's steps as one,
+  and one that cannot be placed there is left out; the search then improves on the
+  better of the two starts, so the plan returned scores at least as well as either.
+  CP-SAT takes it the same way, each chunk's hint coming from it;
 * ``time_limit``: seconds of search after the priority-first plan is built
   (default 10);
 * ``max_iterations``: changes to try at most. A run limited only by time depends on
@@ -959,7 +966,12 @@ that arrive during the run. The contenders are:
 
 * :func:`~conops.benchmark.dispatch`: ``QueueDITL`` picks each next target;
 * :func:`~conops.benchmark.planned`: one plan built up front by a scheduler and
-  executed by ``DITL``. A plan built in advance cannot react to ToOs;
+  executed by ``DITL``. A plan built in advance cannot react to ToOs. With
+  ``seeded_by_dispatch`` the scenario is first dispatched by the queue and the
+  scheduler, a local-search or CP-SAT one, takes the plan that run executed as its
+  ``start_plan``, with the scenario's ToOs as requests known in advance, so the plan
+  it returns scores at least as well as the dispatch run in the planner's own terms;
+  the table then shows both, the dispatch run as the bound the plan must meet;
 * :func:`~conops.benchmark.rolling`: ``RollingHorizonDITL`` with a scheduler and
   replanning settings;
 * :func:`~conops.benchmark.configured`: whatever the scenario configuration's
@@ -1005,7 +1017,7 @@ the table shows the error's type, and the full message is listed below it.
 Standard scenarios
 ^^^^^^^^^^^^^^^^^^
 
-:mod:`conops.benchmark.scenarios` provides six scenarios, each stressing a different
+:mod:`conops.benchmark.scenarios` provides seven scenarios, each stressing a different
 part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
 avoidance, the default ground stations, a battery that never limits operations (the
 spacecraft has no solar panels, so the battery's recharge alerts are turned off rather
@@ -1024,7 +1036,15 @@ than letting it drain into emergency charging), and seeded random targets:
 * ``long-range``: a week of 300 targets, half with deadlines spread across it, two
   programs by the Sun's avoidance zone ("Early" targets that the Sun covers as the
   week goes on and "Late" ones it uncovers), and 10 ToOs arriving through the week,
-  alternately due within hours and within days, for long-range allocation.
+  alternately due within hours and within days, for long-range allocation;
+* ``program``: two days with the structure of an observing campaign: deep fields
+  observed in resumable snapshots with per-category setup and cleanup budgets,
+  campaign targets visited as sequences of steps in visit windows of their own and
+  not interruptible, monitoring targets with a cadence, a pool of fillers, twice-daily
+  calibration blocks that may slide, a fixed maintenance window and a ToO a day with a
+  four-hour response, with base merits in bands wider than the dynamic merit terms
+  and no ground stations. It is the scenario the dispatch-seeded plans are measured
+  against the dispatch queue on.
 
 ``scripts/benchmark_schedulers.py`` runs the standard contenders on one scenario or all of
 them, with rolling replans every six hours (or four times in a shorter run) and a

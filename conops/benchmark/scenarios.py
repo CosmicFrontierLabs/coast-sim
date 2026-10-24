@@ -41,7 +41,15 @@ from ..config.observation_categories import (
     ObservationCategories,
     ObservationCategory,
 )
-from ..targets import Pointing
+from ..config.observation_timing import ObservationTiming
+from ..targets import (
+    ObservationSequence,
+    Pointing,
+    ScheduledActivity,
+    SequenceStep,
+    VisitWindow,
+)
+from ..targets.activity import periodic_activities
 from .harness import BenchmarkScenario, TOOSpec
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -471,6 +479,154 @@ def long_range(
     )
 
 
+def program(
+    tle: str | Path,
+    *,
+    hours: int = 48,
+    seed: int = 1234,
+) -> BenchmarkScenario:
+    """A program with the structure of an observing campaign: deep fields
+    observed in resumable snapshots with per-category setup and cleanup
+    budgets, campaign targets visited as sequences of steps in windows of
+    their own and not interruptible, monitoring targets with a cadence, a
+    pool of fillers, twice-daily calibration blocks that may slide, a
+    fixed maintenance window, and a ToO a day with a four-hour response.
+    Base merits are set in bands wider than the dynamic merit terms, as a
+    program's priorities are, so the planners' objective and the measured
+    merit-weighted science rank the programs alike.
+    """
+    end = BEGIN + timedelta(hours=hours)
+    start = BEGIN.timestamp()
+    days = max(1, hours // 24)
+    categories = [
+        ObservationCategory(
+            name="Deep fields",
+            obsid_min=10000,
+            obsid_max=10040,
+            time_share=0.4,
+            observation_timing=ObservationTiming(
+                setup_seconds=300, cleanup_seconds=120, handoff_seconds=30
+            ),
+        ),
+        ObservationCategory(
+            name="Campaign",
+            obsid_min=20000,
+            obsid_max=20006,
+            time_share=0.25,
+            interruptible=False,
+            observation_timing=ObservationTiming(
+                setup_seconds=600, cleanup_seconds=300, handoff_seconds=30
+            ),
+        ),
+        ObservationCategory(
+            name="Monitoring",
+            obsid_min=30000,
+            obsid_max=30010,
+            cadence_seconds=6 * HOUR,
+            time_share=0.15,
+        ),
+        ObservationCategory(
+            name="Pool", obsid_min=40000, obsid_max=40200, time_share=0.2
+        ),
+    ]
+    sequence = ObservationSequence(
+        steps=[
+            SequenceStep(name="reference", duration_seconds=600, science=False),
+            SequenceStep(name="target", duration_seconds=1800),
+            SequenceStep(
+                name="target rolled", duration_seconds=1800, roll_offset_deg=30.0
+            ),
+            SequenceStep(name="reference", duration_seconds=600, science=False),
+        ]
+    )
+
+    def make_targets(config: MissionConfig) -> list[Pointing]:
+        deep = random_targets(
+            config,
+            40,
+            seed,
+            first_obsid=10000,
+            merit=(300, 340),
+            exposures=(3 * 3600, 4 * 3600),
+        )
+        for target in deep:
+            target.ss_min, target.ss_max = 1500, 3 * 3600
+        rng = np.random.default_rng(seed + 5)
+        campaign = []
+        for k in range(6):
+            windows = []
+            for visit in range(days):
+                opens = start + (visit * 24 + float(rng.uniform(0, 12))) * HOUR
+                windows.append(VisitWindow(start=opens, deadline=opens + 10 * HOUR))
+            target = Pointing(
+                config=config,
+                ra=float(rng.uniform(0, 360)),
+                dec=float(np.degrees(np.arcsin(rng.uniform(-1, 1)))),
+                obsid=20000 + k,
+                name=f"campaign {k}",
+                merit=700.0,
+                sequence=sequence,
+                visits=len(windows),
+                visit_windows=windows,
+            )
+            campaign.append(target)
+        monitoring = random_targets(
+            config,
+            10,
+            seed + 2,
+            first_obsid=30000,
+            merit=(500, 540),
+            # As many visits as the cadence allows in the run.
+            exposures=(max(1, hours // 6) * 600,),
+        )
+        for target in monitoring:
+            target.ss_min = target.ss_max = 600
+        pool = random_targets(
+            config, 200, seed + 3, first_obsid=40000, merit=(100, 140)
+        )
+        return [*deep, *campaign, *monitoring, *pool]
+
+    rng = np.random.default_rng(seed + 4)
+    toos = [
+        _too(1_000_000 + k, submit, submit + 4 * HOUR, rng, merit=2000.0)
+        for k, submit in enumerate(start + (k * 24 + 8.0) * HOUR for k in range(days))
+    ]
+    calibrations = periodic_activities(
+        "Calibration",
+        start + 2 * HOUR,
+        12 * HOUR,
+        30 * 60.0,
+        until=end.timestamp(),
+        slide_seconds=HOUR,
+    )
+    maintenance = ScheduledActivity(
+        name="Maintenance",
+        begin=start + 20 * HOUR,
+        duration_seconds=2 * HOUR,
+        fixed=True,
+    )
+    activities = [a for a in [*calibrations, maintenance] if a.end <= end.timestamp()]
+    return BenchmarkScenario(
+        name=f"program: {hours}h",
+        begin=BEGIN,
+        end=end,
+        make_config=lambda: mission_config(
+            tle,
+            BEGIN,
+            end,
+            seed=seed,
+            # Without ground stations: a contact inside an activity is not
+            # planned, and the plan and the dispatch run would differ there.
+            stations=False,
+            targets=TargetConfig(cadence_weight=40.0, completion_deficit_weight=40.0),
+            categories=categories,
+        ),
+        make_targets=make_targets,
+        toos=toos,
+        activities=activities,
+    )
+
+
 SCENARIOS: dict[str, Callable[..., BenchmarkScenario]] = {
     "baseline": baseline,
     "too-heavy": too_heavy,
@@ -478,5 +634,6 @@ SCENARIOS: dict[str, Callable[..., BenchmarkScenario]] = {
     "cadence": cadence_and_programs,
     "multi-day": multi_day,
     "long-range": long_range,
+    "program": program,
 }
 """Standard scenarios by name; each takes the TLE path first."""

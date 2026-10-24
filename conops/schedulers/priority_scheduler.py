@@ -84,6 +84,13 @@ class _Block(BaseModel):
     scheduled activity does: it is reached by no slew, its attitude is set
     again whenever the block before it changes, and the block after it is
     then re-slewed from it."""
+    activity: ScheduledActivity | None = None
+    """The activity a block that may begin late holds: one with a slide
+    window, or one due while another activity is under way. Reserved at
+    ``latest_ready``, it settles to follow whatever is placed before it, at
+    the activity's start at the earliest (see :meth:`PriorityScheduler._settle_block`)."""
+    latest_ready: float | None = None
+    """Where such a block was reserved: the latest it may begin."""
 
     @property
     def is_visit(self) -> bool:
@@ -398,7 +405,6 @@ class PriorityScheduler:
         self.dumps: list[ScheduledActivity] = []
         """The thruster dumps this scheduler has reserved where its momentum
         forecast reached the level, in time order."""
-        self._slidable: dict[int, ScheduledActivity] = {}
         """The activities reserved with a slide window, by their block."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
@@ -1433,6 +1439,9 @@ class PriorityScheduler:
                 )
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
+        if succ is not None and succ.activity is not None:
+            # An activity that may begin late follows what is now before it.
+            self._settle_block(succ, block.end)
         if block.follows:
             self._reconnect_following(index)
         elif succ is not None and succ.follows:
@@ -1519,6 +1528,9 @@ class PriorityScheduler:
             copy = block.model_copy(update={"entry": block.entry.model_copy()})
             if slew is not None:
                 self._apply_slew(copy, slew)
+            if index == 0 and copy.activity is not None:
+                # An activity that may begin late follows what is now before it.
+                self._settle_block(copy, pred.end if pred is not None else None)
             result.append(copy)
             if not copy.follows:
                 break
@@ -1605,22 +1617,29 @@ class PriorityScheduler:
         has ended: at its start at the earliest and where it was reserved at
         the latest, for its length."""
         for index, block in enumerate(timeline):
-            activity = self._slidable.get(id(block))
-            if activity is None:
+            if block.activity is None:
                 continue
-            begin = activity.begin
-            if index > 0:
-                previous = timeline[index - 1]
-                # A settled activity before it ends where its entry does.
-                ended = (
-                    float(previous.entry.end)
-                    if id(previous) in self._slidable
-                    else float(previous.end)
-                )
-                begin = max(begin, self.ctx.ceil_step(ended))
-            begin = min(begin, block.ready)
-            block.entry.begin = begin
-            block.entry.end = begin + activity.duration_seconds
+            previous = timeline[index - 1] if index > 0 else None
+            self._settle_block(block, previous.end if previous is not None else None)
+
+    def _settle_block(self, block: _Block, previous_end: float | None) -> None:
+        """Hold a block that may begin late from ``previous_end``, where
+        what precedes it ends: at its activity's start at the earliest and
+        where it was reserved at the latest, for the activity's length. The
+        block, and its entry, then begin and end there, so the time after
+        its end is open to what follows."""
+        activity = block.activity
+        if activity is None:
+            return
+        begin = activity.begin
+        if previous_end is not None:
+            begin = max(begin, self.ctx.ceil_step(previous_end))
+        latest = block.latest_ready if block.latest_ready is not None else block.ready
+        begin = min(begin, latest)
+        block.ready = begin
+        block.end = begin + activity.duration_seconds
+        block.entry.begin = begin
+        block.entry.end = block.end
 
     def _activity_ready(self, activity: ScheduledActivity) -> float:
         """When an activity is reserved from: its latest start, or after
@@ -1692,9 +1711,9 @@ class PriorityScheduler:
             ready=ready,
             end=end,
             follows=True,
+            activity=activity if late else None,
+            latest_ready=ready if late else None,
         )
-        if late:
-            self._slidable[id(block)] = activity
         if not self._insert_fixed(block):
             self._log(
                 activity.begin,
@@ -2167,9 +2186,21 @@ class PriorityScheduler:
         self, fitted: _Block, succ: _Block, beyond: Sequence[_Block]
     ) -> Slew | None:
         """The slew from a fitted snapshot into its successor, found with
-        the chain the successor leads if it follows; None if unreachable."""
+        the chain the successor leads if it follows; None if unreachable. A
+        successor that may begin late is taken where it would settle after
+        the snapshot, so the block after it must be reachable from there."""
+        if succ.activity is not None:
+            settled = succ.model_copy(update={"entry": succ.entry.model_copy()})
+            self._settle_block(settled, fitted.end)
+            succ = settled
         chain = self._connect_chain(fitted, [succ, *beyond])
         return chain[0][1] if chain is not None else None
+
+    @staticmethod
+    def _reserved_ready(block: _Block) -> float:
+        """When a block was reserved to begin: the latest a block that may
+        begin late does, else when it does."""
+        return block.latest_ready if block.latest_ready is not None else block.ready
 
     def _fit_in_gap(
         self,
@@ -2194,7 +2225,7 @@ class PriorityScheduler:
         ss_min = float(snapshot_min_seconds(target))
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
-        gap_end = succ.ready if succ is not None else horizon_end
+        gap_end = self._reserved_ready(succ) if succ is not None else horizon_end
         start = earliest
         if not_before is not None:
             start = max(start, self.ctx.ceil_step(not_before))
@@ -2293,9 +2324,11 @@ class PriorityScheduler:
                     succ_slewtime = self.ctx.slew(
                         departure, succ.attitude_in, collection_begin
                     ).slewtime
-                # The successor's slew must start on a step after this ends.
+                # The successor's slew must start on a step after this ends;
+                # a successor that may begin late settles after it.
                 latest_end = min(
-                    latest_end, self.ctx.floor_step(succ.ready - succ_slewtime)
+                    latest_end,
+                    self.ctx.floor_step(self._reserved_ready(succ) - succ_slewtime),
                 )
             if visit is not None:
                 # A visit runs whole or not at all.

@@ -1460,7 +1460,13 @@ class QueueDITL(DITLMixin, DITLStats):
             self.config, self._activity_attitude, begin=self._activity_started
         )
         entry.end = min(utime, self._activity_end)
-        self.plan.append(entry)
+        # Recorded when it ends, after any contact that began inside it: the
+        # plan is kept in order of beginning.
+        entries = self.plan.entries
+        index = len(entries)
+        while index > 0 and float(entries[index - 1].begin) > float(entry.begin):
+            index -= 1
+        entries.insert(index, entry)
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
