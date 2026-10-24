@@ -426,44 +426,71 @@ class RollingHorizonDITL(DITL):
         steps of a sequence visit one of them belongs to: a visit is taken
         whole, with nothing inserted inside it, so a replan does not cut it
         after its current step and leave a visit no later plan redoes. The
-        steps of a visit are consecutive entries of its target, from the
-        sequence's first step to the step before the next first step.
+        steps of a visit are consecutive entries of its target that follow
+        the sequence's steps in order; the visit is over once its last step
+        has begun, so a closing step named like the first does not start a
+        new visit.
         """
         entries = sorted(self.plan.entries, key=lambda e: float(e.begin))
         committed: list[PlanEntry] = []
         dropped: list[PlanEntry] = []
-        visit: tuple[int, str] | None = None
-        """The target and first step name of a visit still to finish."""
+        visit: tuple[int, int] | None = None
+        """The target of the visit under way and the index of its next step."""
         for entry in entries:
             step = entry.step
             if float(entry.begin) < cutoff:
                 committed.append(entry)
-                visit = None
-                if step is not None:
-                    first = self._first_step_name(int(entry.obsid))
-                    if first is not None:
-                        visit = (int(entry.obsid), first)
+                visit = self._visit_step(entry, visit) if step is not None else None
                 continue
-            if (
-                visit is not None
-                and step is not None
-                and int(entry.obsid) == visit[0]
-                and step != visit[1]
-            ):
-                # The rest of the visit under way at the cutoff.
-                committed.append(entry)
-                continue
+            if visit is not None and step is not None and int(entry.obsid) == visit[0]:
+                following = self._visit_step(entry, visit, continuing=True)
+                if following is not None:
+                    # The rest of the visit under way at the cutoff.
+                    committed.append(entry)
+                    visit = following
+                    continue
             visit = None
             dropped.append(entry)
         return committed, dropped
 
-    def _first_step_name(self, obsid: int) -> str | None:
-        """The name of the first step of the sequence of target ``obsid``,
-        or None for a target without a sequence."""
+    def _visit_step(
+        self,
+        entry: PlanEntry,
+        visit: tuple[int, int] | None,
+        *,
+        continuing: bool = False,
+    ) -> tuple[int, int] | None:
+        """Where a step entry leaves the visit it belongs to: its target and
+        the index of the step after it in the sequence. The entry continues
+        ``visit`` where it is the same target's and its step comes at or
+        after the next expected one in the sequence's order; otherwise it
+        begins a new visit at its step, or, with ``continuing``, none."""
+        obsid = int(entry.obsid)
+        names = self._step_names(obsid)
+        if names is None:
+            return None
+        expected = visit[1] if visit is not None and visit[0] == obsid else None
+        if expected is not None:
+            position = next(
+                (k for k in range(expected, len(names)) if names[k] == entry.step),
+                None,
+            )
+            if position is not None:
+                return obsid, position + 1
+        if continuing:
+            return None
+        position = next((k for k, name in enumerate(names) if name == entry.step), 0)
+        return obsid, position + 1
+
+    def _step_names(self, obsid: int) -> list[str] | None:
+        """The step names of the sequence of target ``obsid``, in order, or
+        None for a target without a sequence."""
         for target in self.targets:
             if int(target.obsid) == obsid:
                 sequence = target.sequence
-                return sequence.steps[0].name if sequence is not None else None
+                return (
+                    [s.name for s in sequence.steps] if sequence is not None else None
+                )
         return None
 
     def _replan(

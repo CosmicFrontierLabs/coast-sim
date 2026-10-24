@@ -427,6 +427,89 @@ class TestReplanCutoff:
             SCIENCE * len(chains), abs=2 * STEP
         )
 
+    def test_a_visit_closing_on_a_step_named_like_its_first_is_finished(
+        self,
+    ) -> None:
+        """A visit that returns to the reference at its end carries the
+        first step's name again. Kept across a replan cutoff by the
+        sequence's step order, not the first step's name, the closing
+        steps stay committed and every executed visit is complete."""
+        closing = ObservationSequence(
+            steps=[
+                SequenceStep(
+                    name="ref",
+                    duration_seconds=10 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                    science=False,
+                ),
+                SequenceStep(name="target", duration_seconds=20 * MIN),
+                SequenceStep(
+                    name="ref",
+                    duration_seconds=5 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                ),
+            ]
+        )
+        config = _timed_config()
+        campaign = Pointing(
+            config=config,
+            obsid=500,
+            name="Campaign",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=closing,
+            visits=2,
+        )
+        targets = [campaign, *_targets(config)[1:]]
+        interval, lead = timedelta(minutes=30), timedelta(minutes=5)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=interval,
+            commit_lead_time=lead,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        names = [s.name for s in closing.steps]
+        chains: list[list] = []
+        expected = len(names)
+        for entry in ditl.plan:
+            if entry.obsid != 500 or entry.step is None:
+                continue
+            if expected >= len(names) or entry.step != names[expected]:
+                chains.append([entry])
+                expected = 1
+            else:
+                chains[-1].append(entry)
+                expected += 1
+        assert len(chains) >= 2
+        for chain in chains:
+            assert [e.step for e in chain] == names
+            for earlier, later in zip(chain, chain[1:]):
+                assert float(later.begin) == pytest.approx(
+                    float(earlier.collection_end)
+                )
+        begin = BEGIN.timestamp()
+        cutoffs = [
+            begin + k * interval.total_seconds() + lead.total_seconds()
+            for k in range(1, int(HOURS * 3600 / interval.total_seconds()))
+        ]
+        assert any(
+            float(chain[0].begin) < c < float(chain[-1].end)
+            for chain in chains
+            for c in cutoffs
+        ), "no visit crossed a replan cutoff"
+        assert campaign.collected_seconds == pytest.approx(
+            25 * MIN * len(chains), abs=2 * STEP
+        )
+
     def test_a_visit_under_way_at_a_replan_cutoff_is_finished(self) -> None:
         """Replanning every half hour with a five-minute commit lead puts a
         cutoff inside the first visit. The visit is kept whole across it:
