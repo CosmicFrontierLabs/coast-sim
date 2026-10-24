@@ -1543,6 +1543,8 @@ class PriorityScheduler:
         position ``index`` while the block before each follows."""
         while index + 1 < len(self.timeline) and self.timeline[index].follows:
             pred, block = self.timeline[index], self.timeline[index + 1]
+            if block.activity is not None:
+                self._settle_block(block, pred.end)
             slew = self._connect(pred, block, self._earliest_start(pred))
             if slew is None:
                 raise RuntimeError(
@@ -1637,7 +1639,7 @@ class PriorityScheduler:
         latest = block.latest_ready if block.latest_ready is not None else block.ready
         begin = min(begin, latest)
         block.ready = begin
-        block.end = begin + activity.duration_seconds
+        block.end = min(begin + activity.duration_seconds, self.ctx.uend)
         block.entry.begin = begin
         block.entry.end = block.end
 
@@ -1665,7 +1667,9 @@ class PriorityScheduler:
         activity out and says so.
         """
         ready = self._activity_ready(activity)
-        end = ready + activity.duration_seconds
+        # Reserved within the horizon: a block that may begin late can end
+        # past it, and the plan holds it as far as the horizon goes.
+        end = min(ready + activity.duration_seconds, self.ctx.uend)
         if ready > activity.latest_start:
             self._log(
                 activity.begin,
@@ -2735,11 +2739,14 @@ class PriorityScheduler:
                         f"attitude activity {pred.entry.obsid} follows"
                     )
             if (charges or stale) and succ_slew is not None:
-                if commit:
-                    self._apply_slew(succ, succ_slew)
-                else:
+                if not commit:
                     succ = succ.model_copy(update={"entry": succ.entry.model_copy()})
-                    self._apply_slew(succ, succ_slew)
+                if succ.activity is not None:
+                    # A block that may begin late follows the charges before
+                    # it, as the chain into it was checked.
+                    before = charged[-1] if charged else self._origin
+                    self._settle_block(succ, before.end if before is not None else None)
+                self._apply_slew(succ, succ_slew)
             stale = bool(charges or stale) and succ.follows
             charged.append(succ)
             angles = self._angles_after(succ, angles)

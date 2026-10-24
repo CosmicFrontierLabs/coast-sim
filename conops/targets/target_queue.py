@@ -440,15 +440,33 @@ class TargetQueue:
     def _open_at(self, target: Pointing, utime: float) -> bool:
         """Whether ``target`` may be selected at ``utime``: at or after its
         earliest start and by its deadline, or within an unvisited visit
-        window; a target whose windows are all past or visited is not."""
+        window, and, with cadence counting, a cadence after its last visit;
+        a target whose windows are all past or visited is not."""
         start, deadline = self._bounds(target, utime)
         windows = getattr(target, "visit_windows", None)
         if isinstance(windows, list) and windows and deadline is None:
             return False
         if deadline is not None and utime > deadline:
             return False
+        if not self._cadence_due(target, utime):
+            return False
         # Selected now, it collects after now.
         return start is None or utime >= start
+
+    def _cadence_due(self, target: Pointing, utime: float) -> bool:
+        """Whether a cadence target's next visit is due: a cadence after its
+        last visit, as the planners space visits, so a target is not
+        revisited as soon as nothing outranks it. A target without a cadence,
+        or never visited, is due; so is any target where cadence does not
+        count (``cadence_weight`` of 0)."""
+        merit_model = self.merit_model
+        if merit_model.cadence_weight <= 0.0:
+            return True
+        interval = merit_model.category(target).cadence_seconds
+        last = getattr(target, "last_collection_time", None)
+        if interval is None or not isinstance(last, (int, float)):
+            return True
+        return utime >= float(last) + float(interval)
 
     def _slew_allowance(self) -> float | None:
         """The time to allow for reaching any request once its protected

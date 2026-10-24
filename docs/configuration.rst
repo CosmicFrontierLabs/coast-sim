@@ -1040,7 +1040,8 @@ base merit high enough for its importance.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the
-  full weight.
+  full weight. With the weight set, dispatch does not select a target again
+  until a cadence after its last visit, as the planners space visits.
 * ``config.targets.completion_deficit_weight`` - Merit per unit of program
   deficit: the category's ``time_share`` minus the program's delivered share of
   the science collected so far in the run, bounded to ``[-1, 1]``. Programs
