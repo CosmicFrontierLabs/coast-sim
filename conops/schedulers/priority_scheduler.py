@@ -39,7 +39,7 @@ from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
-from .momentum import MomentumForecast
+from .momentum import MomentumForecast, SpanCache
 from .recorder import RecorderLedger
 
 CHARGE_OBSID = 999000
@@ -459,6 +459,10 @@ class PriorityScheduler:
     def schedule(self) -> Plan:
         """Build and return the plan, within the wheels' momentum where the
         configuration tracks it (see :meth:`_plan_within_momentum`)."""
+        self._momentum_cache: SpanCache = {}
+        """Spans of the timeline integrated for the momentum forecast, shared
+        by the passes of this plan: each pass changes the timeline only from
+        the dump it reserves onwards."""
         return self._plan_within_momentum(self._plan_once)
 
     def _plan_once(self) -> Plan:
@@ -674,6 +678,7 @@ class PriorityScheduler:
                 start_attitude=(
                     self.start_state.attitude if self.start_state is not None else None
                 ),
+                cache=getattr(self, "_momentum_cache", None),
             )
         self._gap_charges_cache: dict[
             tuple[object, ...], tuple[list[_Block], Slew | None]

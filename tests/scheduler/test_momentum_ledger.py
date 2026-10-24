@@ -24,7 +24,9 @@ from conops.config import (
 )
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers.momentum import MomentumForecast
 from conops.targets import Plan, Pointing
+from conops.targets.sequence import ObservationSequence, SequenceStep
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
 HOURS = 6
@@ -175,6 +177,67 @@ class TestPriorityScheduler:
             e for e in ditl.log.events if "Thruster dump unloads" in e.description
         ]
         assert len(unloads) == len(dumps)
+
+    def test_a_visit_is_forecast_over_all_its_steps(self) -> None:
+        """The planner's loading of a visit from empty wheels integrates
+        every step, so a visit of three short steps that together exceed
+        the capacity is not planned, on the loading of all three."""
+        config = _config(capacity_n_m_s=0.3, planning_level=0.6, thruster_dump=DUMP)
+        step = 15 * 60.0
+
+        def visit(obsid: int, steps: int) -> Pointing:
+            return Pointing(
+                config=config,
+                obsid=obsid,
+                name=f"Visit {steps}",
+                ra=80.0,
+                dec=-20.0,
+                merit=100.0,
+                sequence=ObservationSequence(
+                    steps=[
+                        SequenceStep(name=f"s{k}", duration_seconds=step)
+                        for k in range(steps)
+                    ]
+                ),
+                visits=1,
+            )
+
+        scheduler = PriorityScheduler(config, [visit(2, 3)], BEGIN, END, step_size=60)
+        plan = scheduler.schedule()
+        assert not any(e.obsid == 2 for e in plan)
+        not_planned = [
+            e.description
+            for e in scheduler.log.events
+            if "Visit of 2 not planned" in e.description
+        ]
+        assert len(not_planned) == 1
+        loading = float(not_planned[0].split("loading of ")[1].split(" N m s")[0])
+        # Three steps' worth: one step of this hold stores about 0.2 N m s.
+        assert loading > 0.5
+
+    def test_the_forecast_reads_integrated_spans_from_its_cache(self) -> None:
+        """A plan's passes share the spans integrated so far: the profile
+        from the cache is the profile integrated afresh, and a pass
+        integrates only from the dump it reserves onwards."""
+        config = _dumping()
+        scheduler = PriorityScheduler(
+            config, _targets(config), BEGIN, END, step_size=60
+        )
+        scheduler.schedule()
+        assert scheduler._momentum is not None
+        cache = scheduler._momentum.cache
+        assert cache and cache is scheduler._momentum_cache
+        times, norms = scheduler._momentum.profile(scheduler.timeline)
+        fresh = MomentumForecast(config, scheduler.ctx)
+        assert fresh.cache == {}
+        fresh_times, fresh_norms = fresh.profile(scheduler.timeline)
+        assert np.array_equal(times, fresh_times)
+        assert np.array_equal(norms, fresh_norms)
+        # The spans before the last dump were integrated once, in the pass
+        # before it: a span is keyed on its times, attitude and the state it
+        # starts from, so the passes hit the same entries.
+        spans = scheduler._momentum._spans(scheduler.timeline)
+        assert len(cache) < 2 * len(spans) * len(scheduler.dumps)
 
     def test_without_thrusters_the_forecast_past_the_capacity_is_logged(self) -> None:
         config = _config(capacity_n_m_s=CAPACITY)

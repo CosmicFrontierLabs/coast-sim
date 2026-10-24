@@ -1,5 +1,5 @@
 from bisect import bisect_left
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1161,20 +1161,14 @@ class QueueDITL(DITLMixin, DITLStats):
         assert ppt is not None
         if tracker is None or level is None or capacity is None:
             return True
-        end = float(ppt.end)
         slew_end = float(slew.slewstart) + float(slew.slewtime)
-
-        def attitude_at(at: float) -> tuple[float, float, float]:
-            if at < float(slew.slewstart):
-                return (
-                    float(slew.startra),
-                    float(slew.startdec),
-                    float(slew.startroll),
-                )
-            if at < slew_end:
-                sampled = slew.attitude(at)
-                return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
-            return (float(slew.endra), float(slew.enddec), float(slew.endroll))
+        if self._sequence is not None:
+            # The observation is the visit's first step: the forecast runs
+            # over the whole visit, which is taken whole or not at all.
+            end, attitude_at = self._visit_forecast(ppt, slew)
+        else:
+            end = float(ppt.end)
+            attitude_at = self._observation_attitude(slew, [])
 
         # The tracker holds the momentum at its last sample, a step ago.
         previous = getattr(self, "_momentum_previous", None)
@@ -1309,6 +1303,76 @@ class QueueDITL(DITLMixin, DITLStats):
         # Activities are managed before the fetch at each step: due at the next.
         self._add_dump(utime + self.step_size)
         return False
+
+    @staticmethod
+    def _observation_attitude(
+        slew: Slew, held: Sequence[tuple[float, tuple[float, float, float]]]
+    ) -> Callable[[float], tuple[float, float, float]]:
+        """The attitude through an observation reached by ``slew``: the
+        slew's start attitude before it, its path along it, and the
+        attitude it ends at after, until each of ``held`` begins, in order,
+        when that attitude is held."""
+        slew_end = float(slew.slewstart) + float(slew.slewtime)
+        ends_at = (float(slew.endra), float(slew.enddec), float(slew.endroll))
+
+        def attitude_at(at: float) -> tuple[float, float, float]:
+            if at < float(slew.slewstart):
+                return (
+                    float(slew.startra),
+                    float(slew.startdec),
+                    float(slew.startroll),
+                )
+            if at < slew_end:
+                sampled = slew.attitude(at)
+                return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
+            attitude = ends_at
+            for begins, holds in held:
+                if at < begins:
+                    break
+                attitude = holds
+            return attitude
+
+        return attitude_at
+
+    def _visit_forecast(
+        self, ppt: Pointing, slew: Slew
+    ) -> tuple[float, Callable[[float], tuple[float, float, float]]]:
+        """The visit the observation just selected begins, for the momentum
+        forecast at selection: when it ends and the attitude through it.
+        Each step is held at its own pointing from when it begins, after the
+        steps before it and the slews between them, with the attitude held
+        through those slews; a step's roll is the roll the first step's slew
+        ends at with the step's own offset, since a step elsewhere finds its
+        power-optimal roll only when it is reached. The visit ends with the
+        last step's cleanup."""
+        run = self._sequence
+        assert run is not None
+        parent = run.parent
+        sequence = run.sequence
+        base_ra, base_dec = parent.visit_base_pointing
+        timing = self._timing_for(parent)
+        acs = self.config.spacecraft_bus.attitude_control
+        starts = sequence.step_starts(acs, timing, base_ra, base_dec)
+        collects = (
+            float(ppt.collection_begin)
+            if ppt.collection_begin is not None
+            else float(slew.slewstart) + float(slew.slewtime)
+        )
+        first_offset = sequence.steps[0].roll_offset_deg or 0.0
+        held: list[tuple[float, tuple[float, float, float]]] = []
+        for index, (start, step) in enumerate(zip(starts, sequence.steps, strict=True)):
+            step_ra, step_dec = sequence.pointing_of(index, base_ra, base_dec)
+            roll = (
+                float(slew.endroll) + (step.roll_offset_deg or 0.0) - first_offset
+            ) % 360.0
+            held.append((collects + start, (step_ra, step_dec, roll)))
+        end = (
+            collects
+            + starts[-1]
+            + sequence.steps[-1].duration_seconds
+            + timing.post_collection_seconds
+        )
+        return end, self._observation_attitude(slew, held)
 
     def _dump_begin(self, utime: float) -> float:
         """When a dump called for at ``utime`` begins: now, unless the
@@ -1458,15 +1522,9 @@ class QueueDITL(DITLMixin, DITLStats):
         return self._timing_for(ppt)
 
     def _begin_sequence(self, parent: Pointing, utime: float) -> Pointing:
-        """Start a visit of ``parent``: its first step is the observation."""
+        """Start a visit of ``parent``: its first step is the observation,
+        admitted as any other; the visit's beginning is logged once it is."""
         self._sequence = _SequenceRun(parent=parent, index=0, begun=utime)
-        self.log.log_event(
-            utime=utime,
-            event_type="OBSERVATION",
-            description=f"Sequence visit of {parent.name} begins",
-            obsid=parent.obsid,
-            acs_mode=self.acs.acsmode,
-        )
         return parent.step_pointing(0)
 
     def _advance_sequence(self, utime: float) -> None:
@@ -4199,6 +4257,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 return slew
             self.acs.slew_dists.append(slew.slewdist)
 
+            if self._sequence is not None and self._sequence.index == 0:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="OBSERVATION",
+                    description=f"Sequence visit of {self._sequence.parent.name} begins",
+                    obsid=self._sequence.parent.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
             self.log.log_event(
                 utime=utime,
                 event_type="QUEUE",

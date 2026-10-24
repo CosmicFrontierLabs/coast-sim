@@ -22,6 +22,7 @@ from ..common.ephemeris import position_vectors
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.momentum import (
+    MomentumState,
     StoredMomentumTracker,
     slew_sample_interval_s,
     tracker_from_config,
@@ -46,6 +47,39 @@ class _Span:
     unload_at_end: float | None = None
     """The residual fraction a thruster dump leaves when the span ends."""
 
+    @property
+    def key(self) -> tuple[object, ...]:
+        """What the momentum stored over the span depends on, besides the
+        momentum it starts from: its times, its attitude or its slew's
+        path, and the unloading at its end."""
+        slew = self.slew
+        path = (
+            (
+                float(slew.slewstart),  # type: ignore[attr-defined]
+                float(slew.slewend),  # type: ignore[attr-defined]
+                float(slew.slewdist),  # type: ignore[attr-defined]
+                float(slew.startra),  # type: ignore[attr-defined]
+                float(slew.startdec),  # type: ignore[attr-defined]
+                float(slew.startroll),  # type: ignore[attr-defined]
+                float(slew.endra),  # type: ignore[attr-defined]
+                float(slew.enddec),  # type: ignore[attr-defined]
+                float(slew.endroll),  # type: ignore[attr-defined]
+            )
+            if slew is not None
+            else None
+        )
+        return (self.begin, self.end, self.attitude, path, self.unload_at_end)
+
+
+_Integrated = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], MomentumState]
+"""A span integrated: its sample times, the norm at each and the state at its end."""
+
+SpanCache = dict[tuple[object, ...], _Integrated]
+"""Spans integrated, by the span's key and the state they started from.
+A plan's passes share one: each reserves a dump and plans again from the
+start, so the timeline up to the new dump is the one before and its spans
+are read from the cache; only the spans after it are integrated again."""
+
 
 class MomentumForecast:
     """The stored momentum along a planned timeline."""
@@ -57,9 +91,11 @@ class MomentumForecast:
         *,
         start_momentum_eci_n_m_s: npt.ArrayLike | None = None,
         start_attitude: Attitude | None = None,
+        cache: SpanCache | None = None,
     ) -> None:
         self.config = config
         self.ctx = ctx
+        self.cache: SpanCache = cache if cache is not None else {}
         self.start_attitude = start_attitude
         """The attitude held from the horizon's start until the first planned
         slew, where the plan takes over part-way through a run; None where
@@ -213,10 +249,19 @@ class MomentumForecast:
         self, tracker: StoredMomentumTracker, spans: Sequence[_Span]
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Advance ``tracker`` through ``spans``: the sample times and the
-        norm at each."""
+        norm at each. A span integrated before from the same state is read
+        from the cache, and the tracker continues from its end."""
         times: list[float] = []
         norms: list[float] = []
         for span in spans:
+            key = (span.key, tracker.state)
+            cached = self.cache.get(key)
+            if cached is not None:
+                times.extend(cached[0])
+                norms.extend(cached[1])
+                tracker.restore(cached[2])
+                continue
+            first = len(times)
             interval = (
                 self.slew_sample_s if span.slew is not None else self.hold_sample_s
             )
@@ -244,6 +289,11 @@ class MomentumForecast:
                 tracker.unload(span.unload_at_end)
                 times.append(span.end)
                 norms.append(tracker.stored_momentum_norm_n_m_s)
+            self.cache[key] = (
+                np.array(times[first:]),
+                np.array(norms[first:]),
+                tracker.state,
+            )
         return np.array(times), np.array(norms)
 
     def first_crossing(
