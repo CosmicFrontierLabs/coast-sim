@@ -282,6 +282,11 @@ executed:
   re-ranks the requests after every snapshot, so a program falling behind its share
   moves up; local search values each snapshot by the shares in the plan before it;
   CP-SAT uses the shares at the start of each chunk.
+* **Time budget.** A category with ``time_budget_seconds`` collects no more than
+  that over the run: each snapshot is capped to what the plan leaves of it, counting
+  what the category's targets had collected before the plan, and nothing is placed
+  once less than a minimum snapshot is left; a visit of a sequence is placed only
+  whole. Dispatch and the long-range allocator honour the same cap.
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
   ``cadence_seconds`` is visited no sooner than that long after its last visit,
   planned or collected (``last_collection_time``), so every visit has the full

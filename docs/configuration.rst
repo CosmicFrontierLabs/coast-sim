@@ -1639,6 +1639,14 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``time_budget_seconds`` (float, optional): The most science the category's targets
+  may collect over a run, counting what they had collected before it. Dispatch does
+  not select a target of a category whose budget leaves less than its minimum
+  snapshot, or a visit of its sequence, and sizes an observation to what is left; the
+  planners cap each snapshot to what the plan leaves and place nothing once less than
+  a minimum snapshot is left, a visit only whole; the long-range allocator gives the
+  category's requests no more than the budget leaves; the category summary reports
+  the budget and the fraction of it the run used
 * ``observation_timing`` (:class:`~conops.config.ObservationTiming`, optional): The
   category's own setup, cleanup and handoff budgets, where they differ from
   ``payload.observation_timing`` (see `Observation Timing Budgets`_)
