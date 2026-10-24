@@ -44,6 +44,12 @@ class DispatchPolicy(Protocol):
     """The run's station coverage, where its antenna needs no attitude;
     QueueDITL attaches its own."""
 
+    def science_budget_left(self, target: Pointing) -> float | None:
+        """Science the target's category may still collect within its time
+        budget, from what the policy's targets have collected; None
+        without a budget."""
+        ...
+
     def get(
         self,
         ra: float,

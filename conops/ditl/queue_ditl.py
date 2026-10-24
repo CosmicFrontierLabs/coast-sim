@@ -4239,6 +4239,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ppt.ss_max,
                 self.ppt.exptime if self.ppt.exptime is not None else self.ppt.ss_max,
             )
+            budget_left = self.queue.science_budget_left(self.ppt)
+            if isinstance(budget_left, (int, float)):
+                # No more than the category's time budget leaves.
+                remaining = min(remaining, float(budget_left))
             self.ppt.end = min(deadline, slew_end + timing.total_seconds + remaining)
             violation = self._check_locked_roll_window(
                 slew_end, self.ppt.end, (slew.endra, slew.enddec, slew.endroll)
