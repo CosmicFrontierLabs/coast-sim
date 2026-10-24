@@ -280,7 +280,9 @@ executed:
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
   ``cadence_seconds`` is visited no sooner than that long after its last visit,
   planned or collected (``last_collection_time``), so every visit has the full
-  cadence value. The priority-first scheduler and local search place each visit at the
+  cadence value. Dispatch does not select such a target until a cadence after its
+  last visit either, so it is not revisited as soon as nothing outranks it. The
+  priority-first scheduler and local search place each visit at the
   earliest fit once it is due; CP-SAT keeps the same spacing between a target's
   candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
   after falling due, a cadence after the visit before it, up to ``earliness_weight``
