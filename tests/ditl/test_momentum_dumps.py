@@ -360,6 +360,51 @@ class TestDispatch:
         assert queued.done
         assert not any(e.obsid == 2 for e in ditl.plan)
 
+    def test_the_selection_forecast_covers_the_whole_visit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A visit of several steps is forecast at selection over all its
+        steps, the slews between them and its cleanup, not over its first
+        step alone: its loading from empty is the whole visit's, and one
+        that exceeds the capacity is rejected on that."""
+        spans: list[float] = []
+        forecast = DITLMixin._forecast_momentum
+
+        def probed(self: DITLMixin, begin: float, end: float, attitude_at, **kw):  # type: ignore[no-untyped-def]
+            spans.append(end - begin)
+            return forecast(self, begin, end, attitude_at, **kw)
+
+        monkeypatch.setattr(DITLMixin, "_forecast_momentum", probed)
+        config = _config(
+            capacity_n_m_s=0.3,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+        )
+        step = 15 * 60.0
+        visit = Pointing(
+            config=config,
+            obsid=2,
+            name="Three steps",
+            ra=80.0,
+            dec=-20.0,
+            merit=100.0,
+            sequence=ObservationSequence(
+                steps=[
+                    SequenceStep(name="a", duration_seconds=step),
+                    SequenceStep(name="b", duration_seconds=step, ra=82.0, dec=-20.0),
+                    SequenceStep(name="c", duration_seconds=step),
+                ]
+            ),
+            visits=1,
+        )
+        ditl = _dispatch(config, targets=[visit])
+        rejected = [e for e in _momentum_events(ditl) if "Visit of 2 rejected" in e]
+        assert len(rejected) == 1
+        loading = float(rejected[0].split("loading of ")[1].split(" N m s")[0])
+        # Three steps' worth, well over one step's.
+        assert loading > 0.5
+        assert max(spans) >= 3 * step
+
     def test_wheels_past_the_level_are_emptied_before_a_visit(self) -> None:
         """Wheels already past the level when the run starts: the dump comes
         first, and the visit then runs uninterrupted with its own dump after."""

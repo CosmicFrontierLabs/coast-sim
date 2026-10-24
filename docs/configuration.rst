@@ -405,7 +405,9 @@ take an entry for it. The dump goes between observations. The observation under 
 runs on, and the dump begins once it has ended and before another starts; the margin
 between the
 level and the capacity is what the wait draws on. Before dispatch begins an
-observation it forecasts the momentum over it from the wheels as they are. Where the
+observation it forecasts the momentum over it from the wheels as they are: over a
+visit of a sequence, which is taken whole, every step at its own pointing, the slews
+between them and the cleanup after the last. Where the
 forecast reaches the level during the observation but not the capacity, the
 observation runs and the dump follows it. Where it would reach the capacity, a plain
 observation is bounded to end where the level is reached, or where its minimum

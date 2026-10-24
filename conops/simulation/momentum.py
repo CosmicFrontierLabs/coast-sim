@@ -310,6 +310,17 @@ def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
     return (float(vector[0]), float(vector[1]), float(vector[2]))
 
 
+@dataclass(frozen=True)
+class MomentumState:
+    """A tracker's integration state, to continue from later: the stored
+    momentum in inertial coordinates, the torque at the last sample and
+    when it was, each None before the first sample."""
+
+    momentum_eci_n_m_s: tuple[float, float, float] | None
+    previous_torque_eci_n_m: tuple[float, float, float] | None
+    previous_utime: float | None
+
+
 class StoredMomentumTracker:
     """Integrate the momentum stored while rejecting the environmental torques.
 
@@ -350,6 +361,37 @@ class StoredMomentumTracker:
         self._momentum_eci_n_m_s: npt.NDArray[np.float64] | None = None
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
+
+    @property
+    def state(self) -> MomentumState:
+        """The integration state now, hashable, for :meth:`restore`."""
+        return MomentumState(
+            momentum_eci_n_m_s=(
+                _as_tuple(self._momentum_eci_n_m_s)
+                if self._momentum_eci_n_m_s is not None
+                else None
+            ),
+            previous_torque_eci_n_m=(
+                _as_tuple(self._previous_torque_eci_n_m)
+                if self._previous_torque_eci_n_m is not None
+                else None
+            ),
+            previous_utime=self._previous_utime,
+        )
+
+    def restore(self, state: MomentumState) -> None:
+        """Continue from ``state``, as taken from :attr:`state`."""
+        self._momentum_eci_n_m_s = (
+            np.array(state.momentum_eci_n_m_s, dtype=np.float64)
+            if state.momentum_eci_n_m_s is not None
+            else None
+        )
+        self._previous_torque_eci_n_m = (
+            np.array(state.previous_torque_eci_n_m, dtype=np.float64)
+            if state.previous_torque_eci_n_m is not None
+            else None
+        )
+        self._previous_utime = state.previous_utime
 
     def unload(self, residual_fraction: float = 0.0) -> None:
         """Take the stored momentum out of the wheels, as a thruster dump

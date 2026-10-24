@@ -376,7 +376,10 @@ cut; a plain observation that does not fit has the dump at the crossing, and the
 pass places a shorter snapshot after it. Where the level is reached between
 observations, in idle time, a slew or a contact, the dump goes at the crossing. A dump
 found earlier than one already reserved replaces it and those after it. Each dump
-costs a planning pass, and a plan reserves fifty at most. Without thrusters the plan
+costs a planning pass, and a plan reserves fifty at most; the passes share the spans
+of the timeline integrated so far, each keyed on its times, its attitude or slew and
+the momentum it starts from, so a pass integrates only from the dump it reserves
+onwards and the plan before it is read back. Without thrusters the plan
 stands and the log says where the forecast passes the capacity; with them, the log
 says where the forecast still reaches it, if it does. A rolling-horizon run gives
 each replan the stored momentum it will have when its horizon starts, the committed
