@@ -774,14 +774,18 @@ rebuilds it as the simulation runs:
    worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
-   argument of ``submit_too``), the observation's category is ``interruptible``, and
-   the ToO's value, evaluated now, beats the value frozen onto that observation.
-   Otherwise the ToO can start only after the observation ends. A sequence visit is
-   never cut: the ToO waits for it, as it does in dispatch. Science it has already
-   collected is kept, and its cleanup follows the cut. The cut is kept only if the new
-   plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
-   are tried highest-ranked first, and the first that outranks the observation and can
-   be placed interrupts it. A ToO that may not interrupt does not take the cut
+   argument of ``submit_too``), the observation's category is ``interruptible``, the
+   ToO's value, evaluated now, beats the value frozen onto that observation, and the
+   ToO would not begin collecting by its deadline with the observation left whole.
+   Otherwise the ToO can start only after the observation ends: the replan first plans
+   the horizon with the observation whole, and a ToO that plan collects by its deadline
+   waits for the observation, as it does in dispatch, so a cut, which costs the
+   observation's slew, settling and setup again, is made only where the deadline needs
+   it. A sequence visit is never cut: the ToO waits for it. Science an observation
+   has already collected is kept, and its cleanup follows the cut. The cut is kept
+   only if the new plan can collect the ToO. If several ToOs need a rapid replan at
+   the same time, they are tried highest-ranked first, and the first that outranks
+   the observation, needs the cut and can be placed interrupts it. A ToO that may not interrupt does not take the cut
    observation's place either, however it ranks: it is planned in after the
    interrupting ToO, or, if its deadline falls before that, in the next plan.
 

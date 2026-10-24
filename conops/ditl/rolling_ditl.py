@@ -87,10 +87,12 @@ class RollingHorizonDITL(DITL):
     The observation running at the commit cutoff is cut there if
     ``allow_interrupts`` is set, the ToO allows it (its ``interrupt`` flag),
     the observation's category is ``interruptible``, the ToO's value,
-    evaluated now, beats the value frozen onto that observation, and the new
-    plan can collect the ToO. When several ToOs need a rapid replan at once, they are
-    tried highest-ranked first, and the first that qualifies and can be placed
-    interrupts. A ToO that may not interrupt does not take the cut
+    evaluated now, beats the value frozen onto that observation, the ToO
+    would not begin collecting by its deadline with the observation left
+    whole, and the new plan can collect the ToO; a ToO the plan collects by
+    its deadline after the observation waits for it, as in dispatch. When
+    several ToOs need a rapid replan at once, they are tried highest-ranked
+    first, and the first that qualifies and can be placed interrupts. A ToO that may not interrupt does not take the cut
     observation's place either: it is planned in after the interrupting ToO.
     A rejected attempt leaves no events in the log. Science
     already collected is kept, and the cut
@@ -479,6 +481,16 @@ class RollingHorizonDITL(DITL):
         planned = None
 
         began = time.perf_counter()
+        # The plan with the observation under way left whole, built once
+        # and before any cut: a ToO it collects by its deadline waits for
+        # the observation, as it does in dispatch, and only a ToO it does
+        # not interrupts.
+        whole_log = DITLLog()
+        whole = (
+            self._plan_after(utime, cutoff, whole_log)
+            if triggers and self.allow_interrupts
+            else None
+        )
         for too in triggers:
             # Each attempt logs privately, so a rejected one leaves no trace
             # in the live log or its store.
@@ -486,17 +498,35 @@ class RollingHorizonDITL(DITL):
             cut = self._interrupt_for(too, utime, cutoff, attempt)
             if cut is None:
                 continue
+            entry, original = cut
+            waited = whole and self._placed(whole[2], too.obsid)
+            if waited is not None and self._collects_by_deadline(waited, too):
+                entry.end, entry.collection_begin, entry.collection_end = original
+                self.log.log_event(
+                    utime=utime,
+                    event_type="TOO",
+                    description=(
+                        f"ToO {too.name} (obsid={too.obsid}) waits for observation "
+                        f"{entry.obsid} under way at the commit cutoff: it is "
+                        "collected by its deadline after it"
+                    ),
+                    obsid=too.obsid,
+                )
+                break
             planned = self._plan_interrupt(too, utime, cutoff, attempt)
             if planned is not None:
-                trigger, interrupted = too, int(cut[0].obsid)
+                trigger, interrupted = too, int(entry.obsid)
                 self.log.add_events(attempt.events)
                 break
             # This ToO cannot be placed after all, so the observation stays
             # whole unless a lower-ranked one can replace it.
-            entry, original = cut
             entry.end, entry.collection_begin, entry.collection_end = original
         if planned is None:
-            planned = self._plan_after(utime, cutoff, self.log)
+            if whole is not None:
+                planned = whole
+                self.log.add_events(whole_log.events)
+            else:
+                planned = self._plan_after(utime, cutoff, self.log)
         committed, dropped, new_entries, unplaced = planned
         planning_seconds = time.perf_counter() - began
 
@@ -563,6 +593,19 @@ class RollingHorizonDITL(DITL):
         replanned = self._plan_after(utime, cutoff, again, held=held, pinned=pinned)
         log.add_events(again.events)
         return replanned
+
+    @staticmethod
+    def _collects_by_deadline(entry: PlanEntry, too: TOORequest) -> bool:
+        """Whether a ToO's planned entry begins collecting by the ToO's
+        deadline, the latest its science may begin."""
+        if too.deadline is None:
+            return True
+        begins = (
+            float(entry.collection_begin)
+            if entry.collection_begin is not None
+            else float(entry.begin) + float(entry.slewtime)
+        )
+        return begins <= too.deadline
 
     @staticmethod
     def _placed(entries: Sequence[PlanEntry], obsid: int) -> PlanEntry | None:
