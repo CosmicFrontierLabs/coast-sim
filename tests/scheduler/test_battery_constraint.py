@@ -650,6 +650,69 @@ class TestSolarArrayDrive:
             turned += angles[0] != 0.0
         assert turned, "no committed contact turned the drive before a replan"
 
+    def test_a_replan_forecasts_the_idle_time_before_it_takes_over(self) -> None:
+        """Nothing committed still leaves idle time between a replan and
+        the plan it builds taking over, and ACS flies that too: the drive
+        tracks the Sun through it when its control lists IDLE, and the
+        panels generate as it turns. A forecast that counts idle time as
+        the idle draw alone, with the drive frozen, hands the next plan a
+        battery 20 Wh low and a drive 36 degrees off."""
+        config = _driven_config(rate=0.2)
+        config.battery = Battery(
+            watthour=500.0, max_depth_of_discharge=1.0 - LEVEL, recharge_threshold=LEVEL
+        )
+        config.solar_panel.panels[0].drive_control = SolarArrayDriveControl(
+            sun_tracking_modes=[ACSMode.PASS, ACSMode.IDLE]
+        )
+        forecasts: list[tuple[float, float, float]] = []
+
+        class Recording(PriorityScheduler):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                state = kwargs["start_drive_state"]
+                assert isinstance(state, SolarArrayDriveState)
+                deficit = kwargs["start_deficit_wh"]
+                assert isinstance(deficit, float)
+                begin = args[2]
+                assert isinstance(begin, datetime)
+                forecasts.append(
+                    (begin.timestamp(), deficit, float(state.angles_deg[0]))
+                )
+                super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN + timedelta(hours=12),
+            end=BEGIN + timedelta(hours=13),
+            horizon=timedelta(minutes=20),
+            replan_interval=timedelta(minutes=10),
+            commit_lead_time=timedelta(minutes=5),
+            include_passes=False,
+            scheduler=Recording,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        # Housekeeping at a step reports the state after it, so the state a
+        # plan takes over is the sample one step before it starts.
+        executed = {
+            hk.timestamp.timestamp() + STEP: (
+                hk.battery_level,
+                hk.solar_array_drive_angles_deg,
+            )
+            for hk in ditl.telemetry.housekeeping
+        }
+        turned = 0
+        for start, deficit, forecast in forecasts[1:]:
+            sample = executed.get(start)
+            assert sample is not None, "a plan starts on a simulation step"
+            level, angles = sample
+            assert level is not None and angles is not None
+            assert deficit == pytest.approx((1.0 - level) * 500.0, abs=0.01)
+            assert forecast == pytest.approx(angles[0], abs=0.5)
+            turned += angles[0] != 0.0
+        assert turned, "idle time never turned the drive before a replan"
+
 
 class TestValidator:
     def test_a_charge_executed_elsewhere_is_a_mismatch(self) -> None:

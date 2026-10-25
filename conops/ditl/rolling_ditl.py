@@ -9,7 +9,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from ..common import ObsType
+from ..common import ACSMode, ObsType
 from ..config import MissionConfig, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.battery import Addition, BatteryLedger
@@ -664,7 +664,12 @@ class RollingHorizonDITL(DITL):
         The committed activities run on until then, drawing and charging as
         they go and turning the drive, so the plan starts from what they
         leave rather than from the battery now; the part of each already
-        past ``utime`` is in the battery's charge already.
+        past ``utime`` is in the battery's charge already. The idle time
+        between them, and after the last of them, is flown as ACS flies it:
+        holding the attitude the activity before leaves (the attitude held
+        now, before the first), in ``IDLE`` mode, with the drive tracking
+        the Sun if its control lists that mode and the panels generating
+        at the angles it reaches.
         """
         battery = self.config.battery
         now = max(0.0, float(battery.watthour) - float(battery.charge_level))
@@ -681,12 +686,19 @@ class RollingHorizonDITL(DITL):
             drive_state=drive,
         )
         planned: list[list[Addition]] = [[] for _ in range(ledger.segments)]
-        # Each slew starts where the entry before leaves the spacecraft.
+
+        def add(addition: Addition | None) -> None:
+            if addition is not None:
+                planned[ledger.segment(addition.begin)].append(addition)
+
+        # Each slew starts where the entry before leaves the spacecraft, and
+        # the idle time before it is held there.
         previous: Attitude = (
             float(self.acs.ra),
             float(self.acs.dec),
             float(self.acs.roll),
         )
+        cursor = utime
         for entry in sorted(committed, key=lambda e: float(e.begin)):
             # A contact flies its tracking profile and brakes to rest after
             # it, which is what turns the drive and generates meanwhile.
@@ -706,8 +718,17 @@ class RollingHorizonDITL(DITL):
                 ),
             )
             if addition is not None:
-                planned[ledger.segment(addition.begin)].append(addition)
+                if addition.begin > cursor:
+                    add(
+                        ledger.hold_addition(
+                            previous, ACSMode.IDLE, cursor, addition.begin
+                        )
+                    )
+                add(addition)
+                cursor = max(cursor, addition.end)
             previous = self._rest_after(entry)[1]
+        if start > cursor:
+            add(ledger.hold_addition(previous, ACSMode.IDLE, cursor, start))
         energy = tuple(tuple(sorted(g)) for g in planned)
         return (
             ledger.level_at(energy, start),
