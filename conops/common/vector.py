@@ -423,11 +423,14 @@ def quaternion_attitude_distance(
     dec2: float,
     roll2: float,
 ) -> float:
-    """Return the shortest angular distance between two attitudes in degrees."""
+    """Return the shortest angular distance between two attitudes in degrees.
+
+    Identical attitudes are exactly zero apart. See :func:`quaternion_distances`,
+    which this shares its arithmetic with.
+    """
     q1 = attitude_to_quat(ra1, dec1, roll1)
     q2 = attitude_to_quat(ra2, dec2, roll2)
-    dot = float(np.clip(abs(np.dot(q1, q2)), 0.0, 1.0))
-    return float(np.rad2deg(2.0 * np.arccos(dot)))
+    return float(quaternion_distances(q1[None, :], q2[None, :])[0, 0])
 
 
 def quaternion_attitude_delta(
@@ -476,6 +479,75 @@ def _quaternion_delta(
 
     axis = delta[1:] / vector_norm
     return angle_deg, (float(axis[0]), float(axis[1]), float(axis[2]))
+
+
+def quaternion_deltas(
+    q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """:func:`_quaternion_delta` for every pair of quaternions in two arrays.
+
+    ``q1`` is ``(P, 4)`` and ``q2`` is ``(N, 4)``. Returns the rotation angles
+    in degrees, ``(P, N)``, and the initial body-frame axes, ``(P, N, 3)``,
+    with a zero angle and axis where the attitudes are identical.
+    """
+    a = np.asarray(q1, dtype=np.float64)[:, None, :]
+    b = np.asarray(q2, dtype=np.float64)[None, :, :]
+    aw, ax, ay, az = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bw, bx, by, bz = b[..., 0], -b[..., 1], -b[..., 2], -b[..., 3]
+    delta = np.stack(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        axis=-1,
+    )
+    delta /= np.linalg.norm(delta, axis=-1)[..., None]
+    delta = np.where(delta[..., :1] < 0.0, -delta, delta)
+    vector_norm = np.linalg.norm(delta[..., 1:], axis=-1)
+    angles = np.rad2deg(2.0 * np.arctan2(vector_norm, np.maximum(0.0, delta[..., 0])))
+    still = vector_norm < 1e-12
+    angles = np.where(still, 0.0, angles)
+    axes = delta[..., 1:] / np.where(still, 1.0, vector_norm)[..., None]
+    axes = np.where(still[..., None], 0.0, axes)
+    return angles, axes
+
+
+def quaternion_distances(
+    q1: npt.NDArray[np.float64], q2: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """The shortest angular distance between every pair of unit quaternions.
+
+    ``q1`` is ``(P, 4)`` and ``q2`` is ``(N, 4)``; the result is ``(P, N)``
+    degrees. For unit quaternions a quarter of the rotation angle has
+    ``|q1 - q2|`` and ``|q1 + q2|`` as the sides of its right triangle, so the
+    angle is ``4 * atan2(|q1 - q2|, |q1 + q2|)`` with the shorter side on top,
+    which also covers ``q2`` and ``-q2`` being the same rotation. Unlike
+    ``2 * acos(|q1 . q2|)`` this does not turn rounding in a dot product that
+    is within an ulp of 1 into millionths of a degree: identical quaternions
+    are exactly zero apart, and a tiny difference stays tiny. The arithmetic is
+    elementwise and left to right, the same for any batch shape.
+    """
+    a = np.asarray(q1, dtype=np.float64)[:, None, :]
+    b = np.asarray(q2, dtype=np.float64)[None, :, :]
+    d = a - b
+    s = a + b
+    apart = np.sqrt(
+        d[..., 0] * d[..., 0]
+        + d[..., 1] * d[..., 1]
+        + d[..., 2] * d[..., 2]
+        + d[..., 3] * d[..., 3]
+    )
+    together = np.sqrt(
+        s[..., 0] * s[..., 0]
+        + s[..., 1] * s[..., 1]
+        + s[..., 2] * s[..., 2]
+        + s[..., 3] * s[..., 3]
+    )
+    shorter = np.minimum(apart, together)
+    longer = np.maximum(apart, together)
+    return np.rad2deg(4.0 * np.arctan2(shorter, longer))
 
 
 def _quat_mul(
