@@ -167,7 +167,7 @@ class RollingHorizonDITL(DITL):
         self.scheduler = scheduler
         self.scheduler_options = dict(scheduler_options or {})
         self._run_passes: list[Pass] | None = None
-        """The run's ground passes, predicted once for every plan."""
+        """The interval's ground passes, predicted once for every plan in it."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -250,6 +250,8 @@ class RollingHorizonDITL(DITL):
         self.plan = Plan()
         self.replans = []
         self._next_replan = None
+        # The passes belong to the interval: a later one predicts its own.
+        self._run_passes = None
         return super().calc()
 
     # ── Execution hooks ──────────────────────────────────────────────────
