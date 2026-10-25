@@ -163,6 +163,27 @@ each:
 See :doc:`planning` (Planning within the recorder) and :doc:`data_management` for
 reference.
 
+Planning Within the Battery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Battery_Constraint_Example.ipynb``
+
+This notebook plans a day for a space telescope with a side-mounted array, which
+generates while observing in sunlight, and a battery that cannot carry a whole
+eclipse of observing:
+
+* One-day plans with and without the battery's planning level, executed to show the
+  battery dipping to the level through each eclipse and no further in one, and run
+  past its discharge limit in every eclipse in the other
+* The scheduler's ledger: the lowest level in each orbit, what the charges in the
+  idle sunlit time put back, and which science waited for charge
+* Local search trading snapshots on merit within the same level, and CP-SAT with
+  the battery in its model, trading eclipse science on energy directly
+* Keeping margin with a higher ``planning_level``, and rolling-horizon replans that
+  start from the battery's actual charge
+
+See :doc:`planning` (Planning within the battery) for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
