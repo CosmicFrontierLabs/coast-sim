@@ -25,6 +25,7 @@ from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
 from .context import Attitude, SchedulingContext
+from .recorder import RecorderLedger
 
 TrackingProfile = list[tuple[float, float, float]]
 
@@ -220,6 +221,7 @@ class PriorityScheduler:
         reserved_visits: Mapping[int, float] | None = None,
         held: Iterable[int] = (),
         successor_retries: int | None = 3,
+        start_volume_gb: float | None = None,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -238,6 +240,9 @@ class PriorityScheduler:
         if successor_retries is not None and successor_retries < 0:
             raise ValueError("successor_retries must not be negative")
         self.successor_retries = successor_retries
+        self.start_volume_gb = start_volume_gb
+        """What is on the recorder when the horizon starts; the configured
+        recorder's volume if None."""
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
@@ -294,6 +299,68 @@ class PriorityScheduler:
         if self.include_passes:
             for gspass in self.ctx.predict_passes():
                 self._place_pass(gspass)
+        self._ledger = self._recorder_ledger()
+        self._volumes = self._ledger.initial_volumes(
+            [block.entry for block in self.timeline]
+        )
+        """Science volume planned in each of the ledger's segments."""
+        limit = self._ledger.limit
+        if limit is not None:
+            over = max(self._ledger.peaks(self._volumes))
+            if over + 1e-9 >= limit:
+                # What is fixed already, with the housekeeping, reaches the
+                # limit: nothing placed here changes that, so it is said.
+                self._log(
+                    self.ctx.ustart,
+                    f"The recorder reaches {over:.2f} Gb, its planning limit "
+                    f"being {limit:.2f} Gb, from what is on it and the "
+                    "locked entries and housekeeping alone; no science is "
+                    "placed before it comes down",
+                )
+
+    def _recorder_ledger(self) -> RecorderLedger:
+        """The recorder over the horizon, downlinking during the reserved contacts."""
+        start_volume = (
+            self.start_volume_gb
+            if self.start_volume_gb is not None
+            else self.config.recorder.current_volume_gb
+        )
+        return RecorderLedger(
+            self.config,
+            self.ctx.ustart,
+            self.ctx.uend,
+            [block.entry for block in self.timeline if block.is_pass],
+            start_volume_gb=start_volume,
+            step_size=self.ctx.step_size,
+            origin=self.ctx.origin,
+        )
+
+    def _ingress_deltas(
+        self, block: _Block | None, slew: Slew | None
+    ) -> list[tuple[int, float]]:
+        """How what the slew into ``block`` adds to the recorder changes, by
+        segment, were the slew flown as ``slew`` instead of as the block has
+        it: nothing unless the block is a contact."""
+        if block is None or slew is None or not block.is_pass:
+            return []
+        ledger = self._ledger
+        entry = block.entry
+        return [
+            (
+                ledger.ingress_segment(entry, begin=float(slew.slewstart)),
+                ledger.ingress_volume(
+                    entry, begin=float(slew.slewstart), slewtime=float(slew.slewtime)
+                ),
+            ),
+            (ledger.ingress_segment(entry), -ledger.ingress_volume(entry)),
+        ]
+
+    def _block_volume(self, block: _Block) -> float:
+        """What a science block puts on the recorder."""
+        return self._ledger.science_volume(block.entry, _collection_seconds(block))
+
+    def _block_segment(self, block: _Block) -> int:
+        return self._ledger.segment(float(block.entry.collection_begin or block.ready))
 
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
         """Record and return the plan for a finished timeline."""
@@ -651,9 +718,17 @@ class PriorityScheduler:
         succ: _Block | None,
         succ_slew: Slew | None,
     ) -> None:
-        """Insert ``block`` and record its slew and its successor's new slew."""
+        """Insert ``block`` and record its slew and its successor's new slew.
+
+        A successor that is a contact adds what its slew generates to the
+        recorder; once the ledger exists, that is kept current here.
+        """
         self._apply_slew(block, slew)
         if succ is not None and succ_slew is not None:
+            if getattr(self, "_ledger", None) is not None:
+                self._volumes = self._ledger.add_all(
+                    self._volumes, self._ingress_deltas(succ, succ_slew)
+                )
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
 
@@ -823,8 +898,11 @@ class PriorityScheduler:
     ) -> _Block | None:
         """Place one snapshot of a request in the earliest slot that fits.
 
-        Its slew starts no earlier than ``not_before``, if given.
+        Its slew starts no earlier than ``not_before``, if given. A snapshot
+        goes only where the recorder has room for what it generates, before
+        the next contact and after; it is never shortened to fit.
         """
+        recorder_full = False
         for index in range(len(self.timeline) + 1):
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
@@ -833,7 +911,21 @@ class PriorityScheduler:
             candidate = self._fit_in_gap(request, pred, succ, not_before)
             if candidate is not None:
                 block, slew, succ_slew = candidate
+                volume = self._block_volume(block)
+                segment = self._block_segment(block)
+                # With what the slew into a contact after it comes to.
+                additions = [
+                    (segment, volume),
+                    *self._ingress_deltas(succ, succ_slew),
+                ]
+                if not self._ledger.fits_all(self._volumes, additions):
+                    # Nothing else in this gap fits either: it is all before
+                    # the same contact. Try the gaps after it.
+                    recorder_full = True
+                    continue
+                # _commit adds the contact's change itself.
                 self._commit(index, block, slew, succ, succ_slew)
+                self._volumes = self._ledger.add(self._volumes, segment, volume)
             elif self._can_delay(succ):
                 # The snapshot fitted, but only the one after it was then
                 # unreachable: try again with that one, and any packed behind
@@ -854,6 +946,14 @@ class PriorityScheduler:
                 request.target.obsid,
             )
             return block
+        if recorder_full:
+            snapshot = min(float(request.target.ss_max), request.remaining)
+            self._log(
+                self.ctx.ustart,
+                f"No room on the recorder for {request.target.obsid}: a snapshot "
+                f"generates {self._ledger.science_volume(request.target, snapshot):.2f} Gb",
+                request.target.obsid,
+            )
         return None
 
     def _can_delay(self, succ: _Block | None) -> bool:
@@ -961,9 +1061,22 @@ class PriorityScheduler:
             moves.append(_Move(old_block, old_request, moved_block, moved_slew, lost))
             previous = moved_block
 
-        # 3. Check the trade, if moving cut anything short.
+        # 3. Check the trade, if moving cut anything short, and that the
+        #    recorder has room for what the new snapshot adds, less what the
+        #    moves cut. The run and the new snapshot are all before the same
+        #    contact, so they share a segment.
         if not self._worth_cutting(request, gained, moves):
             return None
+        segment = self._block_segment(new_block)
+        extra = self._block_volume(new_block) - sum(
+            self._block_volume(move.old_block) - self._block_volume(move.new_block)
+            for move in moves
+        )
+        # With what the slew into a contact after the run comes to.
+        additions = [(segment, extra), *self._ingress_deltas(after, after_slew)]
+        if not self._ledger.fits_all(self._volumes, additions):
+            return None
+        self._volumes = self._ledger.add_all(self._volumes, additions)
 
         # 4. Record the new slews and put the blocks in place.
         self._apply_slew(new_block, new_slew)

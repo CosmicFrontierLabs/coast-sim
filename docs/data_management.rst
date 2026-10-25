@@ -191,6 +191,14 @@ For many simulations only the science rate matters, so as a shorthand an instrum
 science fields may be given directly: ``DataGeneration(rate_gbps=0.5)``, or
 ``data_generation: {rate_gbps: 0.5}`` in a file, is its ``science`` part.
 
+Planning within the recorder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The schedulers plan within ``recorder.planning_limit``, a fraction of the capacity
+that defaults to the red threshold. A plan's science is placed only where the
+recorder, filling with this data and emptying during the reserved contacts, stays
+within the limit at every peak. See :doc:`planning`.
+
 Target Science Data
 ~~~~~~~~~~~~~~~~~~~
 
