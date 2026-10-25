@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from conops.simulation.roll import _power_score_order
+from conops.simulation.roll import _power_score_order, _score_tolerances
 
 
 def candidate_order(scores, reference_roll):
@@ -19,12 +19,13 @@ def numpy_reference(scores, reference_roll):
         if reference_roll is None
         else np.abs((angles - reference_roll + 180.0) % 360.0 - 180.0)
     )
+    rtol, atol = _score_tolerances(reference_roll)
     result = []
     start = 0
     while start < len(ranked):
         stop = start + 1
         while stop < len(ranked) and np.isclose(
-            scores[ranked[stop]], scores[ranked[start]], rtol=1e-12, atol=1e-12
+            scores[ranked[stop]], scores[ranked[start]], rtol=rtol, atol=atol
         ):
             stop += 1
         tied = ranked[start:stop]
@@ -42,6 +43,9 @@ def test_order_matches_numpy_for_exact_near_and_nonfinite_ties(reference_roll):
         np.linspace(-6000.0, 6000.0, 360),
         random.uniform(0, 6000, 360),
         6000.0 + random.uniform(-2e-8, 2e-8, 360),
+        # Partial ties at the tolerance's scale: 0.1% of 6000 W is 6 W.
+        6000.0 + random.uniform(-10.0, 10.0, 360),
+        random.uniform(-0.02, 0.02, 360),
         random.uniform(-2e-12, 2e-12, 360),
         np.resize([np.nan, np.inf, -np.inf, 0.0, 0.5e-12, 1.5e-12], 360),
     ):

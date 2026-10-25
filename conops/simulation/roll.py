@@ -23,8 +23,26 @@ from ..config.constraint import (
     mounted_science_attitude_constraint_names,
 )
 
-_POWER_SCORE_RTOL = 1e-12
-_POWER_SCORE_ATOL_W = 1e-12
+_POWER_SCORE_RTOL = 1e-3
+_POWER_SCORE_ATOL_W = 1e-2
+"""With a reference roll, rolls whose power is within 0.1% of the best, plus
+10 mW, are tied, and the tie goes to the roll nearest the reference. A roll
+costs slew time and settling, so it is not made for a gain the power model
+cannot tell apart from noise: with the Sun on the boresight every roll
+generates the same power to within milliwatts, and an exact comparison picked
+whichever roll the rounding favoured, up to half a turn away. Without a
+reference there is nothing to stay near, and the best roll is taken exactly."""
+_EXACT_RTOL = 1e-12
+_EXACT_ATOL_W = 1e-12
+
+
+def _score_tolerances(reference_roll: float | None) -> tuple[float, float]:
+    """The relative and absolute power tolerances that make rolls tie."""
+    if reference_roll is None:
+        return _EXACT_RTOL, _EXACT_ATOL_W
+    return _POWER_SCORE_RTOL, _POWER_SCORE_ATOL_W
+
+
 _ROLL_DEGREES = np.arange(360.0, dtype=np.float64)
 
 
@@ -71,11 +89,12 @@ def _power_score_order(
         if reference_roll is not None
         else _ROLL_DEGREES
     )
+    rtol, atol = _score_tolerances(reference_roll)
     start = 0
     while start < ranked.size:
         stop = start + 1
         reference_score = float(scores[ranked[start]])
-        tolerance = _POWER_SCORE_ATOL_W + _POWER_SCORE_RTOL * abs(reference_score)
+        tolerance = atol + rtol * abs(reference_score)
         # All scores here are finite. Preserve np.isclose's scalar criterion
         # without allocating NumPy temporaries for every candidate.
         if abs(float(scores[ranked[-1]]) - reference_score) <= tolerance:
@@ -103,14 +122,10 @@ def _best_power_roll(
     if not finite.size:
         return float(reference_roll or 0.0)
     finite_scores = scores[finite]
+    rtol, atol = _score_tolerances(reference_roll)
     # Compare with the maximum, not adjacent scores: tolerance ties are not transitive.
     tied = finite[
-        np.isclose(
-            finite_scores,
-            np.max(finite_scores),
-            rtol=_POWER_SCORE_RTOL,
-            atol=_POWER_SCORE_ATOL_W,
-        )
+        np.isclose(finite_scores, np.max(finite_scores), rtol=rtol, atol=atol)
     ]
     if reference_roll is not None:
         distance = np.abs(
