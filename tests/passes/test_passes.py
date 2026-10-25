@@ -18,7 +18,10 @@ from conops.common import (
     radec2vec,
 )
 from conops.common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import (
+    quaternion_attitude_delta,
+    quaternion_attitude_distance,
+)
 from conops.config import (
     AntennaPointing,
     AttitudeConstraintScope,
@@ -836,6 +839,53 @@ class TestPassTimes:
         assert not pass_times._step_motion_feasible(
             (0.0, 0.0, 0.0), (0.0, 0.0, 90.0), 60.0
         )
+
+    def test_step_transitions_match_the_per_pair_checks(self, mock_config) -> None:
+        """One table per sample pair gives what checking each pair gives."""
+        mock_config.spacecraft_bus.attitude_control = AttitudeControlSystem(
+            slew_acceleration_body=(20.0, 20.0, 200.0),
+            max_slew_rate_body=(0.2, 0.2, 2.0),
+            settle_time=0.0,
+        )
+        pass_times = PassTimes(config=mock_config)
+        rng = np.random.default_rng(7)
+        previous = {
+            float(phase): (rng.uniform(0, 360), rng.uniform(-90, 90), float(phase))
+            for phase in (0, 5, 355, 10)
+        }
+        current = {
+            float(phase): (rng.uniform(0, 360), rng.uniform(-90, 90), float(phase))
+            for phase in (0, 5, 355)
+        }
+        current[0.0] = previous[0.0]  # no motion between these
+
+        previous_phases, phases, feasible, distances = pass_times._step_transitions(
+            previous, current, 60.0
+        )
+
+        assert previous_phases == [0.0, 5.0, 355.0, 10.0]
+        assert phases == [0.0, 5.0, 355.0]
+        assert feasible.shape == distances.shape == (4, 3)
+        for i, a in enumerate(previous_phases):
+            for j, b in enumerate(phases):
+                expected = pass_times._step_motion_feasible(
+                    previous[a], current[b], 60.0
+                )
+                assert bool(feasible[i, j]) == expected
+                assert distances[i, j] == pytest.approx(
+                    quaternion_attitude_distance(*previous[a], *current[b]), abs=1e-9
+                )
+        assert feasible[0, 0] and distances[0, 0] == 0.0
+        assert not feasible.all()
+
+    @pytest.mark.parametrize("dt", [0.0, -60.0, float("nan")])
+    def test_step_transitions_need_time_to_move(self, mock_config, dt: float) -> None:
+        pass_times = PassTimes(config=mock_config)
+        attitudes = {0.0: (0.0, 0.0, 0.0), 90.0: (0.0, 0.0, 90.0)}
+
+        _, _, feasible, _ = pass_times._step_transitions(attitudes, attitudes, dt)
+
+        assert not feasible.any()
 
     def test_fixed_phase_tracking_profile_rejects_infeasible_motion(
         self, mock_constraint, mock_config

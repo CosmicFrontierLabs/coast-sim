@@ -12,9 +12,12 @@ from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_for_body_vector_tracking,
+    attitude_to_quat,
     body_vector_to_eci,
     quaternion_attitude_delta,
     quaternion_attitude_distance,
+    quaternion_deltas,
+    quaternion_distances,
     radec2vec,
     separation,
     vec2radec,
@@ -766,6 +769,33 @@ class PassTimes:
             attitude_distance / dt <= acs.effective_max_slew_rate(rotation_axis_body)
         )
 
+    def _step_transitions(
+        self,
+        previous: dict[float, tuple[float, float, float]],
+        current: dict[float, tuple[float, float, float]],
+        dt: float,
+    ) -> tuple[list[float], list[float], np.ndarray, np.ndarray]:
+        """:meth:`_step_motion_feasible` and the angular distance for every
+        pair of attitudes at two consecutive samples, by phase.
+
+        Returns the phases of ``previous`` and ``current`` in order, then
+        whether each pair's motion is feasible and its distance in degrees,
+        both indexed ``[previous, current]``.
+        """
+        previous_phases = list(previous)
+        current_phases = list(current)
+        q1 = np.array([attitude_to_quat(*previous[phase]) for phase in previous_phases])
+        q2 = np.array([attitude_to_quat(*current[phase]) for phase in current_phases])
+        distances = quaternion_distances(q1, q2)
+        if not np.isfinite(dt) or dt <= 0.0:
+            feasible = np.zeros(distances.shape, dtype=bool)
+            return previous_phases, current_phases, feasible, distances
+        angles, axes = quaternion_deltas(q1, q2)
+        acs = self.config.spacecraft_bus.attitude_control
+        rates = acs.effective_max_slew_rates(axes)
+        feasible = (angles == 0.0) | (angles / dt <= rates)
+        return previous_phases, current_phases, feasible, distances
+
     def _profile_motion_feasible(
         self,
         profile: list[tuple[float, float, float]],
@@ -803,22 +833,22 @@ class PassTimes:
 
         for sample_index in range(1, len(safe_attitudes)):
             dt = float(track_utime[sample_index] - track_utime[sample_index - 1])
+            previous_phases, phases, feasible, distances = self._step_transitions(
+                {phase: safe_attitudes[sample_index - 1][phase] for phase in paths},
+                safe_attitudes[sample_index],
+                dt,
+            )
             next_paths: dict[float, tuple[float, float, list[float]]] = {}
-            for phase, attitude in safe_attitudes[sample_index].items():
+            for j, phase in enumerate(phases):
                 best: tuple[float, float, list[float]] | None = None
                 best_key: tuple[float, float, tuple[int, ...]] | None = None
-                for previous_phase, (
-                    previous_max_step,
-                    previous_total_step,
-                    previous_path,
-                ) in paths.items():
-                    previous_attitude = safe_attitudes[sample_index - 1][previous_phase]
-                    if not self._step_motion_feasible(previous_attitude, attitude, dt):
+                for i, previous_phase in enumerate(previous_phases):
+                    if not feasible[i, j]:
                         continue
-                    step_distance = quaternion_attitude_distance(
-                        *previous_attitude,
-                        *attitude,
-                    )
+                    previous_max_step, previous_total_step, previous_path = paths[
+                        previous_phase
+                    ]
+                    step_distance = float(distances[i, j])
                     candidate = (
                         max(previous_max_step, step_distance),
                         previous_total_step + step_distance,
@@ -872,21 +902,21 @@ class PassTimes:
         }
         for sample_index in range(len(safe_attitudes) - 2, -1, -1):
             dt = float(track_utime[sample_index + 1] - track_utime[sample_index])
+            phases, next_phases, feasible, distances = self._step_transitions(
+                safe_attitudes[sample_index],
+                {phase: safe_attitudes[sample_index + 1][phase] for phase in suffixes},
+                dt,
+            )
             next_suffixes: dict[float, tuple[float, float, list[float]]] = {}
-            for phase, attitude in safe_attitudes[sample_index].items():
+            for i, phase in enumerate(phases):
                 best: tuple[float, float, list[float]] | None = None
-                for next_phase, (
-                    suffix_max_step,
-                    suffix_total_step,
-                    suffix_path,
-                ) in suffixes.items():
-                    next_attitude = safe_attitudes[sample_index + 1][next_phase]
-                    if not self._step_motion_feasible(attitude, next_attitude, dt):
+                for j, next_phase in enumerate(next_phases):
+                    if not feasible[i, j]:
                         continue
-                    step_distance = quaternion_attitude_distance(
-                        *attitude,
-                        *next_attitude,
-                    )
+                    suffix_max_step, suffix_total_step, suffix_path = suffixes[
+                        next_phase
+                    ]
+                    step_distance = float(distances[i, j])
                     candidate = (
                         max(step_distance, suffix_max_step),
                         step_distance + suffix_total_step,
