@@ -3,6 +3,7 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import pytest
 
+from conops.common import ACSMode
 from conops import AttitudeControlSystem, Queue, TargetSlewEstimate
 from conops.config import ObservationTiming
 
@@ -321,6 +322,46 @@ class TestCollectionTimeWeight:
                 queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=12.5)
                 == hungry
             )
+            assert hungry.end - hungry.begin == pytest.approx(whole)
+
+    def test_the_visit_housekeeping_counts_against_the_room(self, queue_instance):
+        """The housekeeping a visit generates beyond the nominal rate takes
+        from the room too: at 0.1 Gb/s of science and 0.01 Gb/s more of
+        housekeeping in SCIENCE mode, 10 Gb holds 90 whole seconds rather
+        than 100, and the shortened snapshot is set as the target's
+        collection limit for the dispatcher to keep to; with room enough,
+        there is none."""
+        utime = 1762924800.0
+        queue_instance.config.science_generated = Mock(
+            side_effect=lambda seconds, science=None: (
+                0.1 * seconds if science is not None else 0.0
+            )
+        )
+        queue_instance.config.housekeeping_generated = Mock(
+            side_effect=lambda seconds, mode=None: (
+                0.01 * seconds if mode == ACSMode.SCIENCE else 0.0
+            )
+        )
+        hungry = queue_instance.targets[0]
+        hungry.science_data = {"camera": object()}
+        for target in queue_instance.targets[1:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == hungry
+            assert hungry.collection_limit is None
+            whole = hungry.end - hungry.begin
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=10.0)
+                == hungry
+            )
+            assert hungry.collection_limit == 90.0
+            assert hungry.end - hungry.begin == pytest.approx(whole - 30.0)
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=20.0)
+                == hungry
+            )
+            assert hungry.collection_limit is None
             assert hungry.end - hungry.begin == pytest.approx(whole)
 
     def test_the_recorder_room_is_checked_when_candidates_are_scored(

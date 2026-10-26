@@ -13,12 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import (
     ACSMode,
-    ObsType,
     angular_separation,
     dtutcfromtimestamp,
+    ObsType,
     radec2vec,
     scbodyvector,
     unixtime2date,
+    whole_steps,
 )
 from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.ephemeris import position_vectors
@@ -54,6 +55,10 @@ from .plan_validator import (
     entry_obstype,
 )
 from .telemetry import Housekeeping, PayloadData
+
+RECORDER_ROOM_TOLERANCE_GB = 1e-9
+"""What dispatch keeps the recorder below its planning limit by, as the
+schedulers' ledger does: the recorder's red alert fires at the threshold."""
 
 
 class _PendingCommandStatus(TypedDict):
@@ -2910,29 +2915,92 @@ class QueueDITL(DITLMixin, DITLStats):
             self._temporary_rejected_ppts = None
             self._retry_ppt_fetch_requested = False
 
-    def _recorder_room_gb(self, utime: float) -> float | None:
-        """Gb of science the recorder can take before its next contact, under
-        its planning limit, or None without one.
+    def _recorder_room_gb(
+        self, utime: float, ra: float, dec: float, roll: float
+    ) -> float | None:
+        """Gb the recorder can take before its next contact, under its
+        planning limit, beyond nominal housekeeping; None without a limit.
 
-        What is free now, less the housekeeping that accrues until the next
-        contact begins, or until the run ends if none is coming: dispatch
-        selects only what the recorder can hold until a contact can empty
-        it, as the schedulers place only what it can hold before the next
-        contact.
+        What is free now, keeping the limit below rather than reached, less the housekeeping that accrues until the next
+        contact begins, or until the run ends if none is coming before
+        then: dispatch selects only what the recorder can hold until a
+        contact can empty it, as the schedulers place only what it can hold
+        before the next contact. Housekeeping is counted as the simulation
+        generates it: for each whole step, at the rate of the mode the step
+        starts in. The slew into the contact, which ACS flies in ``PASS``
+        mode, counts at the ``PASS`` rate for the steps it is under way, as
+        it would be flown from the attitude given. What the candidate's own
+        slew and science generate beyond the nominal rate the queue counts
+        against the room, as it does the science.
         """
         limit = self.config.recorder.planning_limit_gb
         # A test double's recorder has no number for a limit.
         if not isinstance(limit, (int, float)):
             return None
-        passes = self.acs.passrequests.passes or []
-        next_contact = min(
-            (float(p.begin) for p in passes if float(p.begin) > utime),
-            default=self.uend,
+        step = float(self.step_size)
+        next_pass = min(
+            (p for p in self.acs.passrequests.passes or [] if float(p.begin) > utime),
+            key=lambda p: float(p.begin),
+            default=None,
         )
-        housekeeping = self.config.housekeeping_generated(
-            max(0.0, next_contact - utime)
+        until = self.uend
+        if next_pass is not None:
+            until = min(until, float(next_pass.begin))
+        span = whole_steps(until - utime, step)
+        housekeeping = self.config.housekeeping_generated(span)
+        if next_pass is not None and float(next_pass.begin) < self.uend:
+            ingress = min(
+                span,
+                whole_steps(
+                    self._pass_ingress_seconds(next_pass, utime, ra, dec, roll), step
+                ),
+            )
+            housekeeping += self.config.housekeeping_generated(
+                ingress, mode=ACSMode.PASS
+            ) - self.config.housekeeping_generated(ingress)
+        return (
+            limit
+            - RECORDER_ROOM_TOLERANCE_GB
+            - float(self.recorder.current_volume_gb)
+            - housekeeping
         )
-        return limit - float(self.recorder.current_volume_gb) - housekeeping
+
+    def _pass_ingress_seconds(
+        self, gspass: Pass, utime: float, ra: float, dec: float, roll: float
+    ) -> float:
+        """How long ACS would be in ``PASS`` mode before the contact
+        ``gspass``: from when the slew into it is due, with its trigger
+        buffer, to the contact. The slew is bounded as admission bounds it,
+        whatever attitude it turns out to be flown from; where the
+        configured algorithm has no bound, it is the slew from the attitude
+        given at ``utime``. 0 where the pass cannot say when its slew is due.
+        """
+        step = float(self.step_size)
+        try:
+            bound: float | None = float(
+                Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
+            )
+        except (ValueError, TypeError):
+            bound = None
+        if bound is not None:
+            due = float(gspass.begin) - bound - pass_slew_trigger_buffer(step)
+        else:
+            try:
+                earliest = min(
+                    (
+                        deadline
+                        for _, deadline in gspass.tracking_profile_slew_deadlines(
+                            utime, ra, dec, roll
+                        )
+                    ),
+                    default=None,
+                )
+            except (AssertionError, ValueError, TypeError):
+                return 0.0
+            if earliest is None:
+                return 0.0
+            due = float(earliest)
+        return max(0.0, float(gspass.begin) - max(due, utime))
 
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
@@ -3012,7 +3080,7 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
             roll=self.acs.roll,
-            recorder_room_gb=self._recorder_room_gb(utime),
+            recorder_room_gb=self._recorder_room_gb(utime, ra, dec, self.acs.roll),
         )
 
         if self.ppt is not None:
@@ -3228,6 +3296,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ppt.ss_max,
                 self.ppt.exptime if self.ppt.exptime is not None else self.ppt.ss_max,
             )
+            # What the queue let the visit collect, where the recorder holds
+            # less than the whole snapshot. (A test double has no number.)
+            collection_limit = getattr(self.ppt, "collection_limit", None)
+            if isinstance(collection_limit, (int, float)):
+                remaining = min(remaining, float(collection_limit))
             self.ppt.end = min(deadline, slew_end + timing.total_seconds + remaining)
             violation = self._check_locked_roll_window(
                 slew_end, self.ppt.end, (slew.endra, slew.enddec, slew.endroll)

@@ -42,6 +42,16 @@ class Pointing(PlanEntry):
             "target cannot be selected before it"
         ),
     )
+    collection_limit: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        exclude=True,
+        description=(
+            "Seconds of collection the visit selected now may have, set by "
+            "the queue when the recorder holds less than the whole snapshot; "
+            "None for the whole snapshot"
+        ),
+    )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
 
@@ -175,6 +185,7 @@ class Pointing(PlanEntry):
         self._collected_seconds = 0.0
         self._last_collection_time = None
         self._merit_breakdown = None
+        self.collection_limit = None
         self.begin = 0
         self.end = 0
         self.slewtime = 0

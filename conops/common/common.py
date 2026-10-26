@@ -1,5 +1,6 @@
 import os
 import time
+import math
 from datetime import datetime, timezone
 
 import numpy as np
@@ -99,3 +100,13 @@ def normalize_acs_mode(mode: "ACSMode | int | None") -> "ACSMode | None":
         return ACSMode(mode)
     except ValueError:
         return None
+
+
+def whole_steps(seconds: float, step_size: float | None) -> float:
+    """``seconds`` rounded up to whole simulation steps, or as given without
+    a step size. The simulation generates housekeeping for each whole step
+    at the rate of the mode the step starts in, so a span counts for the
+    steps that start in it."""
+    if step_size is None or step_size <= 0.0 or seconds <= 0.0:
+        return max(0.0, float(seconds))
+    return math.ceil(float(seconds) / float(step_size) - 1e-9) * float(step_size)

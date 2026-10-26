@@ -25,7 +25,7 @@ from conops.config import (
     ScienceData,
     SpacecraftBus,
 )
-from conops.ditl import RollingHorizonDITL
+from conops.ditl import QueueDITL, RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedger, contact_downlink_gb
 from conops.targets import PlanEntry, Pointing
@@ -46,9 +46,11 @@ LOW_RATE = 0.001
 """Gbps: a 20-minute snapshot is 1.2 Gb."""
 
 
-def _recorder_config(limit: float | None | str = "default") -> MissionConfig:
+def _recorder_config(
+    limit: float | None | str = "default", *, stations: bool = True
+) -> MissionConfig:
     """The scenario with contacts, a small recorder and some housekeeping."""
-    config = _config(HOURS, stations=True)
+    config = _config(HOURS, stations=stations)
     config.recorder = OnboardRecorder(capacity_gb=CAPACITY)
     if limit != "default":
         config.recorder.planning_limit = limit  # type: ignore[assignment]
@@ -736,3 +738,105 @@ class TestDispatch:
         ditl.step_size = STEP
         assert ditl.calc()
         assert max(ditl.recorder_volume_gb) > LIMIT
+
+    @staticmethod
+    def _collected(ditl: QueueDITL, obsid: int) -> float:
+        """Seconds of science the run collected on ``obsid``."""
+        return sum(
+            hk.collection_seconds or 0.0
+            for hk in ditl.telemetry.housekeeping
+            if hk.obsid == obsid
+        )
+
+    def test_a_shortened_snapshot_is_executed_as_shortened(self) -> None:
+        """A snapshot the recorder holds part of, more than its minimum, is
+        shortened to what it holds, and the dispatcher executes it shortened
+        rather than whole: a 40-minute snapshot at 0.01 Gb/s, 24 Gb, on the
+        18 Gb limit less two hours of housekeeping with no contact in them,
+        17.28 Gb, collects 1728 s. The rest waits for a contact that never
+        comes, and the recorder stays under the limit."""
+        config = _recorder_config()
+        target = _data_target(
+            config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=40, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert not any(float(p.begin) < ditl.uend for p in ditl.acs.passrequests.passes)
+
+        collected = self._collected(ditl, 1)
+        assert 60.0 <= collected < 2400.0
+        assert collected == pytest.approx(1728.0, abs=STEP)
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert max(ditl.recorder_alert) < 2
+
+    def test_housekeeping_is_reserved_at_the_executed_mode_rates(self) -> None:
+        """The slew into a contact, which ACS flies in PASS mode, generates at
+        the PASS rate, and that counts against the room: a snapshot the limit
+        holds with housekeeping at the nominal rate, but not with the ingress
+        at ten times it, is shortened, so the recorder stays under the limit
+        and the contact is kept rather than lost to safe mode."""
+        config = _recorder_config(0.75)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.PASS: 0.001}
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, 0.009996, merit=90, minutes=20, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=HOURS))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert max(ditl.recorder_volume_gb) <= 0.75 * CAPACITY + 1e-6
+        assert max(ditl.recorder_alert) < 2
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+        assert ACSMode.PASS in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    def test_science_mode_housekeeping_counts_against_the_room(self) -> None:
+        """What the visit generates at the SCIENCE rate beyond the nominal
+        one counts too: without contacts, a snapshot whose science alone
+        just fits the room is shortened by what its housekeeping adds."""
+        config = _recorder_config(stations=False)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.SCIENCE: 0.002}
+        )
+        # 17.28 Gb in 20 minutes: the room, at the nominal rate, for two hours.
+        target = _data_target(
+            config, 1, 105.0, 10.0, 0.0144, merit=90, minutes=20, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        collected = self._collected(ditl, 1)
+        assert 60.0 <= collected < 1200.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert max(ditl.recorder_alert) < 2
+
+    def test_the_reserve_ends_with_the_run(self) -> None:
+        """A contact after the run does not extend the reserve: with the
+        14-hour ephemeris and a two-hour run, the first contact is after
+        the run, so the room at the start is the limit less two hours of
+        housekeeping, not eight, and a 27-minute snapshot at 0.01 Gb/s,
+        16.2 Gb, is executed whole."""
+        config = _recorder_config()
+        target = _data_target(config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=27)
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        passes = ditl.acs.passrequests.passes
+        assert any(float(p.begin) > ditl.uend for p in passes)
+        assert not any(float(p.begin) < ditl.uend for p in passes)
+        room = ditl._recorder_room_gb(T0, 0.0, 0.0, 0.0)
+        assert room == pytest.approx(
+            LIMIT
+            - ditl.recorder.current_volume_gb
+            - config.housekeeping_generated(2 * HOUR)
+        )
+        assert self._collected(ditl, 1) == pytest.approx(27 * MIN, abs=STEP)
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6

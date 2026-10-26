@@ -1,4 +1,5 @@
 import hashlib
+import math
 from collections.abc import Callable, Mapping
 from typing import cast
 
@@ -6,7 +7,7 @@ import numpy as np
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from ..common import unixtime2date
+from ..common import ACSMode, unixtime2date, whole_steps
 from ..config import AttitudeControlSystem, Constraint, MissionConfig, ScienceData
 from ..config.acs import scheduled_slew_time
 from ..ditl.ditl_log import DITLLog
@@ -330,12 +331,16 @@ class TargetQueue:
                 cost for a candidate target.
             roll: Current roll in degrees. Required when body-axis slew limits
                 are configured and no attitude-aware slew estimator is supplied.
-            recorder_room_gb: Gb of science the recorder can take before
-                its next contact, under its planning limit. A candidate
-                collects no more than the room holds at its own rates, and
-                one that cannot collect its minimum snapshot within it is
-                passed over, as the schedulers pass over what the recorder
-                cannot hold. None checks nothing.
+            recorder_room_gb: Gb the recorder can take before its next
+                contact, under its planning limit, beyond the housekeeping
+                it generates at the nominal rate until then. A candidate
+                collects no more than the room holds of its science, at its
+                own rates, and of the housekeeping its visit generates beyond
+                that nominal rate; one that cannot collect its minimum
+                snapshot within it is passed over, as the schedulers pass
+                over what the recorder cannot hold. A shortened snapshot's
+                whole seconds are set as the target's ``collection_limit``
+                for the dispatcher to keep to. None checks nothing.
 
         Returns:
             Next target to observe, or None if no suitable target found.
@@ -460,15 +465,21 @@ class TargetQueue:
                 collection = self._candidate_collection_seconds(
                     target, visibility_window, utime
                 )
+                target.collection_limit = None
                 if recorder_room_gb is not None:
                     # Collect no more than the recorder can hold from its
                     # fill now; a snapshot shorter than the minimum waits.
-                    collection = min(
-                        collection, self._collection_within(target, recorder_room_gb)
-                    )
-                    if collection < target.ss_min:
-                        overfill += 1
-                        continue
+                    within = self._collection_within(target, recorder_room_gb)
+                    if within < collection:
+                        # Whole seconds, as the visit is executed: the data
+                        # of the fraction dropped keeps the limit below.
+                        collection = float(math.floor(within))
+                        if collection < target.ss_min:
+                            overfill += 1
+                            continue
+                        # The dispatcher applies the slew it flies and its
+                        # own deadlines, but keeps to this.
+                        target.collection_limit = collection
                 if collection < target.ss_min:
                     continue
                 target.end = min(
@@ -579,14 +590,54 @@ class TargetQueue:
         return best_target
 
     def _collection_within(self, target: Pointing, room_gb: float) -> float:
-        """Seconds of collection whose science fits in ``room_gb``: without
-        limit when the target generates nothing per second, and negative when
-        not even its fixed per-observation data fits."""
+        """Seconds of collection whose data fits in ``room_gb``: without
+        limit when the visit generates nothing per second, and negative when
+        not even its fixed data fits.
+
+        The data is the snapshot's science, at the target's own rates, and
+        the housekeeping the visit generates beyond the nominal rate the
+        room is already net of: at the ``SLEWING`` rate for the slew, and at
+        the ``SCIENCE`` rate from setup through cleanup. The simulation
+        generates housekeeping for each whole step at the rate of the mode
+        the step starts in, so the slew counts in whole steps, and the
+        science mode for up to a step more than it lasts.
+        """
+        step = self._step_size()
+        timing = self.observation_timing
         base = self._snapshot_science_gb(target, 0.0)
-        per_second = self._snapshot_science_gb(target, 1.0) - base
+        fixed = (
+            base
+            + self._housekeeping_excess_gb(
+                ACSMode.SLEWING, whole_steps(float(target.slewtime), step)
+            )
+            + self._housekeeping_excess_gb(
+                ACSMode.SCIENCE, timing.total_seconds + (step or 0.0)
+            )
+        )
+        per_second = (
+            self._snapshot_science_gb(target, 1.0)
+            - base
+            + self._housekeeping_excess_gb(ACSMode.SCIENCE, 1.0)
+        )
         if per_second <= 0.0:
-            return float("inf") if base <= room_gb + 1e-9 else -1.0
-        return (room_gb - base) / per_second
+            return float("inf") if fixed <= room_gb + 1e-9 else -1.0
+        return (room_gb - fixed) / per_second
+
+    def _housekeeping_excess_gb(self, mode: ACSMode, seconds: float) -> float:
+        """Gb of housekeeping ``seconds`` in ``mode`` generates beyond the
+        nominal rate; negative where the mode's rate is below it."""
+        assert self.config is not None
+        if seconds <= 0.0:
+            return 0.0
+        return float(
+            self.config.housekeeping_generated(seconds, mode=mode)
+            - self.config.housekeeping_generated(seconds)
+        )
+
+    def _step_size(self) -> float | None:
+        """The simulation step in seconds, where the ephemeris has one."""
+        step = getattr(self.ephem, "step_size", None)
+        return float(step) if isinstance(step, (int, float)) and step > 0 else None
 
     def _snapshot_science_gb(
         self, target: Pointing, collection_seconds: float
