@@ -13,9 +13,10 @@ from ..common import ACSMode, ObsType
 from ..config import MissionConfig, ScienceData
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.battery import Addition, BatteryLedger
-from ..schedulers.context import Attitude, tracking_rest
+from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderLedger
+from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritModel
@@ -165,6 +166,8 @@ class RollingHorizonDITL(DITL):
         self.include_passes = include_passes
         self.scheduler = scheduler
         self.scheduler_options = dict(scheduler_options or {})
+        self._run_passes: list[Pass] | None = None
+        """The interval's ground passes, predicted once for every plan in it."""
         self.merit_model = MeritModel(config)
         self.too_register: list[TOORequest] = []
         self.replans: list[ReplanRecord] = []
@@ -247,6 +250,8 @@ class RollingHorizonDITL(DITL):
         self.plan = Plan()
         self.replans = []
         self._next_replan = None
+        # The passes belong to the interval: a later one predicts its own.
+        self._run_passes = None
         return super().calc()
 
     # ── Execution hooks ──────────────────────────────────────────────────
@@ -517,6 +522,15 @@ class RollingHorizonDITL(DITL):
         if horizon_end <= start:
             return committed, dropped, list(pinned), 0
         start_deficit_wh, start_drive_state = self._battery_start(utime, start, leading)
+        if self.include_passes and self._run_passes is None:
+            # Predicted once, as every plan would predict them for itself:
+            # the same seed, start and length give the same passes. Every
+            # contact the plans hold comes from them, so they are also the
+            # passes to command, and DITL need not predict them again.
+            self._run_passes = list(
+                SchedulingContext(self.config, self.begin, self.end).predict_passes()
+            )
+            self._predicted_passes = list(self._run_passes)
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -536,6 +550,7 @@ class RollingHorizonDITL(DITL):
             start_volume_gb=self._recorder_volume_at(utime, start, leading),
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
+            passes=self._run_passes,
             **self.scheduler_options,  # type: ignore[arg-type]
         )
         return (

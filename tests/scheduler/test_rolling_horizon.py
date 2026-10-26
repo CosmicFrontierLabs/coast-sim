@@ -8,6 +8,7 @@ import pytest
 from conops.config import ScienceData, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl import DITLLogStore, ReplanReason, RollingHorizonDITL
+from conops.simulation.passes import PassTimes
 from conops.targets import Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -169,6 +170,45 @@ GRB = {
     "exptime": 600,
     "submit_time": T0 + 20 * MIN,
 }
+
+
+class TestPassPrediction:
+    def test_the_runs_passes_are_predicted_once_for_every_plan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each plan used to predict the whole simulation's passes for itself,
+        at several seconds a day; the run predicts them once and every plan
+        reserves the same passes from them."""
+        config = _config(14, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        predictions: list[bool] = []
+        original = PassTimes.get
+
+        def counted(self: PassTimes, *args: object, **kwargs: object) -> None:
+            predictions.append(bool(kwargs.get("apply_scheduling", True)))
+            original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(PassTimes, "get", counted)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=14),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=3),
+        )
+        ditl.step_size = 60
+        assert ditl.calc()
+
+        assert len(ditl.replans) >= 4
+        # One prediction for the plans, which DITL also commands from, so it
+        # does not reconstruct the passes for itself.
+        assert predictions == [True]
+        assert any(e.obstype.name == "GSP" for e in ditl.plan)
+        assert ditl.validate_plan_matches_execution() == []
 
 
 def _long_observation() -> list[Pointing]:
@@ -719,6 +759,53 @@ class TestConsecutiveIntervals:
         assert not any(int(e.obsid) == 1_000_001 for e in ditl.plan)
         assert too.executed
         assert ditl.too_response_times()[1_000_001] == response
+
+    def test_the_next_interval_predicts_its_own_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The passes are cached for the plans of one ``calc()``. A later
+        interval would otherwise filter the first one's passes to nothing
+        and silently plan no contacts at all."""
+        config = _config(20, stations=True)
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - i, minutes=120, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        predictions = 0
+        original = PassTimes.get
+
+        def counted(self: PassTimes, *args: object, **kwargs: object) -> None:
+            nonlocal predictions
+            predictions += 1
+            original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(PassTimes, "get", counted)
+        # The scenario's first contacts come about 8 h in; both intervals
+        # have several.
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN + timedelta(hours=6),
+            end=BEGIN + timedelta(hours=12),
+            horizon=timedelta(hours=6),
+            replan_interval=timedelta(hours=3),
+        )
+        ditl.step_size = 60
+        assert ditl.calc()
+        first = [e for e in ditl.plan if e.obstype.name == "GSP"]
+        assert first
+        assert predictions == 1
+
+        ditl.begin += timedelta(hours=6)
+        ditl.end += timedelta(hours=6)
+        assert ditl.calc()
+
+        second = [e for e in ditl.plan if e.obstype.name == "GSP"]
+        assert second
+        assert all(float(e.begin) >= ditl.ustart for e in second)
+        # The second interval predicts for itself, once, and executes it all.
+        assert predictions == 2
+        assert ditl.validate_plan_matches_execution() == []
 
 
 class TestScienceData:
