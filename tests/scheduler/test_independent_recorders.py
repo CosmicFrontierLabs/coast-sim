@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -110,6 +111,12 @@ def test_roundtrip_and_legacy_assignment(tmp_path):
     )
     with pytest.raises(ValidationError, match="either recorder or data_storage"):
         MissionConfig(data_storage=storage(), recorder=OnboardRecorder())
+    # Explicit hardware is ambiguous even when its values match the default.
+    with pytest.raises(ValidationError, match="either recorder or data_storage"):
+        MissionConfig(
+            data_storage=storage(),
+            recorder=OnboardRecorder(capacity_gb=32, current_volume_gb=0),
+        )
     legacy = MissionConfig(
         recorder=OnboardRecorder(
             current_volume_gb=0, capacity_gb=20, planning_limit=None
@@ -119,6 +126,89 @@ def test_roundtrip_and_legacy_assignment(tmp_path):
         MissionConfig.model_validate(legacy.model_dump()).recorder.planning_limit
         is None
     )
+
+
+@pytest.mark.parametrize("factory", [config, MissionConfig])
+def test_recorder_views_are_cached_with_live_volumes(factory):
+    c = factory()
+    with patch.object(
+        DataStorage,
+        "require_ready",
+        autospec=True,
+        side_effect=DataStorage.require_ready,
+    ) as ready:
+        views = c.recorder_views()
+        for _ in range(10):
+            assert c.recorder_views() is views
+        assert ready.call_count == (1 if c.data_storage is not None else 0)
+    name = next(iter(views))
+    views[name].recorder.current_volume_gb = 1
+    assert c.recorder_views()[name].recorder.current_volume_gb == 1
+
+
+@pytest.mark.parametrize("factory", [config, MissionConfig])
+@pytest.mark.parametrize("deep", [False, True])
+def test_copied_config_views_bind_to_the_copy(factory, deep):
+    c = factory()
+    original_views = c.recorder_views()
+    copied = c.model_copy(deep=deep)
+    views = copied.recorder_views()
+    assert views is not original_views
+    for name, view in views.items():
+        assert (view.mission if copied.data_storage is not None else view) is copied
+        if deep:
+            view.recorder.current_volume_gb = 1
+            assert original_views[name].recorder.current_volume_gb == 0
+
+
+def test_cache_does_not_affect_config_equality_or_serialization():
+    c = config()
+    other = c.model_copy()
+    dumped = c.model_dump()
+    c.recorder_views()
+    assert c == other
+    other.recorder_views()
+    assert c == other
+    assert c.model_dump() == dumped
+
+
+def test_views_refresh_after_storage_assignment_and_on_a_new_run():
+    c = config()
+    views = c.recorder_views()
+    c.data_storage = storage()
+    assert c.recorder_views()["bus"].recorder is c.data_storage.stores["bus"].recorder
+    assert c.recorder_views() is not views
+    # A nested replacement between runs bypasses MissionConfig's validators.
+    replacement = OnboardRecorder(capacity_gb=20, current_volume_gb=3)
+    c.data_storage.stores["bus"].recorder = replacement
+    PriorityScheduler(c, [], BEGIN, BEGIN + timedelta(hours=1))
+    assert c.recorder_views()["bus"].recorder is replacement
+
+
+@pytest.mark.parametrize("entry", ["scheduler", "simulation"])
+def test_new_run_revalidates_mutated_routes_after_caching(entry):
+    c = config()
+    c.recorder_views()
+    c.data_storage.instrument_science["camera"] = "typo"
+    with pytest.raises(ValueError, match="unknown store"):
+        if entry == "scheduler":
+            PriorityScheduler(c, [], BEGIN, BEGIN + timedelta(hours=1))
+        else:
+            DITLMixin(c)
+
+
+def test_explicit_refresh_rejects_mutated_link_shares():
+    c = config()
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.75, "bus": 0.25})
+    ]
+    c.recorder_views()
+    c.data_storage.downlinks[0].shares["bus"] = 1
+    with pytest.raises(ValueError, match="more than one physical downlink"):
+        c.recorder_views(refresh=True)
+    # A failed refresh must not leave a previously valid cache available.
+    with pytest.raises(ValueError, match="more than one physical downlink"):
+        c.recorder_views()
 
 
 def test_inventory_is_not_an_unlimited_recorder():
@@ -166,10 +256,11 @@ def test_cannot_allocate_a_link_twice(shares):
         DownlinkRoute(station="GS", band="Ka", shares=shares)
 
 
-def test_separate_capacity_and_shared_physical_link():
+@pytest.mark.parametrize("station", ["GS", "gs", " gs "])
+def test_separate_capacity_and_shared_physical_link(station):
     c = config()
     c.data_storage.downlinks = [
-        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.75, "bus": 0.25})
+        DownlinkRoute(station=station, band="Ka", shares={"payload": 0.75, "bus": 0.25})
     ]
     views = c.recorder_views()
     assert [contact_downlink_gb(views[n], "GS", 100) for n in ("payload", "bus")] == [
@@ -182,6 +273,18 @@ def test_separate_capacity_and_shared_physical_link():
     assert not ledger.fits_all(initial, [(1, 7)])  # 1.1 Gb housekeeping + 7 > 8
     with pytest.raises(ValueError, match="by store"):
         RecorderLedgers(c, 0, 100, [], start_volume_gb=5)
+
+
+def test_station_normalization_on_assignment_and_duplicate_routes():
+    route = DownlinkRoute(station="elsewhere", band="Ka", shares={"payload": 1})
+    route.station = " gs "
+    assert route.station == "GS"
+    c = config()
+    with pytest.raises(ValueError, match="one shared downlink route"):
+        c.data_storage.downlinks = [
+            route,
+            DownlinkRoute(station="gs", band="Ka", shares={"bus": 1}),
+        ]
 
 
 def runtime(c):
@@ -248,6 +351,44 @@ def test_dispatch_room_and_rolling_state_remain_separate():
     assert before == {
         n: v.recorder.current_volume_gb for n, v in c.recorder_views().items()
     }
+
+
+def test_no_store_limit_skips_constrained_dispatch():
+    c = make_config(2, stations=False)
+    c.data_storage = storage("Default Instrument")
+    for store in c.data_storage.stores.values():
+        store.recorder.planning_limit = None
+    d = runtime(c)
+    rooms = d._recorder_room_gb(0, 0, 0, 0)
+    assert rooms is None
+    queue = TargetQueue(config=c, ephem=c.constraint.ephem)
+    target = _data_target(c, 1, 105, 10, 0.001, minutes=20)
+    target.windows = [[BEGIN.timestamp(), (BEGIN + timedelta(hours=2)).timestamp()]]
+    queue.append(target)
+    estimator = Mock(side_effect=AssertionError("unexpected attitude-aware slew"))
+    with patch.object(queue, "collection_within") as within:
+        assert (
+            queue.get(
+                105,
+                10,
+                BEGIN.timestamp(),
+                recorder_room_gb=rooms,
+                slew_estimator=estimator,
+            )
+            is target
+        )
+        within.assert_not_called()
+    estimator.assert_not_called()
+
+
+def test_dispatch_keeps_limits_for_remaining_constrained_stores():
+    c = config()
+    c.data_storage.stores["payload"].recorder.planning_limit = None
+    d = runtime(c)
+    d.uend = 100
+    rooms = d._recorder_room_gb(0, 0, 0, 0)
+    assert set(rooms) == {"bus"}
+    assert rooms["bus"] > 0
 
 
 @pytest.mark.parametrize("scheduler_class", [PriorityScheduler, LocalSearchScheduler])

@@ -3126,7 +3126,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 name: self._store_room_gb(view, utime, ra, dec, roll)
                 for name, view in self.config.recorder_views().items()
             }
-            return {name: room for name, room in rooms.items() if room is not None}
+            return {
+                name: room for name, room in rooms.items() if room is not None
+            } or None
         return self._store_room_gb(self.config, utime, ra, dec, roll)
 
     def _store_room_gb(

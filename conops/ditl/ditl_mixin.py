@@ -127,8 +127,7 @@ class DITLMixin:
     ) -> None:
         """Initialize shared DITL state, ephemeris, and subsystems from config."""
         # Resolve hardware inventory before creating the ephemeris or subsystems.
-        if isinstance(config.data_storage, DataStorage):
-            config.data_storage.require_ready(config)
+        config.recorder_views(refresh=True)
         # Initialize mixin
         self.config = config
         self.calculate_field_of_regard = calculate_field_of_regard

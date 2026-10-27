@@ -10,7 +10,7 @@ import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..common.enums import ACSMode
 from ._base import ConfigModel
@@ -67,6 +67,11 @@ class DownlinkRoute(ConfigModel):
     station: str
     band: Literal["UHF", "S", "X", "Ka", "Ku", "L", "C", "K"]
     shares: dict[str, float]
+
+    @field_validator("station")
+    @classmethod
+    def _normalize_station(cls, value: str) -> str:
+        return value.strip().upper()
 
     @model_validator(mode="after")
     def _shares(self) -> DownlinkRoute:

@@ -704,6 +704,10 @@ This configuration can be loaded and inspected. Planning and simulation raise
 an error listing the missing inputs. A null recorder never means unlimited
 storage and never inherits the legacy 32-Gbit default. Inspect
 ``config.data_storage.unresolved(config)`` before running a campaign.
+Recorder views are cached during planning and simulation. Constructors revalidate
+the configuration and rebuild those views for a new run. If using
+``config.recorder_views()`` directly after editing nested configuration, call
+``config.recorder_views(refresh=True)`` first.
 
 For every store, replace ``recorder: null`` with an ``OnboardRecorder`` definition
 containing explicit, confirmed usable ``capacity_gb`` and initial

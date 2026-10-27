@@ -282,7 +282,8 @@ class PriorityScheduler:
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
         allocation_bonus: float = 0.5,
     ) -> None:
-        config.recorder_views()  # Fail on unresolved inventory before building an ephemeris.
+        # Revalidate reused configurations before building an ephemeris.
+        config.recorder_views(refresh=True)
         self.config = config
         self.targets = list(targets)
         self.held = frozenset(int(obsid) for obsid in held)

@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from functools import cached_property
 
 import yaml
-from pydantic import (
-    Field,
-    SerializerFunctionWrapHandler,
-    field_validator,
-    model_serializer,
-    model_validator,
-)
+from pydantic import Field, field_validator, model_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
@@ -155,6 +149,9 @@ class MissionConfig(ConfigModel):
     )
     recorder: OnboardRecorder = Field(
         default_factory=OnboardRecorder,
+        # Omit default values so named stores round-trip without this field.
+        # Validation still rejects explicitly supplying both storage models.
+        exclude_if=lambda recorder: recorder == OnboardRecorder(),
         description="Onboard Data Recorder. Defines storage capacity and fill thresholds",
     )
     data_storage: DataStorage | None = Field(
@@ -188,6 +185,7 @@ class MissionConfig(ConfigModel):
 
     @model_validator(mode="after")
     def _one_storage_model(self) -> MissionConfig:
+        self.__dict__.pop("_recorder_view_cache", None)
         if (
             isinstance(self.data_storage, DataStorage)
             and "recorder" in self.model_fields_set
@@ -195,20 +193,33 @@ class MissionConfig(ConfigModel):
             raise ValueError("configure either recorder or data_storage, not both")
         return self
 
-    @model_serializer(mode="wrap")
-    def _serialize_storage(
-        self, handler: SerializerFunctionWrapHandler
-    ) -> dict[str, Any]:
-        result = handler(self)
-        if self.data_storage is not None:
-            result.pop("recorder", None)
-        return cast(dict[str, Any], result)
-
-    def recorder_views(self) -> dict[str, MissionConfig | RecorderView]:
+    @cached_property
+    def _recorder_view_cache(
+        self,
+    ) -> tuple[int, dict[str, MissionConfig | RecorderView]]:
         if self.data_storage is None:
-            return {"default": self}
+            return id(self), {"default": self}
         self.data_storage.require_ready(self)
-        return {name: RecorderView(self, name) for name in self.data_storage.stores}
+        return id(self), {
+            name: RecorderView(self, name) for name in self.data_storage.stores
+        }
+
+    def recorder_views(
+        self, *, refresh: bool = False
+    ) -> dict[str, MissionConfig | RecorderView]:
+        """Validated views, reused through a run's candidate and step loops.
+
+        Constructors refresh these before each run. After editing nested
+        configuration in place, other callers must request a refresh too.
+        Recorder volumes themselves remain live through the cached views.
+        """
+        if refresh:
+            self.__dict__.pop("_recorder_view_cache", None)
+        # Pydantic copies cached properties; copied views must bind to this
+        # configuration, even for a shallow model_copy(update=...).
+        if self._recorder_view_cache[0] != id(self):
+            self.__dict__.pop("_recorder_view_cache", None)
+        return self._recorder_view_cache[1]
 
     @field_validator("attitude_constraint_scopes", mode="before")
     @classmethod
