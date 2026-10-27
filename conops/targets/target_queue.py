@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from ..common import ACSMode, unixtime2date, whole_steps
 from ..config import AttitudeControlSystem, Constraint, MissionConfig, ScienceData
 from ..config.acs import scheduled_slew_time
+from ..config.config import housekeeping_while_waiting
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
@@ -431,8 +432,12 @@ class TargetQueue:
                 ra,
                 dec,
                 roll,
+                # The recorder's room depends on the slew the target will
+                # fly: the attitude-aware estimate, where one is given.
                 slew_estimator
-                if score_candidates or target.uses_mounted_attitude() is True
+                if score_candidates
+                or target.uses_mounted_attitude() is True
+                or recorder_room_gb is not None
                 else None,
             )
 
@@ -469,7 +474,7 @@ class TargetQueue:
                 if recorder_room_gb is not None:
                     # Collect no more than the recorder can hold from its
                     # fill now; a snapshot shorter than the minimum waits.
-                    within = self._collection_within(target, recorder_room_gb)
+                    within = self.collection_within(target, recorder_room_gb)
                     if within < collection:
                         # Whole seconds, as the visit is executed: the data
                         # of the fraction dropped keeps the limit below.
@@ -589,18 +594,24 @@ class TargetQueue:
             self._select(best_target, best_breakdown)
         return best_target
 
-    def _collection_within(self, target: Pointing, room_gb: float) -> float:
+    def collection_within(self, target: Pointing, room_gb: float) -> float:
         """Seconds of collection whose data fits in ``room_gb``: without
         limit when the visit generates nothing per second, and negative when
         not even its fixed data fits.
 
         The data is the snapshot's science, at the target's own rates, and
-        the housekeeping the visit generates beyond the nominal rate the
-        room is already net of: at the ``SLEWING`` rate for the slew, and at
-        the ``SCIENCE`` rate from setup through cleanup. The simulation
+        the housekeeping the visit generates beyond the waiting rate the
+        room is already net of (see
+        :meth:`MissionConfig.housekeeping_while_waiting`): at the
+        ``SLEWING`` rate for the slew, for ``target.slewtime``, and at the
+        ``SCIENCE`` rate from setup through cleanup. The simulation
         generates housekeeping for each whole step at the rate of the mode
         the step starts in, so the slew counts in whole steps, and the
-        science mode for up to a step more than it lasts.
+        science mode for up to a step more than it lasts. A mode that
+        generates less than the waiting rate is not credited with the
+        saving: the spans are upper bounds, so a saving over them is not
+        one execution is certain to deliver. Admission asks again with the
+        slew it flies.
         """
         step = self._step_size()
         timing = self.observation_timing
@@ -625,13 +636,15 @@ class TargetQueue:
 
     def _housekeeping_excess_gb(self, mode: ACSMode, seconds: float) -> float:
         """Gb of housekeeping ``seconds`` in ``mode`` generates beyond the
-        nominal rate; negative where the mode's rate is below it."""
+        waiting rate the room is net of; zero where the mode's rate is
+        below it, as the saving is not counted on."""
         assert self.config is not None
         if seconds <= 0.0:
             return 0.0
-        return float(
-            self.config.housekeeping_generated(seconds, mode=mode)
-            - self.config.housekeeping_generated(seconds)
+        return max(
+            0.0,
+            float(self.config.housekeeping_generated(seconds, mode=mode))
+            - housekeeping_while_waiting(self.config, seconds),
         )
 
     def _step_size(self) -> float | None:

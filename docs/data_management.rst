@@ -104,7 +104,10 @@ Data comes in two kinds, and what drives each is different:
   engineering telemetry (temperatures, voltages, attitude, status) generated
   whatever is observed. ``rate_mode`` sets a different rate in particular ACS modes,
   given by name or number, the way :class:`~conops.config.PowerDraw` sets power by
-  mode.
+  mode. Dispatch reserves the time it waits between observations at the highest of
+  the nominal, ``IDLE`` and ``CHARGING`` rates
+  (:meth:`~conops.config.MissionConfig.housekeeping_while_waiting`), since it can
+  spend that time in any of those modes; see :doc:`planning`.
 
 The spacecraft bus generates housekeeping data only, so its ``data_generation`` is a
 ``HousekeepingData``. An instrument generates both, so its ``data_generation`` is a

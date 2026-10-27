@@ -13,9 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import (
     ACSMode,
+    ObsType,
     angular_separation,
     dtutcfromtimestamp,
-    ObsType,
     radec2vec,
     scbodyvector,
     unixtime2date,
@@ -2927,11 +2927,14 @@ class QueueDITL(DITLMixin, DITLStats):
         contact can empty it, as the schedulers place only what it can hold
         before the next contact. Housekeeping is counted as the simulation
         generates it: for each whole step, at the rate of the mode the step
-        starts in. The slew into the contact, which ACS flies in ``PASS``
-        mode, counts at the ``PASS`` rate for the steps it is under way, as
-        it would be flown from the attitude given. What the candidate's own
-        slew and science generate beyond the nominal rate the queue counts
-        against the room, as it does the science.
+        starts in, the waiting rate throughout (see
+        :meth:`MissionConfig.housekeeping_while_waiting`), as the
+        dispatcher can spend the time in any of the waiting modes. The slew
+        into the contact, which ACS flies in ``PASS`` mode, counts at the
+        ``PASS`` rate for the steps it is under way, as it would be flown
+        from the attitude given, where that rate is higher. What the
+        candidate's own slew and science generate beyond the waiting rate
+        the queue counts against the room, as it does the science.
         """
         limit = self.config.recorder.planning_limit_gb
         # A test double's recorder has no number for a limit.
@@ -2947,7 +2950,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if next_pass is not None:
             until = min(until, float(next_pass.begin))
         span = whole_steps(until - utime, step)
-        housekeeping = self.config.housekeeping_generated(span)
+        housekeeping = self.config.housekeeping_while_waiting(span)
         if next_pass is not None and float(next_pass.begin) < self.uend:
             ingress = min(
                 span,
@@ -2955,9 +2958,13 @@ class QueueDITL(DITLMixin, DITLStats):
                     self._pass_ingress_seconds(next_pass, utime, ra, dec, roll), step
                 ),
             )
-            housekeeping += self.config.housekeeping_generated(
-                ingress, mode=ACSMode.PASS
-            ) - self.config.housekeeping_generated(ingress)
+            # The ingress is an upper bound: a PASS rate below the waiting
+            # rate is not credited with a saving over it.
+            housekeeping += max(
+                0.0,
+                self.config.housekeeping_generated(ingress, mode=ACSMode.PASS)
+                - self.config.housekeeping_while_waiting(ingress),
+            )
         return (
             limit
             - RECORDER_ROOM_TOLERANCE_GB
@@ -3301,6 +3308,14 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_limit = getattr(self.ppt, "collection_limit", None)
             if isinstance(collection_limit, (int, float)):
                 remaining = min(remaining, float(collection_limit))
+            # The slew flown can take a step more than the one the queue
+            # charged: what the recorder holds is asked again with it.
+            within = getattr(self.queue, "collection_within", None)
+            room = self._recorder_room_gb(utime, ra, dec, self.acs.roll)
+            if callable(within) and room is not None:
+                fits = float(within(self.ppt, room))
+                if fits < remaining:
+                    remaining = max(0.0, floor(fits))
             self.ppt.end = min(deadline, slew_end + timing.total_seconds + remaining)
             violation = self._check_locked_roll_window(
                 slew_end, self.ppt.end, (slew.endra, slew.enddec, slew.endroll)

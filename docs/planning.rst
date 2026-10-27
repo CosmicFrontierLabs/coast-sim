@@ -235,14 +235,17 @@ too. When it selects the next target it works out how much the recorder can take
 before its next contact: what is free under the planning limit now, less the
 housekeeping that accrues until that contact begins, or until the run ends if it
 ends first. Housekeeping is counted as the simulation generates it, for each whole
-step at the rate of the mode the step starts in: at the nominal rate, and at the
-``PASS`` rate for the slew into the contact, which ACS flies in ``PASS`` mode,
-bounded as admission bounds it. A candidate collects no more than that room holds
-of its science, at its own rates, and of the housekeeping its own slew and science
-mode generate beyond the nominal rate; one that cannot collect its minimum snapshot
-within it is passed over, and a snapshot shortened to fit stays shortened through
-admission, whatever slew is flown. The log says how many were passed over and how
-much room there was. A contact during the snapshot is not counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
+step at the rate of the mode the step starts in: at the waiting rate, the highest of
+the nominal, ``IDLE``, ``CHARGING`` and ``DESAT`` rates, since the dispatcher can spend
+the time in any of those modes, and at the ``PASS`` rate for the slew into the
+contact, which ACS flies in ``PASS`` mode, bounded as admission bounds it, where that
+rate is higher. A candidate collects no more than that room holds of its science, at
+its own rates, and of the housekeeping its own slew, the attitude-aware slew it will
+fly, and science mode generate beyond the waiting rate; a mode that generates less
+is not credited with the saving, since the spans are upper bounds. One that cannot
+collect its minimum snapshot within it is passed over, and a snapshot shortened to
+fit stays shortened through admission, which asks the room again with the slew it
+flies. The log says how many were passed over and how much room there was. A contact during the snapshot is not counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
 points per gigabit of science data, so that high-data science gives way to low-data
 science before the recorder is full rather than only once it is (see
 :doc:`configuration`).

@@ -48,11 +48,14 @@ class DispatchPolicy(Protocol):
         Args:
             ra, dec, roll: Current spacecraft attitude in degrees.
             recorder_room_gb: Gb the recorder can take before its next
-                contact, under its planning limit, beyond nominal
-                housekeeping; a target collects no more than fits, with the
-                housekeeping its visit generates beyond the nominal rate,
-                and one that cannot collect its minimum snapshot is passed
-                over. None checks nothing.
+                contact, under its planning limit, beyond the housekeeping
+                of the time spent waiting; a target collects no more than
+                fits, with the housekeeping its visit generates beyond
+                that, and one that cannot collect its minimum snapshot is
+                passed over. None checks nothing. A policy may offer
+                ``collection_within(target, room_gb)``, the seconds of
+                collection whose data fits, which admission asks again
+                with the slew it flies.
             utime: Current time in Unix seconds.
             collection_deadline: Returns the latest time science may be
                 collected for a candidate, given when its slew ends.

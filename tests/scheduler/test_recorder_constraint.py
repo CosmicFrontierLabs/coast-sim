@@ -840,3 +840,77 @@ class TestDispatch:
         )
         assert self._collected(ditl, 1) == pytest.approx(27 * MIN, abs=STEP)
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+
+    def test_the_slew_charged_is_the_one_flown(self) -> None:
+        """Selection charges the candidate's slew at the SLEWING rate for the
+        slew it will fly, not a geometric estimate that can be a step
+        shorter, and admission checks the limit again with the slew it
+        flies: with SLEWING housekeeping fifty times the nominal rate, a
+        target waiting until just before a contact is shortened to what the
+        recorder holds and the run stays under the limit."""
+        config = _recorder_config()
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.SLEWING: 0.005}
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=40, ss_min=1
+        )
+        target.earliest_start = T0 + 29100.0
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=HOURS))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert self._collected(ditl, 1) >= 60.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    @pytest.mark.parametrize(
+        ("mode", "nominal", "hours", "stations"),
+        [(ACSMode.PASS, 0.0001, HOURS, True), (ACSMode.SCIENCE, 0.001, 2, False)],
+    )
+    def test_a_mode_rate_below_nominal_credits_no_saving(
+        self, mode: ACSMode, nominal: float, hours: int, stations: bool
+    ) -> None:
+        """A mode that generates less than the nominal rate saves data only
+        over the seconds it is certain to run, and the reserve counts spans
+        by their upper bounds, so no saving is credited: a snapshot sized to
+        the room is not over-admitted on the strength of a saving that
+        execution need not deliver."""
+        config = _recorder_config(stations=stations)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=nominal, rate_mode={mode: 0.0}
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=40, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=hours))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert self._collected(ditl, 1) >= 60.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    def test_the_time_waiting_is_reserved_at_the_idle_rate(self) -> None:
+        """Outside the candidate's slew and science the dispatcher idles,
+        and the simulation generates housekeeping at the IDLE rate then:
+        with the IDLE rate ten times the nominal one and no contact to
+        empty the recorder, the room counts the wait at the IDLE rate and
+        the snapshot is shortened so the run stays under the limit."""
+        config = _recorder_config(stations=False)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.IDLE: 0.001}
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=40, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert 60.0 <= self._collected(ditl, 1) < 2400.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
