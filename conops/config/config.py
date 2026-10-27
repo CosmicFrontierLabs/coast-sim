@@ -14,8 +14,9 @@ from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import ScienceData
 from .data_storage import DataStorage, RecorderView
 from .fault_management import FaultManagement
+from .frame import SpacecraftFrame
 from .groundstation import GroundStationRegistry
-from .instrument import Payload
+from .instrument import Payload, Telescope
 from .observation_categories import ObservationCategories
 from .observation_timing import ObservationTiming
 from .recorder import OnboardRecorder
@@ -235,6 +236,27 @@ class MissionConfig(ConfigModel):
         | None,
     ) -> dict[str, list[AttitudeConstraintScope]]:
         return _normalize_attitude_constraint_scopes(value)
+
+    @model_validator(mode="after")
+    def _telescopes_take_the_bus_frame(self) -> MissionConfig:
+        """A telescope given no mounting of its own points along the bus
+        frame's boresight, with its zero-roll reference completing the
+        frame; one given a mounting, or a legacy boresight, keeps it."""
+        bus = getattr(self, "spacecraft_bus", None)
+        frame = getattr(bus, "frame", None)
+        payload = getattr(self, "payload", None)
+        # A test double's configuration has no frame or payload.
+        if not isinstance(frame, SpacecraftFrame) or frame.is_identity:
+            return self
+        instruments = getattr(payload, "instruments", None)
+        if not isinstance(instruments, list):
+            return self
+        for instrument in instruments:
+            if isinstance(instrument, Telescope) and (
+                "mounting" not in instrument.model_fields_set
+            ):
+                instrument.mounting = frame.mounting
+        return self
 
     @model_validator(mode="after")
     def _panels_see_the_given_eclipses(self) -> MissionConfig:

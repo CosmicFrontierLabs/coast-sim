@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -48,9 +49,15 @@ from ..common.vector import (
 from ._base import ConfigModel
 from .constraint import Constraint
 
+if TYPE_CHECKING:
+    from .frame import SpacecraftFrame
+
 
 def create_star_tracker_vector(
-    roll_deg: float = 0.0, pitch_deg: float = 0.0, yaw_deg: float = 0.0
+    roll_deg: float = 0.0,
+    pitch_deg: float = 0.0,
+    yaw_deg: float = 0.0,
+    frame: SpacecraftFrame | None = None,
 ) -> tuple[float, float, float]:
     """Create a star tracker boresight vector from Euler angles.
 
@@ -58,7 +65,10 @@ def create_star_tracker_vector(
     Positive pitch rotates the default +X boresight toward body +Z.  This is a
     body-frame configuration convention, not the rust-ephem boresight-offset
     convention; :func:`normal_to_boresight_offset_euler_deg` performs that
-    conversion at the constraint API boundary.
+    conversion at the constraint API boundary. The angles are in the
+    canonical frame, boresight +X; with ``frame``, the bus's
+    :class:`SpacecraftFrame`, the vector is returned in the mission's body
+    frame, so the default points along the frame's boresight.
 
     Args:
         roll_deg: Rotation about X axis (degrees). Default is 0.
@@ -90,6 +100,8 @@ def create_star_tracker_vector(
     # Normalize to ensure unit vector
     boresight = vecnorm(boresight)
 
+    if frame is not None and not frame.is_identity:
+        return frame.body_vector((boresight[0], boresight[1], boresight[2]))
     return tuple(boresight)
 
 
