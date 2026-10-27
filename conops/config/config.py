@@ -80,16 +80,22 @@ def _normalize_attitude_constraint_scopes(
     return scopes
 
 
-WAITING_MODES: tuple[ACSMode | None, ...] = (None, ACSMode.IDLE, ACSMode.CHARGING)
+WAITING_MODES: tuple[ACSMode | None, ...] = (
+    None,
+    ACSMode.IDLE,
+    ACSMode.CHARGING,
+    ACSMode.SAA,
+)
 """The modes the spacecraft waits in between observations, the nominal rate
 first: what a reserve of housekeeping over a wait has to cover."""
 
 
 def housekeeping_while_waiting(config: object, duration_seconds: float) -> float:
     """The most housekeeping ``config`` generates over an interval spent
-    waiting between observations: in whichever of the nominal, ``IDLE`` and
-    ``CHARGING`` rates is the highest, as dispatch can spend the interval in
-    any of those modes and a reserve made at a lower rate would be overrun.
+    waiting between observations: in whichever of the nominal, ``IDLE``,
+    ``CHARGING`` and ``SAA`` rates is the highest, as dispatch can spend the
+    interval in any of those modes and a reserve made at a lower rate would
+    be overrun.
     ``config`` is anything with ``housekeeping_generated(seconds, mode=)``,
     a mission configuration or a test double's."""
     generated = getattr(config, "housekeeping_generated")

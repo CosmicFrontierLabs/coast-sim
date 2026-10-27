@@ -227,6 +227,8 @@ class QueueDITL(DITLMixin, DITLStats):
         # Queue target created for each activated TOO, keyed by id(TOORequest)
         self._too_targets: dict[int, Pointing] = {}
         self._committed_too: _CommittedTOO | None = None
+        self._recorder_volume_projected_gb: float | None = None
+        """The recorder's volume a preview of a later admission starts from."""
         self.merit_model = MeritModel(self.config)
 
         # Target Queue (use provided queue or create default)
@@ -510,7 +512,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 for command in self.acs.command_queue
             ):
                 return False
-            commitment = self._preview_too_admission(dispatch_time, outranking)
+            commitment = self._preview_too_admission(
+                dispatch_time, outranking, now=utime
+            )
             if commitment is None:
                 return False
             if any(
@@ -572,15 +576,49 @@ class QueueDITL(DITLMixin, DITLStats):
         too.executed = True
         return True
 
+    def _recorder_volume_at(self, now: float, later: float) -> float:
+        """The recorder's volume projected from ``now`` to ``later``, while
+        the observation under way goes on: its science until its collection
+        ends or ``later`` comes, and housekeeping for the whole steps
+        between at the ``SCIENCE`` rate or the waiting rate, whichever is
+        higher, as a bound on what the steps generate."""
+        volume = float(self.recorder.current_volume_gb)
+        if later <= now:
+            return volume
+        step = float(self.step_size)
+        span = whole_steps(later - now, step)
+        volume += max(
+            self.config.housekeeping_while_waiting(span),
+            self.config.housekeeping_generated(span, mode=ACSMode.SCIENCE),
+        )
+        ppt = self.ppt
+        if ppt is not None and ppt.collection_end is not None:
+            collecting = max(0.0, min(float(ppt.collection_end), later) - now)
+            if collecting > 0.0:
+                science = ppt.science_data
+                volume += float(
+                    self.config.science_generated(collecting, science=science)
+                    - self.config.science_generated(0.0, science=science)
+                )
+        return volume
+
     def _preview_too_admission(
         self,
         dispatch_time: float,
         candidates: list[tuple[TOORequest, Pointing, MeritBreakdown]],
+        *,
+        now: float | None = None,
     ) -> _CommittedTOO | None:
-        """Run normal admission on an isolated queue, target state and event log."""
+        """Run normal admission on an isolated queue, target state and event
+        log, at ``dispatch_time``, with the recorder's volume projected from
+        ``now`` to then: what the observation under way and its cleanup
+        generate meanwhile is on the recorder when the replacement starts."""
         assert self.ppt is not None
         preview = copy(self)
         preview.log = DITLLog()
+        preview._recorder_volume_projected_gb = self._recorder_volume_at(
+            dispatch_time if now is None else now, dispatch_time
+        )
         # Config and ephemeris are read-only admission inputs and may contain
         # native objects that cannot be copied. Copy the policy's mutable state,
         # including all target metadata, caches, ordering and current time.
@@ -2965,12 +3003,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.config.housekeeping_generated(ingress, mode=ACSMode.PASS)
                 - self.config.housekeeping_while_waiting(ingress),
             )
-        return (
-            limit
-            - RECORDER_ROOM_TOLERANCE_GB
-            - float(self.recorder.current_volume_gb)
-            - housekeeping
+        # A preview of admission at a later time starts from the volume
+        # projected to then (see _preview_too_admission).
+        projected = getattr(self, "_recorder_volume_projected_gb", None)
+        volume = (
+            float(projected)
+            if isinstance(projected, (int, float))
+            else float(self.recorder.current_volume_gb)
         )
+        return limit - RECORDER_ROOM_TOLERANCE_GB - volume - housekeeping
 
     def _pass_ingress_seconds(
         self, gspass: Pass, utime: float, ra: float, dec: float, roll: float

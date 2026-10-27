@@ -20,6 +20,7 @@ from conops.config import (
     HousekeepingData,
     Instrument,
     MissionConfig,
+    ObservationTiming,
     OnboardRecorder,
     Payload,
     ScienceData,
@@ -914,3 +915,83 @@ class TestDispatch:
         assert 60.0 <= self._collected(ditl, 1) < 2400.0
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    def test_a_delayed_too_is_admitted_against_the_volume_projected_to_its_start(
+        self,
+    ) -> None:
+        """A Target of Opportunity admitted while another observation runs
+        starts once that observation's cleanup is over; its admission counts
+        the science still collected and the housekeeping of the steps
+        between, at the SCIENCE rate, so the recorder is not overrun by what
+        the predecessor generates before the replacement starts."""
+        config = _recorder_config(stations=False)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.SCIENCE: 0.001}
+        )
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=60, cleanup_seconds=1200
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, LOW_RATE, merit=90, minutes=40, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        ditl.submit_too(
+            obsid=1_000_001,
+            name="ToO",
+            ra=110.0,
+            dec=12.0,
+            merit=500.0,
+            exptime=40 * MIN,
+            submit_time=T0 + 10 * MIN,
+            deadline=T0 + 2 * HOUR,
+            science_data={"Default Instrument": ScienceData(rate_gbps=HIGH_RATE)},
+        )
+        assert ditl.calc()
+
+        assert self._collected(ditl, 1_000_001) >= 60.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
+    def test_a_fixed_amount_that_reaches_the_limit_exactly_is_passed_over(
+        self,
+    ) -> None:
+        """An observation generating a fixed amount and nothing per second
+        is taken only where that amount keeps the limit below: one that
+        would reach the limit exactly is passed over, and one a little
+        smaller is taken."""
+        for amount, taken in ((LIMIT, False), (LIMIT - 0.5, True)):
+            config = _recorder_config(stations=False)
+            config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+            target = _target(config, 1, 105.0, 10.0, merit=90, minutes=20)
+            target.science_data = {
+                "Default Instrument": ScienceData(
+                    rate_gbps=0.0, per_observation_gb=amount
+                )
+            }
+            ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+            assert isinstance(ditl, QueueDITL)
+            ditl.step_size = STEP
+            assert ditl.calc()
+            assert (self._collected(ditl, 1) > 0.0) is taken
+            assert max(ditl.recorder_volume_gb) < LIMIT
+            assert ACSMode.SAFE not in {
+                hk.acs_mode for hk in ditl.telemetry.housekeeping
+            }
+
+
+class TestWaitingRate:
+    def test_the_waiting_rate_is_the_highest_of_the_waiting_modes(self) -> None:
+        """The reserve for time between observations covers whichever of
+        the nominal, IDLE, CHARGING and SAA rates is the highest."""
+        config = _recorder_config()
+        for mode in (ACSMode.IDLE, ACSMode.CHARGING, ACSMode.SAA):
+            config.spacecraft_bus.data_generation = HousekeepingData(
+                rate_gbps=0.0001, rate_mode={mode: 0.002}
+            )
+            assert config.housekeeping_while_waiting(100.0) == pytest.approx(0.2)
+        config.spacecraft_bus.data_generation = HousekeepingData(
+            rate_gbps=0.0001, rate_mode={ACSMode.SCIENCE: 0.002}
+        )
+        assert config.housekeeping_while_waiting(100.0) == pytest.approx(0.01)

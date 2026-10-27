@@ -631,7 +631,9 @@ class TargetQueue:
             + self._housekeeping_excess_gb(ACSMode.SCIENCE, 1.0)
         )
         if per_second <= 0.0:
-            return float("inf") if fixed <= room_gb + 1e-9 else -1.0
+            # The room keeps the limit below already: no tolerance here,
+            # which would give a fixed amount the limit exactly.
+            return float("inf") if fixed <= room_gb else -1.0
         return (room_gb - fixed) / per_second
 
     def _housekeeping_excess_gb(self, mode: ACSMode, seconds: float) -> float:

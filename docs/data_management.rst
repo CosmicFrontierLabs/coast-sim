@@ -105,7 +105,7 @@ Data comes in two kinds, and what drives each is different:
   whatever is observed. ``rate_mode`` sets a different rate in particular ACS modes,
   given by name or number, the way :class:`~conops.config.PowerDraw` sets power by
   mode. Dispatch reserves the time it waits between observations at the highest of
-  the nominal, ``IDLE`` and ``CHARGING`` rates
+  the nominal, ``IDLE``, ``CHARGING`` and ``SAA`` rates
   (:meth:`~conops.config.MissionConfig.housekeeping_while_waiting`), since it can
   spend that time in any of those modes; see :doc:`planning`.
 
