@@ -251,3 +251,49 @@ class TestBodyLookup:
         track = body_track(ephem, "Jupiter")
         assert len(track) == len(ephem.timestamp)
         assert all(0.0 <= p.ra < 360.0 for p in track)
+
+
+class TestRefresh:
+    def test_the_lookup_is_taken_and_the_given_track_stands_in_on_failure(
+        self, ephem: TLEEphemeris
+    ) -> None:
+        from unittest.mock import patch
+
+        from conops.targets import Program
+
+        config = MissionConfig()
+        config.constraint = Constraint()
+        config.constraint.ephem = ephem
+        given = _track()
+        mover = MovingPointing(
+            config=config, obsid=5, name="body", body="12345", track=given
+        )
+        looked_up = _track(rate_deg_per_h=2.0)
+        with patch(
+            "conops.targets.pointing.body_track", return_value=looked_up
+        ) as lookup:
+            assert mover.refresh_track() == "looked up"
+            assert lookup.call_count == 1
+        assert mover.track == looked_up
+        assert (mover.ra, mover.dec) == (looked_up[0].ra, looked_up[0].dec)
+
+        with patch(
+            "conops.targets.pointing.body_track", side_effect=RuntimeError("down")
+        ):
+            assert mover.refresh_track() == "given"
+        assert mover.track == looked_up
+
+        bare = MovingPointing(config=config, obsid=6, name="bare", body="12345")
+        with patch(
+            "conops.targets.pointing.body_track", side_effect=RuntimeError("down")
+        ):
+            with pytest.raises(RuntimeError):
+                bare.refresh_track()
+
+        program = Program(requests=[mover], begin=BEGIN, end=BEGIN + timedelta(hours=2))
+        with patch("conops.targets.pointing.body_track", return_value=given) as lookup:
+            program.bind(config, ephem)
+            assert lookup.call_count == 0
+            program.bind(config, ephem, refresh_tracks=True)
+            assert lookup.call_count == 1
+        assert mover.track == given

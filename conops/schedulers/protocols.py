@@ -44,6 +44,16 @@ class DispatchPolicy(Protocol):
     """The run's link coverage for passes without spacecraft tracking;
     QueueDITL attaches its own."""
 
+    def add_request(self, request: Pointing) -> Pointing:
+        """Add a request built elsewhere, prepared as ``add`` prepares one."""
+        ...
+
+    def science_budget_left(self, target: Pointing) -> float | None:
+        """Science the target's category may still collect within its time
+        budget, from what the policy's targets have collected; None
+        without a budget."""
+        ...
+
     def get(
         self,
         ra: float,
@@ -89,6 +99,8 @@ class DispatchPolicy(Protocol):
         target: Pointing,
         openings: list[tuple[float, float, int]],
         end: float,
+        *,
+        yield_to_lower: bool = True,
     ) -> tuple[float, int] | None:
         """When, before ``end``, a request ranked above ``target`` must
         start, and that request's obsid; None when none must."""

@@ -1,15 +1,115 @@
 from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 import numpy as np
 
-from ..common import ChargeState, normalize_acs_mode
+from ..common import ChargeState, normalize_acs_mode, unixtime2date
+from ..config.acs import AttitudeControlSystem
 from ..config.config import MissionConfig
 from ..config.data_storage import DataStorage
+from ..config.observation_categories import ObservationCategories
+from ..config.observation_groups import ObservationGroups
 from ..simulation.acs import ACS
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
+from ..simulation.slew_requirements import SlewClassSummary, summarise_plan
+from ..targets import Plan, PlanEntry, Pointing
+from ..targets.activity import CHARGE_OBSID
+from .plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from .telemetry import Telemetry
+
+_ECLIPSE_PANEL_FRACTION = 0.01
+"""A panel illumination below this fraction counts as a step in eclipse."""
+
+
+@dataclass(frozen=True)
+class CategorySummary:
+    """What one observation category got over a run."""
+
+    category: str
+    program: str
+    targets: int
+    """Distinct targets observed."""
+    visits: int
+    """Visits taken: a snapshot, or one visit of a sequence, each."""
+    science_hours: float
+    slew_hours: float
+    """Hours slewing into the category's visits."""
+    slew_degrees: float
+    """Degrees slewed into the category's visits."""
+    share: float
+    """The category's fraction of the run's science time."""
+    time_share: float | None
+    """The fraction allocated to it, where the category sets one."""
+    budget_hours: float | None = None
+    """Its time budget over the run, where the category sets one."""
+    budget_used: float | None = None
+    """The fraction of that budget the run's science used."""
+
+
+@dataclass(frozen=True)
+class GroupSummary:
+    """What one observation group got over a run."""
+
+    group: str
+    members: int
+    """Targets in the group."""
+    observed: int
+    """Of them, the targets observed."""
+    visits: int
+    science_hours: float
+    budget_hours: float | None
+    """The group's time budget over the run, where it sets one."""
+    budget_used: float | None
+    """The fraction of that budget the run's science used."""
+    window_start: float | None
+    window_deadline: float | None
+    """The group's window, where it sets one."""
+
+
+@dataclass(frozen=True)
+class VisitRecord:
+    """One visit of a target as executed, against its window where it has one."""
+
+    obsid: int
+    name: str
+    category: str
+    visit: int | None
+    """The visit window it was taken in, for a target with windows."""
+    window_start: float | None
+    window_deadline: float | None
+    begin: float | None
+    """When the entry began, with its slew; None for a visit not taken."""
+    collection_begin: float | None
+    end: float | None
+    exposure_seconds: float
+    slew_degrees: float
+    roll_deg: float | None
+    status: str
+    """``complete``, ``cut`` (less science than planned) or ``missed`` (a
+    window with no visit)."""
+    attempts: int = 1
+    """How many times the visit was begun, in a per-window record: a visit
+    cut short and taken again within its window counts each attempt."""
+
+
+@dataclass(frozen=True)
+class _Visit:
+    entries: list[PlanEntry]
+
+    @property
+    def first(self) -> PlanEntry:
+        return self.entries[0]
+
+    @property
+    def exposure(self) -> float:
+        return float(sum(e.exposure for e in self.entries if not e.calibration))
+
+    @property
+    def planned(self) -> float:
+        return float(sum(float(e.ss_max) for e in self.entries if not e.calibration))
 
 
 class DITLStats:
@@ -36,6 +136,370 @@ class DITLStats:
     repoints_in_observations: list[tuple[float, int, str]]
     acs: ACS
     telemetry: Telemetry
+
+    # ── Reporting ──────────────────────────────────────────────────────
+
+    def _requests(self) -> list[Pointing]:
+        """The targets the run was given, where it keeps them."""
+        queue = getattr(self, "queue", None)
+        targets = getattr(queue, "targets", None) or getattr(self, "targets", None)
+        return [t for t in (targets or []) if isinstance(t, Pointing)]
+
+    def _science_visits(self) -> list[_Visit]:
+        """The run's science visits, in time order: each snapshot entry, or
+        the step entries of one visit of a sequence, as one. Dispatch begins
+        a visit's next step at the simulation step after the last ended, so
+        steps up to a step apart belong to the same visit."""
+        plan = getattr(self, "plan", None)
+        if not isinstance(plan, Plan):
+            return []
+        step = float(getattr(self, "step_size", 0) or 0)
+        entries = sorted(
+            (
+                e
+                for e in plan
+                if entry_obstype(e) in PLAN_SCIENCE_OBSTYPES and e.obsid is not None
+            ),
+            key=lambda e: (float(e.begin), float(e.end)),
+        )
+        visits: list[_Visit] = []
+        for entry in entries:
+            last = visits[-1] if visits else None
+            if (
+                last is not None
+                and entry.step is not None
+                and last.first.step is not None
+                and int(last.first.obsid) == int(entry.obsid)
+                and last.first.visit == entry.visit
+                and float(entry.begin) <= float(last.entries[-1].end) + step + 1e-6
+            ):
+                last.entries.append(entry)
+            else:
+                visits.append(_Visit([entry]))
+        return visits
+
+    def summary_by_category(self) -> list[CategorySummary]:
+        """What each observation category got over the run, from the plan
+        as executed: targets, visits, science and slew hours, the degrees
+        slewed into its visits, its share of the run's science time, and
+        the fraction allocated to it where the category sets one. One row
+        per configured category, in their order, a category that collected
+        nothing included, then any category science fell to outside them."""
+        categories = getattr(self.config, "observation_categories", None)
+        # A test double's configuration has no categories.
+        if not isinstance(categories, ObservationCategories):
+            return []
+        visits = self._science_visits()
+        by_name: dict[str, list[_Visit]] = {
+            category.name: [] for category in categories.categories
+        }
+        for visit in visits:
+            name = categories.get_category(int(visit.first.obsid)).name
+            by_name.setdefault(name, []).append(visit)
+        total = sum(v.exposure for v in visits)
+        rows = []
+        for name, taken in by_name.items():
+            category = next(
+                (c for c in categories.categories if c.name == name),
+                categories.get_category(int(taken[0].first.obsid)) if taken else None,
+            )
+            if category is None:
+                continue
+            science = sum(v.exposure for v in taken)
+            rows.append(
+                CategorySummary(
+                    category=name,
+                    program=category.program_name,
+                    targets=len({int(v.first.obsid) for v in taken}),
+                    visits=len(taken),
+                    science_hours=science / 3600.0,
+                    slew_hours=sum(float(v.first.slewtime) for v in taken) / 3600.0,
+                    slew_degrees=sum(float(v.first.slewdist) for v in taken),
+                    share=science / total if total > 0 else 0.0,
+                    time_share=category.time_share,
+                    budget_hours=(
+                        category.time_budget_seconds / 3600.0
+                        if category.time_budget_seconds is not None
+                        else None
+                    ),
+                    budget_used=(
+                        science / category.time_budget_seconds
+                        if category.time_budget_seconds
+                        else None
+                    ),
+                )
+            )
+        return rows
+
+    def summary_by_group(self) -> list[GroupSummary]:
+        """One row per observation group, in the configuration's order:
+        its targets, those observed, the visits and science taken, and the
+        budget and window it sets. Empty without groups."""
+        groups = getattr(self.config, "observation_groups", None)
+        if not isinstance(groups, ObservationGroups) or not groups.groups:
+            return []
+        visits = self._science_visits()
+        rows = []
+        for group in groups.groups:
+            members = set(group.members)
+            taken = [v for v in visits if int(v.first.obsid) in members]
+            science = sum(v.exposure for v in taken)
+            rows.append(
+                GroupSummary(
+                    group=group.name,
+                    members=len(members),
+                    observed=len({int(v.first.obsid) for v in taken}),
+                    visits=len(taken),
+                    science_hours=science / 3600.0,
+                    budget_hours=(
+                        group.time_budget_seconds / 3600.0
+                        if group.time_budget_seconds is not None
+                        else None
+                    ),
+                    budget_used=(
+                        science / group.time_budget_seconds
+                        if group.time_budget_seconds
+                        else None
+                    ),
+                    window_start=group.window_start,
+                    window_deadline=group.window_deadline,
+                )
+            )
+        return rows
+
+    def slew_class_summary(self) -> list[SlewClassSummary]:
+        """The run's slews against the ACS's slew requirement classes: one
+        row per class with its slews, the longest and how many broke the
+        allowance, and a row for slews wider than the widest class. Empty
+        without a table."""
+        acs = getattr(
+            getattr(self.config, "spacecraft_bus", None), "attitude_control", None
+        )
+        requirements = getattr(acs, "slew_requirements", None)
+        if (
+            not isinstance(acs, AttitudeControlSystem)
+            or not isinstance(requirements, list)
+            or not requirements
+        ):
+            # No table, or a test double's configuration.
+            return []
+        plan = getattr(self, "plan", None)
+        entries = list(plan) if isinstance(plan, (Plan, list, tuple)) else []
+        return summarise_plan(entries, acs)
+
+    def visit_table(
+        self, targets: Sequence[Pointing] | None = None, *, per_window: bool = False
+    ) -> list[VisitRecord]:
+        """Each visit of the run against its plan: the window it was taken
+        in and when, its science against what was planned, the slew into it
+        and its roll. ``targets``, or the run's own requests, give the
+        windows; a window of theirs with no visit is a ``missed`` row.
+        A visit with less science than planned, less a step, is ``cut``.
+
+        Every attempt is a row, so a visit cut short and taken again within
+        its window is two. With ``per_window`` a window is one row, its
+        verdict: the whole visit where one was taken, with the attempts it
+        took, else the last attempt, cut; a target without windows keeps a
+        row per snapshot."""
+        categories = getattr(self.config, "observation_categories", None)
+        if not isinstance(categories, ObservationCategories):
+            return []
+        requests = list(targets) if targets is not None else self._requests()
+        by_obsid = {int(t.obsid): t for t in requests}
+        step = float(getattr(self, "step_size", 0) or 0)
+        rows: list[VisitRecord] = []
+        taken: dict[tuple[int, int], bool] = {}
+        for visit in self._science_visits():
+            first = visit.first
+            obsid = int(first.obsid)
+            target = by_obsid.get(obsid)
+            windows = getattr(target, "visit_windows", None) or getattr(
+                first, "visit_windows", None
+            )
+            index = first.visit
+            window = (
+                windows[index]
+                if windows and index is not None and 0 <= index < len(windows)
+                else None
+            )
+            planned = visit.planned
+            if target is not None and target.visit_windows:
+                planned = float(target.per_visit_seconds)
+            exposure = visit.exposure
+            status = "cut" if exposure < planned - step - 1e-6 else "complete"
+            if index is not None and status == "complete":
+                taken[(obsid, index)] = True
+            rows.append(
+                VisitRecord(
+                    obsid=obsid,
+                    name=str(first.name),
+                    category=categories.get_category(obsid).name,
+                    visit=index,
+                    window_start=window.start if window is not None else None,
+                    window_deadline=window.deadline if window is not None else None,
+                    begin=float(first.begin),
+                    collection_begin=(
+                        float(first.collection_begin)
+                        if first.collection_begin is not None
+                        else None
+                    ),
+                    end=float(visit.entries[-1].end),
+                    exposure_seconds=exposure,
+                    slew_degrees=float(first.slewdist),
+                    roll_deg=float(first.roll) if first.roll != -1.0 else None,
+                    status=status,
+                )
+            )
+        for target in requests:
+            for index, window in enumerate(target.visit_windows):
+                obsid = int(target.obsid)
+                if (obsid, index) in taken:
+                    continue
+                if any(r.obsid == obsid and r.visit == index for r in rows):
+                    continue
+                rows.append(
+                    VisitRecord(
+                        obsid=obsid,
+                        name=str(target.name),
+                        category=categories.get_category(obsid).name,
+                        visit=index,
+                        window_start=window.start,
+                        window_deadline=window.deadline,
+                        begin=None,
+                        collection_begin=None,
+                        end=None,
+                        exposure_seconds=0.0,
+                        slew_degrees=0.0,
+                        roll_deg=None,
+                        status="missed",
+                    )
+                )
+        if per_window:
+            rows = self._per_window(rows)
+        return sorted(
+            rows,
+            key=lambda r: (
+                r.begin if r.begin is not None else (r.window_start or 0.0),
+                r.obsid,
+            ),
+        )
+
+    @staticmethod
+    def _per_window(rows: list[VisitRecord]) -> list[VisitRecord]:
+        """One record per visit window: the whole visit taken in it, with
+        the attempts it took, else the last attempt."""
+        by_window: dict[tuple[int, int], list[VisitRecord]] = {}
+        verdicts: list[VisitRecord] = []
+        for record in rows:
+            if record.visit is None or record.window_start is None:
+                verdicts.append(record)
+                continue
+            by_window.setdefault((record.obsid, record.visit), []).append(record)
+        for attempts in by_window.values():
+            taken = [r for r in attempts if r.status == "complete"]
+            verdict = taken[0] if taken else attempts[-1]
+            begun = [r for r in attempts if r.status != "missed"]
+            verdicts.append(replace(verdict, attempts=len(begun)))
+        return verdicts
+
+    def _print_reporting(self) -> None:
+        """Print the category summary and, for targets with visit windows,
+        the visit table."""
+        rows = self.summary_by_category()
+        if rows:
+            print("\n" + "-" * 70)
+            print("SCIENCE BY CATEGORY")
+            print("-" * 70)
+            print(
+                f"{'Category':<18} {'Program':<12} {'Targets':>7} {'Visits':>6} "
+                f"{'Science h':>9} {'Slew h':>6} {'Slew deg':>8} {'Share':>6} {'Alloc':>6} "
+                f"{'Budget h':>8} {'Used':>5}"
+            )
+            print("-" * 70)
+            for row in rows:
+                allocated = (
+                    f"{row.time_share:>6.2f}"
+                    if row.time_share is not None
+                    else "     -"
+                )
+                budget = (
+                    f"{row.budget_hours:>8.2f} {row.budget_used:>5.2f}"
+                    if row.budget_hours is not None and row.budget_used is not None
+                    else "       -     -"
+                )
+                print(
+                    f"{row.category:<18} {row.program:<12} {row.targets:>7} "
+                    f"{row.visits:>6} {row.science_hours:>9.2f} {row.slew_hours:>6.2f} "
+                    f"{row.slew_degrees:>8.1f} {row.share:>6.2f} {allocated} {budget}"
+                )
+        groups = self.summary_by_group()
+        if groups:
+            print("\n" + "-" * 70)
+            print("SCIENCE BY GROUP")
+            print("-" * 70)
+            print(
+                f"{'Group':<18} {'Targets':>7} {'Observed':>8} {'Visits':>6} "
+                f"{'Science h':>9} {'Budget h':>8} {'Used':>5}"
+            )
+            print("-" * 70)
+            for summary in groups:
+                budget = (
+                    f"{summary.budget_hours:>8.2f} {summary.budget_used:>5.2f}"
+                    if summary.budget_hours is not None
+                    and summary.budget_used is not None
+                    else "       -     -"
+                )
+                print(
+                    f"{summary.group:<18} {summary.members:>7} {summary.observed:>8} "
+                    f"{summary.visits:>6} {summary.science_hours:>9.2f} {budget}"
+                )
+        classes = self.slew_class_summary()
+        if classes:
+            print("\n" + "-" * 70)
+            print("SLEWS BY REQUIREMENT CLASS")
+            print("-" * 70)
+            print(
+                f"{'Class':<18} {'Up to deg':>9} {'Allowed s':>9} {'Slews':>6} "
+                f"{'Longest s':>9} {'Over':>5}"
+            )
+            print("-" * 70)
+            for slew_class in classes:
+                limits = (
+                    f"{slew_class.max_great_circle_deg:>9.1f} {slew_class.max_seconds:>9.0f}"
+                    if slew_class.max_great_circle_deg is not None
+                    and slew_class.max_seconds is not None
+                    else "        -         -"
+                )
+                print(
+                    f"{slew_class.name:<18} {limits} {slew_class.slews:>6} "
+                    f"{slew_class.longest_seconds:>9.0f} {slew_class.violations:>5}"
+                )
+        visits = [
+            r for r in self.visit_table(per_window=True) if r.window_start is not None
+        ]
+        if visits:
+            print("\n" + "-" * 70)
+            print("VISITS IN WINDOWS")
+            print("-" * 70)
+            print(
+                f"{'Target':<16} {'Visit':>5} {'Window opens':<18} {'Collects':<18} "
+                f"{'Science s':>9} {'Status':<8} {'Tries':>5}"
+            )
+            print("-" * 70)
+            for record in visits:
+                collects = (
+                    unixtime2date(record.collection_begin)
+                    if record.collection_begin is not None
+                    else "-"
+                )
+                opens = (
+                    unixtime2date(record.window_start) if record.window_start else "-"
+                )
+                print(
+                    f"{record.name[:16]:<16} {(record.visit or 0) + 1:>5} {opens:<18} "
+                    f"{collects:<18} {record.exposure_seconds:>9.0f} {record.status:<8} "
+                    f"{record.attempts:>5}"
+                )
 
     def instrument_mode_hours(self) -> dict[str, dict[str, float]]:
         """Hours each instrument with modes spent in each mode over the run,
@@ -116,6 +580,8 @@ class DITLStats:
                 ):
                     print(f"{instrument:<24} {mode_name:<16} {time_hours:>10.2f}")
 
+        self._print_reporting()
+
         # Observation statistics
         print("\n" + "-" * 70)
         print("OBSERVATION STATISTICS")
@@ -123,15 +589,15 @@ class DITLStats:
         if self.obsid:
             unique_obsids = set(self.obsid)
             # Filter out special ObsIDs (like 0 or 999xxx for charging)
-            science_obsids = [o for o in unique_obsids if o > 0 and o < 999000]
+            science_obsids = [o for o in unique_obsids if 0 < o < CHARGE_OBSID]
             print(f"Total Unique Observations: {len(science_obsids)}")
             print(
-                f"Total Observation Steps: {sum(1 for o in self.obsid if 0 < o < 999000)}"
+                f"Total Observation Steps: {sum(1 for o in self.obsid if 0 < o < CHARGE_OBSID)}"
             )
 
             if science_obsids:
                 # Count time per obsid
-                obsid_counts = Counter([o for o in self.obsid if 0 < o < 999000])
+                obsid_counts = Counter([o for o in self.obsid if 0 < o < CHARGE_OBSID])
                 print("\nTop 10 Observations by Time:")
                 print(f"{'ObsID':<10} {'Steps':<10} {'Time (hours)':<15}")
                 print("-" * 35)
@@ -228,7 +694,7 @@ class DITLStats:
             print("\nSolar Panel Illumination:")
             avg_illumination = np.mean(self.panel) * 100
             print(f"  Average: {avg_illumination:.1f}%")
-            eclipse_steps = sum(1 for p in self.panel if p < 0.01)
+            eclipse_steps = sum(1 for p in self.panel if p < _ECLIPSE_PANEL_FRACTION)
             print(
                 f"  Eclipse Time: {eclipse_steps * self.step_size / 3600:.2f} hours ({eclipse_steps / len(self.panel) * 100:.1f}%)"
             )
