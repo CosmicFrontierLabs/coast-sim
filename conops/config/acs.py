@@ -5,6 +5,7 @@ from rust_ephem.constraints import ConstraintConfig
 from ..common import separation
 from ..common.enums import SlewAlgorithm
 from ..common.motion import RestToRestMotion
+from ..common.numerics import ROUNDOFF
 from ._base import ConfigModel
 from .constants import DTOR
 from .momentum import StoredMomentumConfig
@@ -13,6 +14,43 @@ from .momentum import StoredMomentumConfig
 def scheduled_slew_time(duration_s: float) -> int:
     """Convert a physical duration to whole seconds without ending it early."""
     return 0 if duration_s <= 0.0 else int(np.ceil(duration_s))
+
+
+class SlewRequirement(ConfigModel):
+    """A slew requirement class: a slew of up to a great-circle angle
+    completes, settled, within a time."""
+
+    name: str = Field(description="The class's name, such as 'small' or 'large'")
+    max_great_circle_deg: float = Field(
+        gt=0.0,
+        le=180.0,
+        description=(
+            "The widest slew of the class, as the great-circle angle between "
+            "the pointings it joins, in degrees"
+        ),
+    )
+    max_seconds: float = Field(
+        gt=0.0, description="The most a slew of the class may take, settled, in seconds"
+    )
+
+
+class ThermalSettlingStep(ConfigModel):
+    """One step of the thermal settling table: a slew that moves the Sun by
+    up to an angle in the body frame settles in a time."""
+
+    max_sun_vector_change_deg: float = Field(
+        gt=0.0,
+        le=180.0,
+        description=(
+            "The widest change of the Sun's direction in the body frame, between "
+            "the slew's start and end attitudes, the step covers, in degrees"
+        ),
+    )
+    settle_seconds: float = Field(
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The settle after such a slew, in seconds",
+    )
 
 
 class AttitudeControlSystem(ConfigModel):
@@ -50,8 +88,26 @@ class AttitudeControlSystem(ConfigModel):
     slew_accuracy: float = Field(
         default=0.01, description="Pointing accuracy after slew completion in degrees"
     )
+    slew_requirements: list[SlewRequirement] = Field(
+        default_factory=list,
+        description=(
+            "Slew requirement classes, each the time a slew of up to a "
+            "great-circle angle may take, settled, in ascending angle. A check on "
+            "the slews the ACS model flies, reported by the plan validator and the "
+            "statistics, not a constraint on them; empty for no check"
+        ),
+    )
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
+    )
+    thermal_settling: list[ThermalSettlingStep] = Field(
+        default_factory=list,
+        description=(
+            "Settle time by the change of the Sun's direction in the body frame "
+            "a slew makes, in ascending angle: the settle after a slew is that of "
+            "the first step wide enough for its change, or the last step's beyond "
+            "the table. Empty for the constant settle_time"
+        ),
     )
     max_roll_from_optimum_deg: float | None = Field(
         default=None,
@@ -140,7 +196,7 @@ class AttitudeControlSystem(ConfigModel):
         if axis.shape != (3,) or not np.all(np.isfinite(axis)):
             raise ValueError("rotation_axis_body must contain three finite values")
         norm = float(np.linalg.norm(axis))
-        if norm < 1e-12:
+        if norm < ROUNDOFF:
             raise ValueError("rotation_axis_body must have nonzero magnitude")
         unit_axis = axis / norm
         limits = np.asarray(body_limits, dtype=np.float64)
@@ -205,7 +261,7 @@ class AttitudeControlSystem(ConfigModel):
         if self.max_slew_rate_body is None:
             return np.full(axes.shape[:-1], float(self.max_slew_rate))
         norms = np.linalg.norm(axes, axis=-1)
-        still = norms < 1e-12
+        still = norms < ROUNDOFF
         unit_axes = axes / np.where(still, 1.0, norms)[..., None]
         limits = np.asarray(self.max_slew_rate_body, dtype=np.float64)
         with np.errstate(divide="ignore"):
@@ -267,11 +323,19 @@ class AttitudeControlSystem(ConfigModel):
         self,
         angle_deg: float,
         rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        sun_vector_change_deg: float | None = None,
     ) -> float:
-        """Total slew time (motion + settle) using bang-bang control."""
+        """Total slew time (motion + settle) using bang-bang control. The
+        settle is the thermal settling table's for the Sun-vector change when
+        one is given, else ``settle_time``."""
         if angle_deg <= 0 or np.isnan(angle_deg):
             return 0.0
-        return self.motion_time(angle_deg, rotation_axis_body) + self.settle_time
+        settle = (
+            self.settle_time
+            if sun_vector_change_deg is None
+            else self.settle_seconds(sun_vector_change_deg)
+        )
+        return self.motion_time(angle_deg, rotation_axis_body) + settle
 
     def predict_slew(
         self,
@@ -300,3 +364,55 @@ class AttitudeControlSystem(ConfigModel):
             [startdec, enddec],
         )
         return slewdist, slewpath
+
+    @field_validator("slew_requirements")
+    @classmethod
+    def _classes_in_ascending_angle(
+        cls, value: list[SlewRequirement]
+    ) -> list[SlewRequirement]:
+        angles = [r.max_great_circle_deg for r in value]
+        if len(set(angles)) != len(angles):
+            raise ValueError("slew requirement classes must have distinct angles")
+        if len({r.name for r in value}) != len(value):
+            raise ValueError("slew requirement classes must have distinct names")
+        return sorted(value, key=lambda r: r.max_great_circle_deg)
+
+    @field_validator("thermal_settling")
+    @classmethod
+    def _steps_in_ascending_angle(
+        cls, value: list[ThermalSettlingStep]
+    ) -> list[ThermalSettlingStep]:
+        angles = [step.max_sun_vector_change_deg for step in value]
+        if len(set(angles)) != len(angles):
+            raise ValueError("thermal settling steps must have distinct angles")
+        return sorted(value, key=lambda step: step.max_sun_vector_change_deg)
+
+    def settle_seconds(self, sun_vector_change_deg: float) -> float:
+        """The settle after a slew that moves the Sun's direction in the body
+        frame by ``sun_vector_change_deg``: the first step of the thermal
+        settling table wide enough for it, the last step's beyond the table,
+        and ``settle_time`` without a table."""
+        if not self.thermal_settling:
+            return float(self.settle_time)
+        for step in self.thermal_settling:
+            if sun_vector_change_deg <= step.max_sun_vector_change_deg + 1e-9:
+                return float(step.settle_seconds)
+        return float(self.thermal_settling[-1].settle_seconds)
+
+    @property
+    def max_settle_seconds(self) -> float:
+        """The longest settle any slew can take: the table's longest step, or
+        ``settle_time`` without a table. What a bound on a slew's duration
+        must allow for."""
+        if not self.thermal_settling:
+            return float(self.settle_time)
+        return max(float(step.settle_seconds) for step in self.thermal_settling)
+
+    def slew_class(self, great_circle_deg: float) -> SlewRequirement | None:
+        """The requirement class a slew of ``great_circle_deg`` falls in: the
+        narrowest class wide enough for it; None without a table or for a
+        slew wider than the widest class."""
+        for requirement in self.slew_requirements:
+            if great_circle_deg <= requirement.max_great_circle_deg + 1e-9:
+                return requirement
+        return None

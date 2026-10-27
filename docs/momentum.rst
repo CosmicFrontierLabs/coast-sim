@@ -208,12 +208,15 @@ each observation, contact, charge and activity at its attitude, and the idle tim
 between them at the attitude held, with each thruster dump unloading the wheels as
 it ends. Where the forecast reaches the planning level and the spacecraft has
 thrusters, the planner reserves a dump, a desaturation activity holding the attitude
-of whatever precedes it, and plans again from the start with the dumps so far. The
-dump goes between observations: after the one the level is reached inside, where
+of whatever precedes it, keeps the science placed before the dump as it is, and plans
+on from there with the dumps so far. The dump goes between observations: after the one the level is reached inside, where
 the capacity is not reached through the dump's own length; before it, where the
 observation fits from empty wheels; a visit that does not fit from empty is left
 out, a plain observation that does not is cut at the level. A dump found earlier
-than one already reserved replaces it and those after it. The passes of one plan
+than one already reserved replaces it and those after it. A pass reserves a dump for
+every crossing the forecast reaches, with the wheels unloaded at each dump before, and
+builds the plan again once; the next pass checks them against the plan as built. The
+passes of one plan
 share the spans integrated so far, keyed on each span's times, attitude or slew and
 the momentum it starts from, so a pass integrates only from its new dump onwards.
 A rolling-horizon run gives each replan the momentum it will have when its horizon
