@@ -94,3 +94,37 @@ class TestDITLPrintStatistics:
         ditl_empty.print_statistics()
         output = capsys.readouterr().out
         assert "Configuration: Test Spacecraft" in output
+
+
+class TestInstrumentModeHours:
+    def test_mode_hours_are_summed_from_telemetry_and_printed(
+        self, ditl_basic: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from datetime import datetime, timezone
+
+        from conops.ditl.telemetry import Housekeeping, Telemetry
+
+        ditl_basic.step_size = 60
+        ditl_basic.telemetry = Telemetry()
+        for k, modes in enumerate(
+            [{"camera": "SCIENCE"}, {"camera": "SCIENCE"}, {"camera": "IDLE"}]
+        ):
+            ditl_basic.telemetry.housekeeping.append(
+                Housekeeping(
+                    timestamp=datetime.fromtimestamp(60.0 * k, tz=timezone.utc),
+                    instrument_modes=modes,
+                )
+            )
+        assert ditl_basic.instrument_mode_hours() == {
+            "camera": {"SCIENCE": pytest.approx(2 / 60), "IDLE": pytest.approx(1 / 60)}
+        }
+        ditl_basic.print_statistics()
+        output = capsys.readouterr().out
+        assert "INSTRUMENT MODE HOURS" in output
+        assert "camera" in output
+
+    def test_no_table_without_modes(
+        self, ditl_basic: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ditl_basic.print_statistics()
+        assert "INSTRUMENT MODE HOURS" not in capsys.readouterr().out

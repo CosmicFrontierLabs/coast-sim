@@ -117,6 +117,45 @@ class TelescopeConfig(ConfigModel):
         return 206265.0 / (self.focal_length_m * 1e6)
 
 
+IDLE_MODE = "IDLE"
+"""The mode an instrument with modes is in when no observation uses it."""
+SCIENCE_MODE = "SCIENCE"
+"""The mode an instrument with modes observes in unless a request names another."""
+
+
+class InstrumentMode(ConfigModel):
+    """One operating mode of an instrument, with its power draw."""
+
+    name: str = Field(description="Mode name, such as IDLE or SCIENCE")
+    power_w: float = Field(ge=0.0, description="Power draw in the mode, in watts")
+    eclipse_power_w: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Power draw in the mode during eclipse, in watts; None: power_w",
+    )
+    science_data: ScienceData | None = Field(
+        default=None,
+        description=(
+            "Science data the instrument generates while collecting in this "
+            "mode; None: its data_generation's science data"
+        ),
+    )
+    observing: bool = Field(
+        default=True,
+        description=(
+            "Whether the instrument counts as observing in this mode for the "
+            "payload's concurrency rules; False for a standby mode that draws "
+            "its power without observing. IDLE never observes"
+        ),
+    )
+
+    def power(self, in_eclipse: bool = False) -> float:
+        """The mode's draw in watts."""
+        if in_eclipse and self.eclipse_power_w is not None:
+            return self.eclipse_power_w
+        return self.power_w
+
+
 class Instrument(ConfigModel):
     """A spacecraft instrument with power consumption and data generation characteristics.
 
@@ -124,6 +163,12 @@ class Instrument(ConfigModel):
         instrument_type: Discriminator tag for polymorphic payload deserialization.
         name: Instrument name/identifier.
         power_draw: Power draw characteristics (nominal, peak, mode-specific).
+        modes: Operating modes with their power draws. With modes, the
+            instrument draws its mode's power: the mode an observation names
+            for it, ``SCIENCE`` when the observation uses it without naming
+            one, a mode named like the ACS mode if the instrument defines
+            one, and ``IDLE`` otherwise; ``power_draw`` is then unused.
+            Without modes it draws ``power_draw`` by ACS mode, as before.
         heater: Optional heater system.
         data_generation: Data generation characteristics.
     """
@@ -141,6 +186,13 @@ class Instrument(ConfigModel):
         ),
         description="Power draw characteristics for the instrument",
     )
+    modes: list[InstrumentMode] = Field(
+        default_factory=list,
+        description=(
+            "Operating modes with their power draws; at least IDLE and SCIENCE "
+            "when any are given. Empty: power_draw by ACS mode applies"
+        ),
+    )
     heater: Heater | None = Field(
         default=None, description="Optional heater system for the instrument"
     )
@@ -148,17 +200,74 @@ class Instrument(ConfigModel):
         default_factory=DataGeneration, description="Data generation characteristics"
     )
 
-    def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
+    @field_validator("modes")
+    @classmethod
+    def _modes_are_named_once_with_idle_and_science(
+        cls, modes: list[InstrumentMode]
+    ) -> list[InstrumentMode]:
+        if not modes:
+            return modes
+        names = [mode.name for mode in modes]
+        if len(set(names)) != len(names):
+            raise ValueError("instrument modes must have distinct names")
+        for required in (IDLE_MODE, SCIENCE_MODE):
+            if required not in names:
+                raise ValueError(f"instrument modes must include {required}")
+        for mode in modes:
+            if mode.name == IDLE_MODE and mode.observing:
+                # Idle is, by definition, not observing.
+                mode.observing = False
+        return modes
+
+    def mode(self, name: str) -> InstrumentMode | None:
+        """The mode called ``name``, if the instrument defines it."""
+        return next((mode for mode in self.modes if mode.name == name), None)
+
+    def mode_in(self, acs_mode: int | None, instrument_mode: str | None) -> str:
+        """The mode the instrument is in: ``instrument_mode``, named for it
+        by the observation; else, outside science, a mode named like the ACS
+        mode, if the instrument defines one; else ``IDLE``. During science an
+        instrument the observation does not name idles."""
+        if instrument_mode is not None:
+            return instrument_mode
+        if acs_mode is not None:
+            try:
+                named = ACSMode(acs_mode).name
+            except ValueError:
+                named = None
+            if (
+                named is not None
+                and named != SCIENCE_MODE
+                and self.mode(named) is not None
+            ):
+                return named
+        return IDLE_MODE
+
+    def power(
+        self,
+        mode: int | None = None,
+        in_eclipse: bool = False,
+        instrument_mode: str | None = None,
+    ) -> float:
         """Get the power draw for the instrument in the given mode.
 
         Args:
-            mode: Operational mode (None for nominal)
+            mode: ACS mode (None for nominal)
             in_eclipse: Whether spacecraft is in eclipse
+            instrument_mode: The instrument's own mode, named for it by the
+                observation in progress; None when no observation uses it
 
         Returns:
             Total power draw in watts
         """
-        base_power = self.power_draw.power(mode, in_eclipse=in_eclipse)
+        if self.modes:
+            name = self.mode_in(mode, instrument_mode)
+            own = self.mode(name)
+            if own is None:
+                raise ValueError(f"instrument {self.name!r} has no mode {name!r}")
+            base_power = own.power(in_eclipse)
+        else:
+            base_power = self.power_draw.power(mode, in_eclipse=in_eclipse)
         heater_power = (
             self.heater.power(mode, in_eclipse=in_eclipse) if self.heater else 0.0
         )
@@ -467,11 +576,52 @@ _AnyInstrument = Annotated[
 ]
 
 
+class ConcurrencyRules(ConfigModel):
+    """What may observe at once: rules on the instruments an observation
+    uses, checked against each request's instrument modes. An instrument
+    observes when a request names it in a mode that observes: any mode but
+    ``IDLE``, unless the mode's ``observing`` flag says otherwise."""
+
+    max_observing: int | None = Field(
+        default=None,
+        ge=1,
+        description="The most instruments one observation may use; None: any number",
+    )
+    required_guider: str | None = Field(
+        default=None,
+        description=(
+            "An instrument every observation that uses any instrument must "
+            "also use, such as a guider; None: none required"
+        ),
+    )
+    exclusive: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description="Pairs of instruments one observation may not use together",
+    )
+
+    @property
+    def active(self) -> bool:
+        """Whether any rule is set."""
+        return (
+            self.max_observing is not None
+            or self.required_guider is not None
+            or bool(self.exclusive)
+        )
+
+    def names(self) -> set[str]:
+        """Every instrument the rules name."""
+        named = {a for pair in self.exclusive for a in pair}
+        if self.required_guider is not None:
+            named.add(self.required_guider)
+        return named
+
+
 class Payload(ConfigModel):
     """A collection of instruments operated together as the spacecraft payload.
 
     Attributes:
         instruments: List of Instrument (or subclass) instances.
+        concurrency: Rules on what may observe at once.
     """
 
     instruments: list[_AnyInstrument] = [Instrument()]
@@ -479,6 +629,25 @@ class Payload(ConfigModel):
         default_factory=ObservationTiming,
         description="Non-collection setup, cleanup, and handoff budgets for science tasks",
     )
+    concurrency: ConcurrencyRules = Field(
+        default_factory=ConcurrencyRules,
+        description="Rules on the instruments one observation may use at once",
+    )
+
+    @model_validator(mode="after")
+    def _rules_name_instruments(self) -> "Payload":
+        instruments = getattr(self, "instruments", None)
+        rules = getattr(self, "concurrency", None)
+        # A test double standing in for a payload has neither.
+        if not isinstance(instruments, list) or not isinstance(rules, ConcurrencyRules):
+            return self
+        names = {instrument.name for instrument in instruments}
+        unknown = sorted(rules.names() - names)
+        if unknown:
+            raise ValueError(
+                f"concurrency rules name instruments the payload lacks: {unknown}"
+            )
+        return self
 
     @field_validator("instruments", mode="before")
     @classmethod
@@ -508,19 +677,119 @@ class Payload(ConfigModel):
             result.append(item)
         return result
 
-    def power(self, mode: int | None = None, in_eclipse: bool = False) -> float:
+    def power(
+        self,
+        mode: int | None = None,
+        in_eclipse: bool = False,
+        instrument_modes: Mapping[str, str] | None = None,
+    ) -> float:
         """Get the total power draw for all instruments in the payload in the given mode.
 
         Args:
-            mode: Operational mode (None for nominal)
+            mode: ACS mode (None for nominal)
             in_eclipse: Whether spacecraft is in eclipse
+            instrument_modes: The mode each instrument is in during the
+                observation in progress, by name; instruments not named,
+                or all of them when None, are in no observation
 
         Returns:
             Total power draw in watts
         """
         return sum(
-            instrument.power(mode, in_eclipse=in_eclipse)
+            instrument.power(
+                mode,
+                in_eclipse=in_eclipse,
+                instrument_mode=(
+                    instrument_modes.get(instrument.name)
+                    if instrument_modes is not None
+                    else None
+                ),
+            )
             for instrument in self.instruments
+        )
+
+    def check_instrument_modes(self, instrument_modes: Mapping[str, str]) -> None:
+        """Raise if a mode names an instrument the payload lacks, or a mode
+        the instrument does not define; an instrument without modes may be
+        named in ``IDLE`` or ``SCIENCE`` only."""
+        by_name = {instrument.name: instrument for instrument in self.instruments}
+        for name, mode in instrument_modes.items():
+            instrument = by_name.get(name)
+            if instrument is None:
+                raise ValueError(f"no instrument {name!r} in the payload")
+            if instrument.modes:
+                if instrument.mode(mode) is None:
+                    raise ValueError(f"instrument {name!r} has no mode {mode!r}")
+            elif mode not in (IDLE_MODE, SCIENCE_MODE):
+                raise ValueError(
+                    f"instrument {name!r} has no modes; {mode!r} is not one of "
+                    f"{IDLE_MODE} and {SCIENCE_MODE}"
+                )
+
+    def instruments_with_modes(self) -> list[str]:
+        """The names of the instruments that define modes."""
+        return [instrument.name for instrument in self.instruments if instrument.modes]
+
+    def default_instrument_modes(self) -> dict[str, str]:
+        """What a science observation naming no modes uses: every instrument
+        with modes, in ``SCIENCE``."""
+        return dict.fromkeys(self.instruments_with_modes(), SCIENCE_MODE)
+
+    def observes_in(self, instrument: str, mode: str) -> bool:
+        """Whether ``instrument`` counts as observing in ``mode``: any mode
+        but ``IDLE`` whose ``observing`` flag is set, which it is unless the
+        mode says otherwise; for an instrument without modes, any mode but
+        ``IDLE``."""
+        if mode == IDLE_MODE:
+            return False
+        for candidate in self.instruments:
+            if candidate.name == instrument:
+                own = candidate.mode(mode)
+                return own.observing if own is not None else True
+        return True
+
+    def check_concurrency(
+        self, instrument_modes: Mapping[str, str], *, pointing: bool = True
+    ) -> None:
+        """Raise if the instruments ``instrument_modes`` has observing break
+        the payload's concurrency rules. The required guider applies only to
+        an observation that points (``pointing``), not to a scheduled
+        activity, which holds the attitude it has."""
+        rules = self.concurrency
+        if not rules.active:
+            return
+        observing = sorted(
+            name
+            for name, mode in instrument_modes.items()
+            if self.observes_in(name, mode)
+        )
+        if rules.max_observing is not None and len(observing) > rules.max_observing:
+            raise ValueError(
+                f"{len(observing)} instruments observe at once ({observing}); "
+                f"the payload allows {rules.max_observing}"
+            )
+        if (
+            pointing
+            and rules.required_guider is not None
+            and observing
+            and rules.required_guider not in observing
+        ):
+            raise ValueError(
+                f"an observation using {observing} must also use "
+                f"{rules.required_guider!r}"
+            )
+        for first, second in rules.exclusive:
+            if first in observing and second in observing:
+                raise ValueError(f"{first!r} and {second!r} cannot observe together")
+
+    def check_request(self, instrument_modes: Mapping[str, str]) -> None:
+        """Check an observation's instrument modes: the instruments and
+        modes exist, and what they have observing is allowed at once. An
+        empty mapping is checked as the default, every instrument with
+        modes in ``SCIENCE``."""
+        self.check_instrument_modes(instrument_modes)
+        self.check_concurrency(
+            instrument_modes if instrument_modes else self.default_instrument_modes()
         )
 
     def total_data_rate_gbps(self) -> float:
@@ -607,6 +876,7 @@ class Payload(ConfigModel):
         self,
         collection_seconds: float,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Science data an observation generates in all instruments.
 
@@ -617,17 +887,44 @@ class Payload(ConfigModel):
             collection_seconds: Seconds of science the observation collected.
             science: The observed target's science data, keyed by instrument
                 name; instruments not named generate their own.
+            instrument_modes: The mode each instrument is in during the
+                observation, by name. An instrument with modes that is not
+                named generates nothing, and one that is generates its
+                mode's science data, or its own where the mode sets none.
+                None: every instrument generates its own, as an instrument
+                without modes always does.
 
         Returns:
             float: Data generated in Gigabits.
         """
         science = science or {}
         return sum(
-            science.get(
-                instrument.name, instrument.data_generation.science
-            ).data_generated(collection_seconds)
+            data.data_generated(collection_seconds)
             for instrument in self.instruments
+            if (data := self._science_of(instrument, science, instrument_modes))
+            is not None
         )
+
+    @staticmethod
+    def _science_of(
+        instrument: Instrument,
+        science: Mapping[str, ScienceData],
+        instrument_modes: Mapping[str, str] | None,
+    ) -> ScienceData | None:
+        """What ``instrument`` generates while the observation collects:
+        the target's own for it, else its mode's, else its default; None
+        when it has modes and the observation does not use it."""
+        own = science.get(instrument.name)
+        if own is not None:
+            return own
+        if instrument.modes and instrument_modes is not None:
+            name = instrument_modes.get(instrument.name)
+            if name is None:
+                return None
+            mode = instrument.mode(name)
+            if mode is not None and mode.science_data is not None:
+                return mode.science_data
+        return instrument.data_generation.science
 
     def data_generated(
         self,
@@ -636,6 +933,7 @@ class Payload(ConfigModel):
         mode: ACSMode | None = None,
         collection_seconds: float | None = None,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Data an observation generates in all instruments over an interval.
 
@@ -649,6 +947,8 @@ class Payload(ConfigModel):
                 None for all of it.
             science: The observed target's science data, keyed by instrument
                 name; instruments not named generate their own.
+            instrument_modes: The mode each instrument is in during the
+                observation, by name; see :meth:`science_generated`.
 
         Returns:
             float: Total amount of data generated in Gigabits.
@@ -657,4 +957,4 @@ class Payload(ConfigModel):
             collection_seconds = duration_seconds
         return self.housekeeping_generated(
             duration_seconds, mode=mode
-        ) + self.science_generated(collection_seconds, science)
+        ) + self.science_generated(collection_seconds, science, instrument_modes)
