@@ -308,6 +308,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 **Attributes:**
 
 * ``name`` (str): Bus identifier
+* ``frame`` (:class:`~conops.config.SpacecraftFrame`): The body axes the science boresight and the Sun's side lie along; see `Spacecraft frame`_ below
 * ``inertia_tensor_body_kg_m2`` (3x3 matrix | None): Spacecraft body-frame inertia tensor in kg m²
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption characteristics
 * ``attitude_control`` (:class:`~conops.config.AttitudeControlSystem`): ACS configuration
@@ -317,6 +318,48 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 * ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
 * ``surfaces`` (:class:`~conops.config.SurfaceModel` | None): The spacecraft's surfaces as flat plates about its centre of mass, for the torques of sunlight and drag (see `Stored momentum`_ below); None builds a placeholder from the bus, panels and telescopes when those torques are tracked
+
+.. _Spacecraft frame:
+
+**Spacecraft frame**
+
+Every vector in the configuration, panel normals, radiator normals, antenna and star
+tracker boresights, surfaces, the inertia tensor and per-axis slew limits, is written
+in the spacecraft body frame. COAST points the body's science boresight and rolls
+about it; which body axis that boresight lies along, and which faces the Sun's side
+at zero roll, are the mission's to choose. :class:`~conops.config.SpacecraftFrame`
+declares them once on the bus:
+
+* ``boresight`` (tuple[float, float, float]): Body axis the science boresight lies
+  along, as a unit vector; where a telescope without a mounting of its own points.
+  Default ``(1, 0, 0)``.
+* ``sun_side`` (tuple[float, float, float]): Body axis facing the Sun's side at zero
+  roll, where a side-mounted panel faces, as a unit vector perpendicular to the
+  boresight. Default ``(0, 1, 0)``.
+
+The default is the frame COAST has always computed in, boresight +X and the Sun's side
++Y, and a configuration that leaves it is unchanged. With another frame:
+
+* a :class:`~conops.config.Telescope` given neither a ``mounting`` nor a ``boresight``
+  takes the frame's mounting, so science RA/Dec and roll convert to the body attitude
+  as for any mounted telescope (see `Telescope Instruments`_); one given either keeps it;
+* :func:`~conops.config.create_solar_panel_vector` and
+  :func:`~conops.config.create_star_tracker_vector` take ``frame=`` and return their
+  vectors in the mission's frame, so a ``'boresight'`` panel faces the frame's
+  boresight, a ``'sidemount'`` panel its Sun's side, and a star tracker's default
+  points along the boresight;
+* the frame is written to and read from YAML and JSON with the bus, and a telescope's
+  mounting, once taken from it, is written with the telescope.
+
+.. code-block:: python
+
+   from conops.config import SpacecraftBus, SpacecraftFrame, Telescope, create_solar_panel_vector
+
+   # Boresight along body +Z, panels facing body -Y
+   frame = SpacecraftFrame(boresight=(0.0, 0.0, 1.0), sun_side=(0.0, -1.0, 0.0))
+   bus = SpacecraftBus(frame=frame)
+   panel_normal = create_solar_panel_vector("sidemount", cant_perp=15.0, frame=frame)
+   telescope = Telescope(name="Primary")  # points along body +Z
 
 **AttitudeControlSystem Configuration:**
 
@@ -1311,7 +1354,8 @@ A ``Telescope`` can be placed directly in ``Payload.instruments`` alongside any 
   vectors into spacecraft body coordinates. Instrument ``+X`` is the science
   boresight and instrument ``+Z`` is the zero-roll reference. This is the
   authoritative geometry. Mounting objects are immutable; replace the complete
-  object to change the installation.
+  object to change the installation. A telescope given neither ``mounting`` nor
+  ``boresight`` takes the bus's `Spacecraft frame`_.
 * ``optics`` (:class:`~conops.config.TelescopeConfig`): Optical configuration
 
 Science target RA/Dec and roll are defined in the selected telescope frame. COAST

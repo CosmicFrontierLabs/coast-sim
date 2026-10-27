@@ -453,11 +453,15 @@ class PlanExecutionValidator:
                     self._obsid_mismatch(entry, utime, self.obsid[i], "science")
                 )
 
-            expected_attitude = entry.spacecraft_attitude or (
-                entry.ra,
-                entry.dec,
-                entry.roll,
-            )
+            if getattr(entry, "moves", False) is True:
+                # A moving target's attitude follows its track.
+                expected_attitude = entry.target_body_attitude(at=utime)
+            else:
+                expected_attitude = entry.spacecraft_attitude or (
+                    entry.ra,
+                    entry.dec,
+                    entry.roll,
+                )
             error_deg = angular_separation(
                 float(self.ra[i]),
                 float(self.dec[i]),
