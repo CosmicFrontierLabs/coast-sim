@@ -21,6 +21,8 @@ chunk is solved from where it leaves the spacecraft. Every plan therefore
 executes as planned.
 """
 
+from __future__ import annotations
+
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
