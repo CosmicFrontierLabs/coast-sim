@@ -1203,6 +1203,60 @@ class TestAllocatedTargetsOfOpportunity:
         assert float(first.merit) == pytest.approx(60.0)
         assert any(r.interrupted_obsid == 1 for r in ditl.replans) == interrupts
 
+    def test_dispatch_values_a_too_over_the_collection_it_could_make(self) -> None:
+        """Allocated 300 s and submitted 10 minutes before the run ends, a
+        merit-50 ToO asking for 1200 s can collect only those minutes, which
+        the 300 s cover by half: worth 62.5, it interrupts the observation
+        worth 60, where over a full 1200-s snapshot it would be worth 56.25
+        and not."""
+        config = _config(2)
+        allocation = Allocation(
+            bins=[(T0, T0 + 2 * HOUR)],
+            capacity=[2 * HOUR],
+            reserve=[0.0],
+            seconds={1: {0: 2 * HOUR}, self.GRB["obsid"]: {0: 300.0}},
+        )
+        ditl = QueueDITL(
+            config=config,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            allocator=_FixedAllocator(config, allocation),
+        )
+        queue_targets(
+            ditl,
+            [
+                _target(
+                    config,
+                    1,
+                    105.0,
+                    10.0,
+                    merit=40,
+                    minutes=120,
+                    snapshot=120,
+                    ss_min=10,
+                )
+            ],
+        )
+        ditl.submit_too(
+            **{  # type: ignore[arg-type]
+                **self.GRB,
+                "merit": 50.0,
+                "exptime": 1200,
+                "submit_time": T0 + 110 * MIN,
+                "deadline": T0 + 115 * MIN,
+            }
+        )
+
+        ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert isinstance(first, Pointing) and first.merit_breakdown is not None
+        assert first.merit_breakdown.value == pytest.approx(60.0)
+        toos = [e for e in ditl.plan if int(e.obsid) == self.GRB["obsid"]]
+        assert toos, "the ToO did not interrupt the observation"
+        assert isinstance(toos[0], Pointing) and toos[0].merit_breakdown is not None
+        assert toos[0].merit_breakdown.value > 60.0
+
     def test_dispatch_moves_on_once_the_allocated_seconds_are_collected(
         self,
     ) -> None:

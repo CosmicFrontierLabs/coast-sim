@@ -515,9 +515,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 delivered_shares=delivered_shares,
             )
             # With the allocation's bonus, as selection values it: the
-            # observation under way is valued with its own.
+            # observation under way is valued with its own. The bonus is for
+            # the collection the ToO could make now, which its visibility
+            # may cut short of a full snapshot.
             if isinstance(self.queue, Queue):
-                allocation = self.queue.allocation_term(target, value.value)
+                collection = self.queue.collection_seconds_now(
+                    target, visibility_window, utime
+                )
+                allocation = self.queue.allocation_term(target, value.value, collection)
                 if allocation:
                     value = value.model_copy(update={"allocation": allocation})
             if value.value > current_value:
