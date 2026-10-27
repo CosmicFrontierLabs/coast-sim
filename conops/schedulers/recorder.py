@@ -100,12 +100,18 @@ class RecorderLedger(ConsumableLedger[float, float]):
         if coverage is not None:
             for span in coverage.spans(begin, end):
                 seconds = span.end - span.begin
+                # The spacecraft stays in its mode, so the steps in contact
+                # generate at the nominal rate; the link's own length sets
+                # what it downlinks.
+                first = self.grid_step(span.begin)
+                if span.end <= first:
+                    continue
                 removals.append(
                     Removal(
-                        span.begin,
+                        first,
                         span.end,
                         span.rate_mbps * seconds / 1000.0,
-                        config.housekeeping_generated(seconds),
+                        config.housekeeping_generated(span.end - first),
                     )
                 )
         for entry in contacts:
