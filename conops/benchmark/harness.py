@@ -10,7 +10,7 @@ from ..common import ACSMode
 from ..config import MissionConfig
 from ..ditl.ditl_mixin import DITLMixin
 from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
-from ..targets import Pointing
+from ..targets import Pointing, ScheduledActivity
 from .metrics import Collection, cadence_error, program_shares, visit_starts
 
 
@@ -48,6 +48,9 @@ class BenchmarkScenario(BaseModel):
     make_targets: Callable[[MissionConfig], list[Pointing]]
     """Return new targets bound to the given configuration."""
     toos: list[TOOSpec] = Field(default_factory=list)
+    activities: list[ScheduledActivity] = Field(default_factory=list)
+    """Scheduled activities every contender executes, such as calibration
+    blocks and a maintenance window."""
 
 
 class Run(BaseModel):

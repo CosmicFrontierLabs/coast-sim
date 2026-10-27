@@ -19,6 +19,7 @@ from pydantic import Field, field_validator
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common import dtutcfromtimestamp, scbodyvector
+from ..common.numerics import UNIT_MAGNITUDE_TOLERANCE
 from ..common.vector import normal_to_boresight_offset_euler_deg, radec2vec
 from ._base import ConfigModel
 from .constraint import Constraint
@@ -42,7 +43,7 @@ class RadiatorOrientation(ConfigModel):
         cls, v: tuple[float, float, float]
     ) -> tuple[float, float, float]:
         magnitude = np.sqrt(sum(x**2 for x in v))
-        if magnitude < 0.99 or magnitude > 1.01:
+        if abs(magnitude - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(f"Radiator normal must be unit vector. Got {magnitude}")
         return v
 

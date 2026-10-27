@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from .plan import Plan
 
+_SHA256_HEX_CHARS = 64
+
 
 def _as_utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -98,7 +100,7 @@ class EopProviderProvenanceMetadata(BaseModel):
             raise ValueError(
                 "Available EOP provider provenance is missing: " + ", ".join(missing)
             )
-        if len(self.sha256 or "") != 64 or any(
+        if len(self.sha256 or "") != _SHA256_HEX_CHARS or any(
             char not in "0123456789abcdef" for char in self.sha256 or ""
         ):
             raise ValueError("EOP provider sha256 must be 64 lowercase hex characters")

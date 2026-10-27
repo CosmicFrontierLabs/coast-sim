@@ -6,6 +6,8 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
+from .numerics import POLE_NORM
+
 EARTH_ROTATION_RATE_RAD_S = 7.2921159e-5
 """The Earth's sidereal rotation rate."""
 WGS84_EQUATORIAL_RADIUS_KM = 6378.137
@@ -13,6 +15,10 @@ WGS84_FLATTENING = 1.0 / 298.257223563
 WGS84_POLAR_RADIUS_KM = WGS84_EQUATORIAL_RADIUS_KM * (1.0 - WGS84_FLATTENING)
 _ECCENTRICITY_SQUARED = WGS84_FLATTENING * (2.0 - WGS84_FLATTENING)
 _SECOND_ECCENTRICITY_SQUARED = _ECCENTRICITY_SQUARED / (1.0 - _ECCENTRICITY_SQUARED)
+
+
+MEAN_EARTH_RADIUS_KM = 6371.0
+"""The radius of a sphere of the Earth's mean radius."""
 
 
 def ecef_to_geodetic(position_ecef_km: npt.ArrayLike) -> tuple[float, float, float]:
@@ -33,7 +39,7 @@ def ecef_to_geodetic(position_ecef_km: npt.ArrayLike) -> tuple[float, float, flo
     longitude = np.arctan2(y, x)
     prime_vertical = a / np.sqrt(1.0 - _ECCENTRICITY_SQUARED * np.sin(latitude) ** 2)
     cosine = float(np.cos(latitude))
-    if abs(cosine) > 1e-10:
+    if abs(cosine) > POLE_NORM:
         height = distance / cosine - prime_vertical
     else:
         height = abs(z) - b
@@ -78,4 +84,7 @@ def ecef_to_eci_rotation(
 def geocentric_height_km(position_eci_km: npt.ArrayLike) -> float:
     """Height above a sphere of the Earth's mean radius, for a position
     whose Earth-fixed counterpart is unknown."""
-    return float(np.linalg.norm(np.asarray(position_eci_km, dtype=np.float64))) - 6371.0
+    return (
+        float(np.linalg.norm(np.asarray(position_eci_km, dtype=np.float64)))
+        - MEAN_EARTH_RADIUS_KM
+    )

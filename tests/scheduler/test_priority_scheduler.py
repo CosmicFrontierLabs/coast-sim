@@ -18,11 +18,12 @@ from conops.config import (
     TargetConfig,
     Telescope,
 )
+from conops.config.acs import ThermalSettlingStep
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.schedulers.priority_scheduler import _Move
 from conops.simulation import Pass
-from conops.targets import Plan, PlanEntry, Pointing
+from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity
 
 from .planning_scenario import (
     BEGIN,
@@ -216,7 +217,11 @@ class TestSnapshots:
         assert len(snapshots) == 2
         assert all(entry.exposure == 20 * MIN for entry in snapshots)
 
-    def test_remainder_below_minimum_snapshot_is_dropped(self) -> None:
+    def test_remainder_below_minimum_snapshot_follows_a_full_one(self) -> None:
+        """Twenty-five minutes in snapshots of twenty with a minimum of ten:
+        the five-minute remainder is placed too, as dispatch finishes a
+        target that has collected anything; a first snapshot is never
+        shorter than the minimum."""
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=20, ss_min=10)
 
@@ -225,8 +230,29 @@ class TestSnapshots:
         )
         plan = scheduler.schedule()
 
+        assert [entry.exposure for entry in _science(plan)] == [20 * MIN, 5 * MIN]
+        assert scheduler.unplaced == []
+        short = _target(config, 2, 105.0, 10.0, minutes=5, snapshot=20, ss_min=10)
+        scheduler = PriorityScheduler(
+            config, [short], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        assert _science(scheduler.schedule()) == []
+
+    def test_a_remainder_shorter_than_the_step_is_not_placed(self) -> None:
+        """An exposure a second over its twenty-minute snapshot: the second
+        is rounding, so one snapshot is placed and the request is met."""
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, minutes=20, snapshot=20, ss_min=10)
+        target.exptime = 20 * MIN + 1.0
+
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
+
         assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
         assert scheduler.unplaced == []
+        assert not any("unplanned" in e.description for e in scheduler.log.events)
 
     def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
         config = _config(2)
@@ -1063,3 +1089,168 @@ class TestWorthCutting:
 
         assert PriorityScheduler._worth_cutting(new, 900.0, [self._move(300.0)])
         assert not PriorityScheduler._worth_cutting(new, 300.0, [self._move(300.0)])
+
+
+class TestFillingTimeBeforeAFollowingActivity:
+    """An activity holds the attitude of whatever precedes it, so science
+    placed before it changes where the science after it slews from. Under
+    long thermal settles that can leave the later science unreachable, and
+    the time before the activity empty; the later science moves instead."""
+
+    HOURS = 10
+
+    @staticmethod
+    def _config() -> MissionConfig:
+        config = _config(10)
+        acs = config.spacecraft_bus.attitude_control
+        acs.settle_time = 300.0
+        acs.thermal_settling = [
+            ThermalSettlingStep(max_sun_vector_change_deg=3.0, settle_seconds=600.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=10.0, settle_seconds=900.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=30.0, settle_seconds=1500.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=180.0, settle_seconds=2100.0),
+        ]
+        return config
+
+    def _plan(self) -> PriorityScheduler:
+        config = self._config()
+        # The short target is worth more and can start only after the
+        # maintenance, so it is placed first, right after it, with a slew
+        # from the attitude the maintenance holds before anything is placed.
+        short = _target(config, 1, *PATCH[0], merit=100, minutes=20, snapshot=20)
+        short.earliest_start = T0 + 5 * HOUR + 20 * MIN
+        # The long target is far from it in Sun-vector terms: a slew between
+        # them settles for 2100 s.
+        far = (PATCH[0][0] + 180.0, 0.0)
+        long = _target(config, 2, *far, merit=50, minutes=180, snapshot=60, ss_min=20)
+        maintenance = ScheduledActivity(
+            name="Maintenance", begin=T0 + 4 * HOUR, duration_seconds=HOUR, fixed=True
+        )
+        scheduler = PriorityScheduler(
+            config,
+            [short, long],
+            BEGIN,
+            BEGIN + timedelta(hours=self.HOURS),
+            activities=[maintenance],
+        )
+        scheduler.schedule()
+        return scheduler
+
+    def test_the_later_science_moves_and_the_time_before_is_filled(self) -> None:
+        scheduler = self._plan()
+        science = _science(scheduler.plan)
+        before = [e for e in science if float(e.end) <= T0 + 4 * HOUR]
+        assert [int(e.obsid) for e in before] == [2, 2, 2]
+        assert sum(e.exposure for e in before) == 180 * MIN
+        maintenance = next(e for e in scheduler.plan if e.name == "Maintenance")
+        last = max(before, key=lambda e: float(e.end))
+        # The maintenance holds the long target's attitude.
+        assert (float(maintenance.ra), float(maintenance.dec)) == pytest.approx(
+            (float(last.ra), float(last.dec))
+        )
+        short = next(e for e in science if int(e.obsid) == 1)
+        assert float(short.begin) >= float(maintenance.end)
+        assert float(short.settle_seconds) == 2100.0
+        assert any(
+            e.description.startswith("Moved 1 ")
+            and "to fit 2 before it" in e.description
+            for e in scheduler.log.events
+        )
+        ditl = _execute(self._config(), scheduler.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_without_the_move_the_time_before_stays_empty(self) -> None:
+        with patch.object(
+            PriorityScheduler, "_fit_delaying_successors", return_value=None
+        ):
+            scheduler = self._plan()
+        science = _science(scheduler.plan)
+        assert not [e for e in science if float(e.end) <= T0 + 4 * HOUR]
+        assert [int(e.obsid) for e in science if int(e.obsid) in (1, 2)][:1] == [1]
+
+
+class TestCandidateVisibility:
+    def test_a_target_s_windows_are_evaluated_once_for_its_candidates(self) -> None:
+        """Every candidate snapshot of a target is checked against the
+        target's visibility; where the roll does not enter the windows, they
+        are evaluated for the first candidate and reused for the rest."""
+        config = _config(4)
+        config.constraint.ignore_roll = True
+        targets = [
+            _target(config, 100 + i, ra, dec, merit=90 - 7 * i, minutes=60, snapshot=20)
+            for i, (ra, dec) in enumerate(PATCH)
+        ]
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, BEGIN + timedelta(hours=4)
+        )
+        evaluated: list[int] = []
+        original = PlanEntry.visibility
+
+        def counting(self: PlanEntry) -> int:
+            evaluated.append(int(self.obsid))
+            return original(self)
+
+        with patch.object(PlanEntry, "visibility", counting):
+            plan = scheduler.schedule()
+        placed = {int(e.obsid) for e in _science(plan)}
+        assert len(placed) >= 2
+        for obsid in placed:
+            assert evaluated.count(obsid) <= 1
+
+
+class TestGapSearchBound:
+    def test_the_plan_is_the_one_an_exhaustive_scan_finds(self) -> None:
+        """The gap search stops stepping through a window once not even the
+        shortest possible slew leaves room for a snapshot; the plan is the
+        plan found by trying every start, on a program under a thermal
+        settling table, where the long settles make that scan long."""
+        from conops.benchmark.scenarios import program
+
+        base = program("examples/example.tle", hours=12)
+
+        def with_table() -> MissionConfig:
+            config = base.make_config()
+            acs = config.spacecraft_bus.attitude_control
+            acs.settle_time = 300.0
+            acs.thermal_settling = [
+                ThermalSettlingStep(
+                    max_sun_vector_change_deg=3.0, settle_seconds=600.0
+                ),
+                ThermalSettlingStep(
+                    max_sun_vector_change_deg=30.0, settle_seconds=1500.0
+                ),
+                ThermalSettlingStep(
+                    max_sun_vector_change_deg=180.0, settle_seconds=2100.0
+                ),
+            ]
+            return config
+
+        def plan(exhaustive: bool) -> list[tuple[int, float, float, float]]:
+            config = with_table()
+            scheduler = PriorityScheduler(
+                config,
+                base.make_targets(config),
+                base.begin,
+                base.end,
+                activities=base.activities,
+            )
+            if exhaustive:
+                with patch.object(
+                    PriorityScheduler, "_shortest_slew_seconds", return_value=0.0
+                ):
+                    entries = scheduler.schedule().entries
+            else:
+                entries = scheduler.schedule().entries
+            return [
+                (
+                    int(e.obsid),
+                    float(e.begin),
+                    float(e.collection_begin or 0),
+                    float(e.end),
+                )
+                for e in entries
+            ]
+
+        bounded = plan(exhaustive=False)
+        assert len(bounded) > 5
+        assert bounded == plan(exhaustive=True)

@@ -24,7 +24,10 @@ from conops.config import (
 )
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers.context import SchedulingContext
 from conops.schedulers.momentum import MomentumForecast
+from conops.simulation.attitude import Attitude
+from conops.simulation.slew import Slew
 from conops.targets import Plan, Pointing, ScheduledActivity
 from conops.targets.sequence import ObservationSequence, SequenceStep
 
@@ -270,8 +273,15 @@ class TestLocalSearch:
         )
         plan = scheduler.schedule()
         assert len(_dumps(plan)) >= 4
+        # The forecast reads the plan returned, searched and charged.
+        assert [
+            e for b in scheduler.timeline for e in (b.steps or [b.entry])
+        ] == plan.entries
         _, norms = scheduler._momentum.profile(scheduler.timeline)
         assert norms.max() < CAPACITY
+        # Each pass after a dump kept the searched plan before it.
+        assert scheduler._kept
+        assert all(block.entry in plan.entries for block in scheduler._kept)
 
 
 class TestRolling:
@@ -432,3 +442,173 @@ class TestDumpsAroundBlocks:
         ditl.step_size = 60
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
+
+    def test_a_slew_timed_into_a_late_block_leaves_its_settled_times(self) -> None:
+        """A block that may begin late begins and ends where it settled,
+        whatever start the slew into it was timed at: the slew was timed
+        against the block where it was reserved, the settle moved it."""
+        from conops.schedulers.priority_scheduler import PriorityScheduler, _Block
+        from conops.simulation.slew import Slew
+
+        config = _dumping()
+        dump = ScheduledActivity(
+            name="Desaturation",
+            begin=T0 + 7200.0,
+            duration_seconds=120.0,
+            desaturation=True,
+            obsid=998000,
+        )
+        entry = dump.plan_entry(config, (80.0, -20.0, 0.0))
+        block = _Block(
+            entry=entry,
+            attitude_in=(80.0, -20.0, 0.0),
+            attitude_out=(80.0, -20.0, 0.0),
+            ready=T0 + 7200.0,
+            end=T0 + 7320.0,
+            follows=True,
+            activity=dump,
+            latest_ready=T0 + 7200.0 + 3600.0,
+        )
+        slew = Slew(config=config)
+        slew.slewstart = T0 + 10800.0
+        slew.slewend = T0 + 10800.0
+        slew.slewtime = 0.0
+        slew.slewdist = 0.0
+        slew.endra, slew.enddec, slew.endroll = 80.0, -20.0, 0.0
+        PriorityScheduler._apply_slew(block, slew)
+        assert float(block.entry.begin) == T0 + 7200.0
+        assert float(block.entry.end) == T0 + 7320.0
+        assert float(block.entry.end) > float(block.entry.begin)
+
+
+def _science_key(plan: Plan) -> list[tuple[int, float, float, float, float]]:
+    return [
+        (
+            int(e.obsid),
+            float(e.begin),
+            float(e.collection_begin or 0.0),
+            float(e.collection_end or 0.0),
+            float(e.end),
+        )
+        for e in _science(plan)
+    ]
+
+
+def _given_dumps(plan: Plan) -> list[ScheduledActivity]:
+    """The plan's dumps as activities a configuration could schedule."""
+    return [
+        ScheduledActivity(
+            name="Desaturation",
+            begin=float(d.begin),
+            duration_seconds=float(d.end) - float(d.begin),
+            desaturation=True,
+        )
+        for d in _dumps(plan)
+    ]
+
+
+class TestPlanningOnFromADump:
+    """A pass after a dump keeps the science before the dump and plans on."""
+
+    HORIZON = BEGIN + timedelta(hours=2)
+
+    def test_the_pass_after_a_dump_keeps_the_plan_before_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With one dump, the plan is the plan a single pass builds with that
+        dump scheduled as an activity; the science before the dump is kept
+        from the pass before, and the pass after the dump searches no slew
+        start before the first slew it let go."""
+        config = _dumping()
+        targets = _targets(config)
+        science = {int(t.obsid) for t in targets}
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, self.HORIZON, step_size=60
+        )
+        searched: list[tuple[float | None, float]] = []
+        original = SchedulingContext.slew
+
+        def slew(
+            ctx: SchedulingContext,
+            start: Attitude,
+            end: Attitude,
+            slewstart: float,
+            *,
+            obstype: ObsType = ObsType.PPT,
+            obsid: int = 0,
+        ) -> Slew:
+            if obsid in science:
+                searched.append((scheduler._resume_from, float(slewstart)))
+            return original(ctx, start, end, slewstart, obstype=obstype, obsid=obsid)
+
+        monkeypatch.setattr(SchedulingContext, "slew", slew)
+        plan = scheduler.schedule()
+        dumps = _dumps(plan)
+        assert len(dumps) == 1
+        assert len(scheduler._kept) == 1
+        kept = scheduler._kept[0]
+        assert float(kept.end) <= float(dumps[0].begin)
+        assert kept.entry in plan.entries
+        assert scheduler._resume_from is not None
+        assert scheduler._resume_from >= float(dumps[0].end)
+        # The second pass placed only from where the first pass let go.
+        floored = [(floor, start) for floor, start in searched if floor is not None]
+        assert floored
+        assert all(start >= floor for floor, start in floored)
+        assert min(start for _, start in floored) == scheduler._resume_from
+
+        whole = PriorityScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            self.HORIZON,
+            step_size=60,
+            activities=_given_dumps(plan),
+        )
+        whole_plan = whole.schedule()
+        assert whole.dumps == []
+        assert _science_key(whole_plan) == _science_key(plan)
+        assert [float(d.begin) for d in _dumps(whole_plan)] == [
+            float(d.begin) for d in dumps
+        ]
+
+    def test_a_kept_visit_counts_for_its_steps(self) -> None:
+        """A sequence visit before the dump is kept whole and counts as its
+        science steps: the pass after the dump does not plan it again."""
+        config = _dumping()
+        visit = Pointing(
+            config=config,
+            obsid=2,
+            name="Visit",
+            ra=80.0,
+            dec=-20.0,
+            merit=100.0,
+            sequence=ObservationSequence(
+                steps=[
+                    SequenceStep(name=f"s{k}", duration_seconds=600.0) for k in range(3)
+                ]
+            ),
+            visits=1,
+        )
+        targets = [visit, *_targets(config)]
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, self.HORIZON, step_size=60
+        )
+        plan = scheduler.schedule()
+        dumps = _dumps(plan)
+        assert len(dumps) >= 1
+        steps = [e for e in plan if int(e.obsid) == 2]
+        assert [e.step for e in steps] == ["s0", "s1", "s2"]
+        assert all(float(e.end) <= float(dumps[0].begin) for e in steps)
+        assert [b.is_visit for b in scheduler._kept].count(True) == 1
+        assert visit.obsid not in {int(t.obsid) for t in scheduler.unplaced}
+
+        whole = PriorityScheduler(
+            config,
+            [visit, *_targets(config)],
+            BEGIN,
+            self.HORIZON,
+            step_size=60,
+            activities=_given_dumps(plan),
+        )
+        assert _science_key(whole.schedule()) == _science_key(plan)

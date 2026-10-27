@@ -8,6 +8,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType, angular_separation, unixtime2date
+from ..common.numerics import TIME_TOLERANCE_S
 from ..common.vector import attitude_to_quat
 from ..config import MissionConfig
 from ..simulation.passes import Pass
@@ -153,6 +154,24 @@ class PlanExecutionValidator:
         mismatches.extend(self.attitude_constraint_mismatches())
         mismatches.extend(self.unplanned_execution_mismatches())
         return mismatches
+
+    def slew_requirement_mismatches(self) -> list[PlanExecutionMismatch]:
+        """The plan's slews that take longer than their requirement class
+        allows, where the ACS configures slew requirement classes; empty
+        without them. Not part of :meth:`validate`: a report on the ACS
+        model against the requirements, not a plan-execution fault."""
+        from ..simulation.slew_requirements import check_plan
+
+        return [
+            PlanExecutionMismatch(
+                utime=violation.utime,
+                message=f"slew_requirement: {violation}",
+                obsid=violation.obsid,
+            )
+            for violation in check_plan(
+                self.plan, self.config.spacecraft_bus.attitude_control
+            )
+        ]
 
     def attitude_constraint_mismatches(self) -> list[PlanExecutionMismatch]:
         """Report samples whose attitude violated a constraint scoped to their mode.
@@ -682,7 +701,8 @@ def matching_pass_for_entry(entry: PlanEntry, passes: Sequence[Pass]) -> Pass | 
             <= float(gspass.end) + 1e-6
         )
         end_matches = (
-            contact_end is None or abs(float(gspass.end) - float(contact_end)) <= 1e-6
+            contact_end is None
+            or abs(float(gspass.end) - float(contact_end)) <= TIME_TOLERANCE_S
         )
         if begin_matches and end_matches:
             return gspass
