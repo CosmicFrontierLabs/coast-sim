@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol
 
 from ..config import ScienceData
-from ..targets import Plan, Pointing, TargetSlewEstimate
+from ..targets import ObservationSequence, Plan, Pointing, TargetSlewEstimate
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -85,6 +85,9 @@ class DispatchPolicy(Protocol):
         deadline: float | None = None,
         earliest_start: float | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        sequence: ObservationSequence | None = None,
+        visits: int = 1,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 

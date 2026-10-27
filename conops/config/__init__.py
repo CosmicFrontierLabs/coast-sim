@@ -20,7 +20,9 @@ from .fault_management import (
 from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import (
+    ConcurrencyRules,
     Instrument,
+    InstrumentMode,
     InstrumentMounting,
     Payload,
     Telescope,
@@ -93,6 +95,8 @@ __all__ = [
     "GroundStationRegistry",
     "Heater",
     "Instrument",
+    "ConcurrencyRules",
+    "InstrumentMode",
     "InstrumentMounting",
     "Telescope",
     "TelescopeConfig",

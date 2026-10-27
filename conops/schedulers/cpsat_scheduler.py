@@ -34,7 +34,7 @@ from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
-from ..targets.plan_entry import snapshot_min_seconds
+from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
@@ -1288,10 +1288,11 @@ class CpSatScheduler(LocalSearchScheduler):
             None,
         )
         generation = 0.0 if lit is None else ledger.generation_watts(attitude, lit)
+        modes = target.effective_instrument_modes()
         sunlit = int(
-            np.ceil(ledger._watts(ACSMode.SCIENCE, False)) - np.floor(generation)
+            np.ceil(ledger._watts(ACSMode.SCIENCE, False, modes)) - np.floor(generation)
         )
-        eclipse = int(np.ceil(ledger._watts(ACSMode.SCIENCE, True)))
+        eclipse = int(np.ceil(ledger._watts(ACSMode.SCIENCE, True, modes)))
         return (sunlit, eclipse)
 
     def _pass_tasks(
@@ -1493,8 +1494,11 @@ class CpSatScheduler(LocalSearchScheduler):
         each rounded up so the model never counts less than the ledger."""
         if not self._ledger.active:
             return (0, 0)
-        once = self.config.science_generated(0.0, target.science_data)
-        per_second = self.config.science_generated(1.0, target.science_data) - once
+        modes = instrument_modes_of(target)
+        once = self.config.science_generated(0.0, target.science_data, modes)
+        per_second = (
+            self.config.science_generated(1.0, target.science_data, modes) - once
+        )
         return (_kb_up(per_second), _kb_up(once))
 
     def _opens(

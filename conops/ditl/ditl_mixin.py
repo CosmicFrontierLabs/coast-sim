@@ -8,7 +8,7 @@ import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
-from conops.common.enums import ACSMode
+from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
@@ -19,6 +19,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
+from ..targets.plan_entry import instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
@@ -74,6 +75,57 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
+    def _instrument_modes_telemetry(self, mode: ACSMode | int) -> dict[str, str] | None:
+        """The mode each instrument with modes is in at this step, by name,
+        resolved as its power is: the observation's for the instruments it
+        uses, and IDLE or a mode named like the ACS mode for the rest. None
+        when no instrument defines modes."""
+        payload = getattr(getattr(self, "config", None), "payload", None)
+        instruments = getattr(payload, "instruments", None)
+        # A test double's payload has no instruments.
+        if not isinstance(instruments, list):
+            return None
+        with_modes = [i for i in instruments if getattr(i, "modes", None)]
+        if not with_modes:
+            return None
+        try:
+            acs_mode = int(mode)
+        except (TypeError, ValueError):
+            acs_mode = None
+        named = self._instrument_modes_now(mode) or {}
+        return {
+            instrument.name: instrument.mode_in(acs_mode, named.get(instrument.name))
+            for instrument in with_modes
+        }
+
+    def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
+        """The mode each instrument is in at this step: the observation's
+        while ACS is in SCIENCE mode, a scheduled activity's while ACS holds
+        for it in IDLE mode, else None, when every instrument idles or holds
+        a mode named like the ACS mode."""
+        try:
+            acs_mode = ACSMode(int(mode))
+        except (TypeError, ValueError):
+            return None
+        if acs_mode is ACSMode.IDLE:
+            # Dispatch holds the activity itself; a plan holds its entry.
+            active = getattr(self, "_active_activity", None)
+            modes = getattr(active, "instrument_modes", None)
+            if isinstance(modes, dict):
+                return dict(modes)
+            ppt = getattr(self, "ppt", None)
+            if getattr(ppt, "obstype", None) == ObsType.ACTIVITY:
+                modes = getattr(ppt, "instrument_modes", None)
+                return dict(modes) if isinstance(modes, dict) else None
+            return None
+        ppt = getattr(self, "ppt", None)
+        if acs_mode is not ACSMode.SCIENCE or ppt is None:
+            return None
+        modes = getattr(ppt, "effective_instrument_modes", None)
+        # A test double's observation names no modes.
+        resolved = modes() if callable(modes) else None
+        return resolved if isinstance(resolved, dict) else None
+
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None
@@ -711,9 +763,14 @@ class DITLMixin:
                 self._data_collected if observation == self._data_observation else 0.0
             )
             after = before + collection_seconds
-            data_generated += self.config.science_generated(after, science=science)
+            modes = instrument_modes_of(self.ppt)
+            data_generated += self.config.science_generated(
+                after, science=science, instrument_modes=modes
+            )
             if before > 0:
-                data_generated -= self.config.science_generated(before, science=science)
+                data_generated -= self.config.science_generated(
+                    before, science=science, instrument_modes=modes
+                )
             self._data_observation = observation
             self._data_collected = after
 

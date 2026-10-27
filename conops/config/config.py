@@ -430,6 +430,7 @@ class MissionConfig(ConfigModel):
         self,
         collection_seconds: float,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Science data an observation generates, having collected for some seconds.
 
@@ -439,11 +440,15 @@ class MissionConfig(ConfigModel):
             collection_seconds: Seconds of science the observation collected.
             science: The observed target's science data, keyed by instrument
                 name.
+            instrument_modes: The mode each instrument is in during the
+                observation, by name; None: every instrument generates.
 
         Returns:
             float: Data generated in Gigabits.
         """
-        return self.payload.science_generated(collection_seconds, science)
+        return self.payload.science_generated(
+            collection_seconds, science, instrument_modes
+        )
 
     def data_generated(
         self,
@@ -452,6 +457,7 @@ class MissionConfig(ConfigModel):
         mode: ACSMode | None = None,
         collection_seconds: float | None = None,
         science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         """Data an observation generates over an interval.
 
@@ -474,7 +480,7 @@ class MissionConfig(ConfigModel):
             collection_seconds = duration_seconds
         return self.housekeeping_generated(
             duration_seconds, mode=mode
-        ) + self.science_generated(collection_seconds, science)
+        ) + self.science_generated(collection_seconds, science, instrument_modes)
 
     @classmethod
     def from_json_file(cls, filepath: str) -> MissionConfig:

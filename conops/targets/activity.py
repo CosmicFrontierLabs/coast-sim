@@ -33,6 +33,13 @@ class ScheduledActivity(BaseModel):
     name: str
     begin: float = Field(description="When the activity starts, in Unix seconds")
     duration_seconds: float = Field(gt=0.0)
+    instrument_modes: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The instruments the activity uses and the mode each is in, by "
+            "name, such as a calibration lamp's; instruments not named idle"
+        ),
+    )
     obsid: int | None = Field(
         default=None,
         description="Identifies the activity's plan entries; assigned if None",
@@ -62,8 +69,14 @@ class ScheduledActivity(BaseModel):
         comes first; the hold runs from the activity's own start.
         """
         assert self.obsid is not None, "assign_obsids first"
+        if config is not None:
+            # An activity uses what it names and nothing else, and does not
+            # point, so no guider is required of it.
+            config.payload.check_instrument_modes(self.instrument_modes)
+            config.payload.check_concurrency(self.instrument_modes, pointing=False)
         entry = PlanEntry(config=config)
         entry.name = self.name
+        entry.instrument_modes = dict(self.instrument_modes)
         entry.obsid = self.obsid
         entry.obstype = ObsType.ACTIVITY
         entry.ra, entry.dec, entry.roll = attitude

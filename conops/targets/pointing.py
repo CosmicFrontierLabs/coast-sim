@@ -142,6 +142,41 @@ class Pointing(PlanEntry):
                 self.exptime = self.visits * science
         return self
 
+    @model_validator(mode="after")
+    def _instrument_modes_are_known(self) -> "Pointing":
+        """The modes a pointing names, its own and each sequence step's, name
+        instruments the payload has, in modes they define, and are allowed
+        at once. A pointing naming none is not checked here: the simulation
+        builds pointings of its own that observe nothing, such as a charging
+        attitude, and a request naming none is checked as using every
+        instrument where it enters, by :meth:`check_instrument_modes`."""
+        self.check_instrument_modes(named_only=True)
+        return self
+
+    def check_instrument_modes(self, *, named_only: bool = False) -> None:
+        """Check this request's instrument modes against the payload: its
+        own and each sequence step's, with its own modes or the target's.
+        A mapping naming nothing stands for every instrument with modes in
+        ``SCIENCE`` and is checked as that, unless ``named_only``."""
+        if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return
+        payload = self.config.payload
+        check = getattr(payload, "check_request", None)
+        # A test double's payload checks nothing.
+        if not callable(check):
+            return
+        checks = [self.instrument_modes]
+        if self.sequence is not None:
+            checks.extend(
+                step.instrument_modes
+                if step.instrument_modes is not None
+                else self.instrument_modes
+                for step in self.sequence.steps
+            )
+        for modes in checks:
+            if modes or not named_only:
+                check(modes)
+
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at
         the step's pointing and with its instrument, for its duration, carrying
@@ -164,6 +199,11 @@ class Pointing(PlanEntry):
                 else self.instrument_name
             ),
             science_data=dict(self.science_data) if step.science else {},
+            instrument_modes=dict(
+                step.instrument_modes
+                if step.instrument_modes is not None
+                else self.instrument_modes
+            ),
             # A step is never selected on its own, so it has no minimum: what
             # it collects to the tick is kept, and the visit checks the rest.
             ss_min=0,

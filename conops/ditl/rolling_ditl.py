@@ -21,6 +21,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
+from ..targets.plan_entry import instrument_modes_of
 from .ditl import DITL
 from .ditl_log import DITLLog
 from .plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
@@ -216,6 +217,7 @@ class RollingHorizonDITL(DITL):
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
         interrupt: bool = True,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> TOORequest:
         """Submit a Target of Opportunity that joins the target pool when active.
 
@@ -235,7 +237,11 @@ class RollingHorizonDITL(DITL):
             interrupt: Whether it may cut short the observation in progress.
                 If False, a rapid replan for it starts it once that
                 observation ends.
+            instrument_modes: The instruments observing the ToO uses and the
+                mode each is in, by name; None: every instrument with modes,
+                in SCIENCE.
         """
+        self.config.payload.check_request(dict(instrument_modes or {}))
         too = TOORequest(
             obsid=obsid,
             ra=ra,
@@ -247,6 +253,7 @@ class RollingHorizonDITL(DITL):
             deadline=_unix_time(deadline) if deadline is not None else None,
             science_data=dict(science_data or {}),
             interrupt=interrupt,
+            instrument_modes=dict(instrument_modes or {}),
         )
         self.too_register.append(too)
         return too
@@ -334,6 +341,7 @@ class RollingHorizonDITL(DITL):
                 ss_max=too.exptime,
                 deadline=too.deadline,
                 science_data=too.science_data,
+                instrument_modes=dict(too.instrument_modes),
             )
             target.exptime = too.exptime
             self._too_targets[id(too)] = target
@@ -721,10 +729,13 @@ class RollingHorizonDITL(DITL):
             end = min(float(entry.collection_end), start)
             if end <= begin:
                 continue
-            volume = self.config.science_generated(end - begin, entry.science_data)
+            modes = instrument_modes_of(entry)
+            volume = self.config.science_generated(
+                end - begin, entry.science_data, modes
+            )
             if float(entry.collection_begin) < utime:
                 # Already collecting: its fixed amount is on the recorder.
-                volume -= self.config.science_generated(0.0, entry.science_data)
+                volume -= self.config.science_generated(0.0, entry.science_data, modes)
             science.append((begin, volume))
         ledger = RecorderLedger(
             self.config,
