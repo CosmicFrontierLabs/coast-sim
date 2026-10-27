@@ -20,7 +20,7 @@ from pydantic import (
 )
 from rust_ephem.constraints import ConstraintConfig
 
-from ..common import givename, unixtime2date
+from ..common import givename, unixtime2date, unixtime_from
 from ..common.enums import ACSMode, ObsType
 from ..common.vector import (
     attitude_to_quat,
@@ -39,6 +39,7 @@ from ..config.constraint import (
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
+from ..config.data_storage import RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
 
@@ -75,6 +76,18 @@ class AttitudeRotationSchema(AttitudeRotationConventionSchema):
     """Generic attitude rotation representation."""
 
     values: tuple[float, float, float, float]
+
+
+def extra_data_gb(
+    entry: object, config: MissionConfig | RecorderView | None = None
+) -> float:
+    """Data ``entry`` puts on the recorder once beyond its science, or 0 for
+    an object that cannot say, such as a test double."""
+    if isinstance(config, RecorderView):
+        return config.extra_data_gb(entry)
+    extra = getattr(entry, "extra_data_gb", None)
+    value = extra() if callable(extra) else None
+    return float(value) if isinstance(value, (int, float)) else 0.0
 
 
 def instrument_modes_of(entry: object) -> dict[str, str] | None:
@@ -151,6 +164,24 @@ class PlanEntry(BaseModel):
             "name; instruments not named generate their configured science data"
         ),
     )
+    fixed_data_gb: float = Field(
+        default=0.0,
+        ge=0.0,
+        exclude_if=lambda v: v == 0.0,
+        description=(
+            "Data this entry puts on the recorder once, beyond any science: a "
+            "scheduled activity's frames, for instance"
+        ),
+    )
+    own_timing: ObservationTiming | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "This observation's own setup, cleanup and handoff budgets, with "
+            "their calibration steps, in place of its category's: a long dark "
+            "after one deep field, for instance. None: the category's"
+        ),
+    )
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
@@ -197,6 +228,14 @@ class PlanEntry(BaseModel):
         default=False,
         exclude_if=lambda v: not v,
         description="Whether this entry is a calibration step, collecting no science",
+    )
+    visit: int | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Which of its target's visit windows this entry observes in, "
+            "from 0, for a target with visit windows"
+        ),
     )
     windows: list[list[float]] = Field(default_factory=list, exclude=True)
     obstype: ObsType = ObsType.PPT
@@ -314,13 +353,9 @@ class PlanEntry(BaseModel):
         mode="before",
     )
     @classmethod
-    def _coerce_time(cls, v: float | int | str | None) -> float | None:
-        """Accept Unix timestamps (float/int) or ISO-8601 strings."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            return datetime.fromisoformat(v).timestamp()
-        return float(v)
+    def _coerce_time(cls, v: float | int | str | datetime | None) -> float | None:
+        """Accept Unix timestamps, datetimes (naive means UTC) or ISO-8601 strings."""
+        return None if v is None else unixtime_from(v)
 
     @field_serializer(
         "begin",
@@ -442,8 +477,11 @@ class PlanEntry(BaseModel):
 
     @property
     def observation_timing(self) -> ObservationTiming:
-        """This observation's setup, cleanup and handoff budgets under its
-        configuration (see :func:`~conops.config.observation_timing.timing_for`)."""
+        """This observation's setup, cleanup and handoff budgets: its own
+        where it has them, else its category's under its configuration (see
+        :func:`~conops.config.observation_timing.timing_for`)."""
+        if self.own_timing is not None:
+            return self.own_timing
         return timing_for(self.config, int(self.obsid))
 
     def set_collection_window(self, timing: ObservationTiming) -> None:
@@ -543,6 +581,43 @@ class PlanEntry(BaseModel):
                 roll_source=roll_source,
             ),
         )
+
+    def extra_data_gb(self) -> float:
+        """Data this entry puts on the recorder once beyond its science: its
+        own fixed data, and its setup and cleanup steps' data for an
+        observation."""
+        extra = float(self.fixed_data_gb)
+        if self.obstype in self._STATIC_TARGET_OBSTYPES and self.config is not None:
+            timing = self.step_timing or self.observation_timing
+            extra += float(getattr(timing, "budget_data_gb", 0.0) or 0.0)
+        return extra
+
+    def instrument_modes_at(self, utime: float) -> dict[str, str]:
+        """The mode each instrument is in at ``utime`` during this
+        observation: a setup or cleanup step's own modes while that step
+        runs, else the observation's (see :meth:`effective_instrument_modes`)."""
+        modes = self.effective_instrument_modes()
+        if self.obstype not in self._STATIC_TARGET_OBSTYPES or self.config is None:
+            return modes
+        timing = self.step_timing or self.observation_timing
+        if not isinstance(timing, ObservationTiming) or not (
+            timing.setup_steps or timing.cleanup_steps
+        ):
+            return modes
+        if self.collection_begin is not None and self.collection_end is not None:
+            begin, end = float(self.collection_begin), float(self.collection_end)
+        else:
+            begin, end = timing.collection_window(
+                float(self.begin), float(self.slewtime or 0), float(self.end)
+            )
+        step = None
+        if begin - timing.setup_seconds <= utime < begin:
+            step = timing.setup_step_at(utime - (begin - timing.setup_seconds))
+        elif end <= utime < end + timing.cleanup_seconds:
+            step = timing.cleanup_step_at(utime - end)
+        if step is not None and step.instrument_modes:
+            return dict(step.instrument_modes)
+        return modes
 
     def effective_instrument_modes(self) -> dict[str, str]:
         """The mode each instrument is in during this entry, by name: as

@@ -27,7 +27,7 @@ from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
@@ -83,7 +83,9 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
-    def _instrument_modes_telemetry(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_telemetry(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument with modes is in at this step, by name,
         resolved as its power is: the observation's for the instruments it
         uses, and IDLE or a mode named like the ACS mode for the rest. None
@@ -100,17 +102,20 @@ class DITLMixin:
             acs_mode = int(mode)
         except (TypeError, ValueError):
             acs_mode = None
-        named = self._instrument_modes_now(mode) or {}
+        named = self._instrument_modes_now(mode, utime) or {}
         return {
             instrument.name: instrument.mode_in(acs_mode, named.get(instrument.name))
             for instrument in with_modes
         }
 
-    def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_now(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument is in at this step: the observation's
-        while ACS is in SCIENCE mode, a scheduled activity's while ACS holds
-        for it in IDLE mode, else None, when every instrument idles or holds
-        a mode named like the ACS mode."""
+        while ACS is in SCIENCE mode, a calibration step's own during a
+        setup or cleanup step at ``utime``, a scheduled activity's while ACS
+        holds for it in IDLE mode, else None, when every instrument idles or
+        holds a mode named like the ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
@@ -129,6 +134,10 @@ class DITLMixin:
         ppt = getattr(self, "ppt", None)
         if acs_mode is not ACSMode.SCIENCE or ppt is None:
             return None
+        by_time = getattr(ppt, "instrument_modes_at", None)
+        if utime is not None and callable(by_time):
+            resolved = by_time(utime)
+            return resolved if isinstance(resolved, dict) else None
         modes = getattr(ppt, "effective_instrument_modes", None)
         # A test double's observation names no modes.
         resolved = modes() if callable(modes) else None
@@ -141,6 +150,8 @@ class DITLMixin:
     repoints_in_observations: list[tuple[float, int, str]]
     _data_observation: tuple[int, float] | None
     _data_collected: float
+    _activity_data_gb: float
+    _store_activity_data_gb: dict[str, float]
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -263,6 +274,9 @@ class DITLMixin:
         # The observation whose data is being generated, and its collection so far
         self._data_observation = None
         self._data_collected = 0.0
+        # What activities put on the recorder since the last data step
+        self._activity_data_gb = 0.0
+        self._store_activity_data_gb = {}
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -304,6 +318,8 @@ class DITLMixin:
             self.ppt = None
             self._data_observation = None
             self._data_collected = 0.0
+            self._activity_data_gb = 0.0
+            self._store_activity_data_gb = {}
             self.telemetry = Telemetry()
             self._store_data_totals = {}
             self.executed_passes = PassTimes(config=self.config)
@@ -342,6 +358,8 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self._store_data_totals = {}
+        self._store_activity_data_gb = {}
+        self._activity_data_gb = 0.0
         self.recorder = (
             RecorderSummary(self.config.recorder_views())
             if isinstance(self.config.data_storage, DataStorage)
@@ -372,8 +390,12 @@ class DITLMixin:
         )
 
     def _timing_for(self, entry: PlanEntry) -> ObservationTiming:
-        """The setup, cleanup and handoff budgets of ``entry`` under the run's
-        configuration: its category's where that sets them, else the payload's."""
+        """The setup, cleanup and handoff budgets of ``entry``: its own where
+        it has them, else its category's under the run's configuration, else
+        the payload's."""
+        own = getattr(entry, "own_timing", None)
+        if isinstance(own, ObservationTiming):
+            return own
         return timing_for(self.config, int(getattr(entry, "obsid", 0) or 0))
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
@@ -763,6 +785,37 @@ class DITLMixin:
             start, min(utime + self.step_size, self.uend)
         )
 
+    def _add_activity_data(self, data_gb: float, entry: object | None = None) -> None:
+        """Store an activity's fixed data now and report it on the next step."""
+        if data_gb <= 0.0:
+            return
+        if isinstance(self.config.data_storage, DataStorage):
+            for name, view in self.config.recorder_views().items():
+                assert isinstance(view, RecorderView)
+                amount = (
+                    view.extra_data_gb(entry)
+                    if entry is not None
+                    else (
+                        data_gb
+                        if name == self.config.data_storage.bus_housekeeping
+                        else 0.0
+                    )
+                )
+                before = view.recorder.current_volume_gb
+                view.recorder.add_data(amount)
+                self._store_activity_data_gb[name] = (
+                    self._store_activity_data_gb.get(name, 0.0) + amount
+                )
+                totals = self._store_data_totals.setdefault(
+                    name, {"generated_gb": 0.0, "downlinked_gb": 0.0, "lost_gb": 0.0}
+                )
+                totals["lost_gb"] += max(
+                    0.0, before + amount - view.recorder.current_volume_gb
+                )
+            return
+        cast(OnboardRecorder, self.recorder).add_data(data_gb)
+        self._activity_data_gb += data_gb
+
     def _process_data_management(
         self,
         utime: float,
@@ -793,6 +846,7 @@ class DITLMixin:
             for view in self.config.recorder_views().values():
                 self._data_observation, self._data_collected = observation, collected
                 volume_before = view.recorder.current_volume_gb
+                activity_data = self._store_activity_data_gb.get(view.name, 0.0)
                 incoming, outgoing = self._process_store_data(
                     view, utime, mode, step_size, collection_seconds=collection_seconds
                 )
@@ -806,6 +860,7 @@ class DITLMixin:
                     0.0,
                     volume_before
                     + incoming
+                    - activity_data
                     - outgoing
                     - view.recorder.current_volume_gb,
                 )
@@ -850,13 +905,17 @@ class DITLMixin:
             )
             after = before + collection_seconds
             modes = instrument_modes_of(self.ppt)
-            data_generated += config.science_generated(
-                after, science=science, instrument_modes=modes
-            )
-            if before > 0:
-                data_generated -= config.science_generated(
-                    before, science=science, instrument_modes=modes
+            if getattr(self.ppt, "calibration", False) is not True:
+                data_generated += config.science_generated(
+                    after, science=science, instrument_modes=modes
                 )
+                if before > 0:
+                    data_generated -= config.science_generated(
+                        before, science=science, instrument_modes=modes
+                    )
+            if before <= 0:
+                # Once per observation: its calibration steps' frames.
+                data_generated += extra_data_gb(self.ppt, config)
             self._data_observation = observation
             self._data_collected = after
 
@@ -915,10 +974,17 @@ class DITLMixin:
             if data_to_downlink > 0:
                 contacts.append((contact_start, contact_stop, data_to_downlink))
 
+        # Activities have already stored their frames; report them only once.
+        if isinstance(config, RecorderView):
+            activity_data = self._store_activity_data_gb.pop(config.name, 0.0)
+        else:
+            activity_data = self._activity_data_gb
+            self._activity_data_gb = 0.0
+
         if not contacts or interval <= 0:
             if data_generated > 0:
                 recorder.add_data(data_generated)
-            return data_generated, data_downlinked
+            return data_generated + activity_data, data_downlinked
 
         # Walk each usable span and gap in time order: outages can overflow
         # the recorder even when a later link can send everything it retains.
@@ -931,7 +997,7 @@ class DITLMixin:
             )
             cursor = contact_stop
         recorder.add_data(rate * (utime + interval - cursor))
-        return data_generated, data_downlinked
+        return data_generated + activity_data, data_downlinked
 
     def _recorder_telemetry(self) -> dict[str, dict[str, float]]:
         if not isinstance(self.config.data_storage, DataStorage):

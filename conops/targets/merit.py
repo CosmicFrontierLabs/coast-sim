@@ -196,10 +196,15 @@ class MeritModel:
         """Return urgency in [0, 1], rising as the target's last chance nears.
 
         The closing time is the deadline, or the end of the current visibility
-        window when no later window opens before the deadline. Targets without
-        a deadline have no urgency.
+        window when no later window opens before the deadline. For a target
+        with visit windows the deadline is its next visit window's. Targets
+        without a deadline have no urgency.
         """
         deadline = target.deadline
+        windows = getattr(target, "visit_windows", None)
+        # A test double's target has no windows.
+        if isinstance(windows, list) and windows:
+            deadline = target.window_bounds(utime)[1]
         if deadline is None:
             return 0.0
         close = deadline
