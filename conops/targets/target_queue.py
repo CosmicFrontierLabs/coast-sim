@@ -114,12 +114,26 @@ class TargetQueue:
             return self.allocation_bonus
         return self.allocation_bonus * min(1.0, remaining / collection_seconds)
 
-    def allocation_term(self, target: Pointing, value: float) -> float:
+    def allocation_term(
+        self, target: Pointing, value: float, collection_seconds: float | None = None
+    ) -> float:
         """What the allocation adds to a candidate's ``value``, for the
-        snapshot it would collect now (see :meth:`_bonus`)."""
-        exposure = target.exptime if target.exptime is not None else target.ss_max
-        snapshot = min(float(target.ss_max), float(exposure))
-        return self._bonus(target, snapshot) * value
+        ``collection_seconds`` it would collect now, or a full snapshot
+        where that is not known (see :meth:`_bonus`)."""
+        if collection_seconds is None:
+            exposure = target.exptime if target.exptime is not None else target.ss_max
+            collection_seconds = min(float(target.ss_max), float(exposure))
+        return self._bonus(target, collection_seconds) * value
+
+    def _with_allocation(
+        self, terms: MeritBreakdown, target: Pointing, collection_seconds: float
+    ) -> MeritBreakdown:
+        """``terms`` with the allocation's term for a snapshot collecting
+        ``collection_seconds``."""
+        allocation = self.allocation_term(target, terms.value, collection_seconds)
+        if not allocation:
+            return terms
+        return terms.model_copy(update={"allocation": allocation})
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -549,15 +563,13 @@ class TargetQueue:
                     + self.observation_timing.total_seconds,
                 )
                 target.set_collection_window(self.observation_timing)
-                value = merit_model.value_terms(
+                terms = merit_model.value_terms(
                     target,
                     utime,
                     visibility_window=visibility_window,
                     delivered_shares=delivered_shares,
                 )
-                allocation = self.allocation_term(target, value.value)
-                if allocation:
-                    value = value.model_copy(update={"allocation": allocation})
+                value = self._with_allocation(terms, target, collection)
                 # If nothing beyond merit order matters, return the first
                 # visible target in merit order (fast path)
                 if not score_candidates:
@@ -585,6 +597,8 @@ class TargetQueue:
                     target.ss_min
                 ):
                     continue
+                if collection_seconds != collection:
+                    value = self._with_allocation(terms, target, collection_seconds)
                 collection_minutes = collection_seconds / 60.0
                 data_gb = (
                     self._snapshot_science_gb(target, collection_seconds)

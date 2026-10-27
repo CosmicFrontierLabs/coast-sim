@@ -235,6 +235,7 @@ class PriorityScheduler:
             ahead. None (the default) treats all requests alike.
         allocation_bonus: Fraction of a request's value its allocated time
             gains, so plans trade keeping to the allocation against merit.
+            Zero ignores ``allocated`` altogether.
     """
 
     scheduler_name = "priority"
@@ -295,9 +296,11 @@ class PriorityScheduler:
         configured battery's charge if None."""
         if allocation_bonus < 0.0:
             raise ValueError("allocation_bonus must not be negative")
+        # A bonus of zero ignores when a request was allocated: its seconds
+        # are then not held to their spans either.
         self.allocated = (
             None
-            if allocated is None
+            if allocated is None or allocation_bonus == 0.0
             else {int(obsid): list(spans) for obsid, spans in allocated.items()}
         )
         self.allocation_bonus = allocation_bonus

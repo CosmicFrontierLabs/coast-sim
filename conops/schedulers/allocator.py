@@ -313,27 +313,31 @@ class LongRangeAllocator:
             for k, part in self._shares(demand).items():
                 pressure[k] -= part
             need = demand.remaining
+            # As the MILP: nothing in a bin, or at least a snapshot, and a
+            # cadence request no more than an even share in any bin.
+            smallest = min(demand.ss_min, need)
             bins = sorted(demand.visible)
             if demand.deadline is None and not demand.spread:
                 bins.sort(
                     key=lambda k: ((load[k] + pressure[k]) / max(capacity[k], 1.0), k)
                 )
             given = seconds.setdefault(demand.obsid, {})
+            most = math.inf
             if demand.spread and bins:
-                even = max(need / len(bins), demand.ss_min)
+                most = max(need / len(bins), demand.ss_min)
                 for k in bins:
-                    part = min(even, demand.visible[k], room(k, is_unplanned), need)
-                    if part < min(demand.ss_min, need):
+                    part = min(most, demand.visible[k], room(k, is_unplanned), need)
+                    if part < smallest:
                         continue
                     given[k] = given.get(k, 0.0) + part
                     load[k] += part
                     need -= part
             for k in bins:
-                if need < demand.ss_min:
+                if need < smallest:
                     break
-                part = min(need, demand.visible[k] - given.get(k, 0.0))
+                part = min(need, min(demand.visible[k], most) - given.get(k, 0.0))
                 part = min(part, room(k, is_unplanned))
-                if part < min(demand.ss_min, need):
+                if part < smallest:
                     continue
                 given[k] = given.get(k, 0.0) + part
                 load[k] += part

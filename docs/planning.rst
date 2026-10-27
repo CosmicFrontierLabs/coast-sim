@@ -651,8 +651,10 @@ each request's remaining exposure to collect in which bin:
   keeping a request's seconds where they were is worth an extra 1%. A ToO that fits
   in the reserve leaves every planned request where it was;
 * ``solver="greedy"`` instead takes requests in order of merit, each into
-  the bins with the least competing demand. It is quicker but not optimal, is the
-  MILP's starting point, and does not need OR-Tools.
+  the bins with the least competing demand, under the same bounds: nothing in a
+  bin or at least a snapshot, and no more than an even share of a cadence
+  request in any bin. It is quicker but not optimal, is the MILP's starting
+  point, and does not need OR-Tools.
 
 The allocation says when each request should be observed, and short-term
 scheduling follows it:
@@ -664,7 +666,8 @@ scheduling follows it:
   default 0.5) more of its request's value, shown as the ``allocation`` merit term.
   That is the only way the allocation steers scheduling: allocated time competes
   with everything else on merit, so a larger bonus follows the allocation more
-  closely, and ``0`` ignores when a request was allocated;
+  closely, and ``0`` ignores the allocation altogether, so no request is held to
+  its bin;
 * the rest of a request's exposure, and allocated seconds that don't fit their bin,
   are planned like unallocated requests, by merit, so a plan can work ahead where
   that is worth more than the allocated time it displaces;

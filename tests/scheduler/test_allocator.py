@@ -19,6 +19,7 @@ from conops.config import (
     MissionConfig,
     SchedulerConfig,
     SchedulerMode,
+    TargetConfig,
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl.factory import queue_targets
@@ -410,6 +411,70 @@ class TestBalance:
 
 
 @needs_ortools
+class TestGreedy:
+    """The greedy allocation keeps the MILP's bounds on each request."""
+
+    @staticmethod
+    def _cadence(config: MissionConfig, minutes: float, ss_min: float) -> Pointing:
+        return _target(
+            config, 1, 105.0, 10.0, minutes=minutes, snapshot=ss_min, ss_min=ss_min
+        )
+
+    @staticmethod
+    def _cadence_config(hours: int) -> MissionConfig:
+        return _config(
+            hours,
+            weights=TargetConfig(cadence_weight=1.0),
+            categories=[
+                ObservationCategory(
+                    name="cadence", obsid_min=1, obsid_max=2, cadence_seconds=HOUR
+                )
+            ],
+        )
+
+    def _allocate(self, config: MissionConfig, *targets: Pointing) -> Allocation:
+        return LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            bin_length=timedelta(hours=1),
+            efficiency=1.0,
+            reserve=0.0,
+            solver="greedy",
+        ).allocate(list(targets), T0)
+
+    def test_a_cadence_request_gets_no_more_than_an_even_share_in_a_bin(
+        self,
+    ) -> None:
+        """An hour over three bins is 20 minutes a bin. With only 10 minutes
+        of room in the last bin, the 10 left over are not put in an earlier
+        bin beyond its share: they stay unallocated, as the MILP leaves them."""
+        config = self._cadence_config(3)
+        cadence = self._cadence(config, minutes=60, ss_min=5)
+        # Worth more, allocated first, and only the last bin can hold it.
+        filler = _target(
+            config, 2, 110.0, 10.0, merit=90, minutes=50, earliest_start=T0 + 2 * HOUR
+        )
+
+        allocation = self._allocate(config, cadence, filler)
+
+        assert allocation.seconds[2] == {2: 50 * MIN}
+        per_bin = allocation.seconds[1]
+        assert sum(per_bin.values()) == pytest.approx(50 * MIN)
+        assert max(per_bin.values()) <= 20 * MIN + 1e-6
+
+    def test_never_allocates_less_than_a_snapshot_in_a_bin(self) -> None:
+        """25 minutes in 10-minute snapshots: two bins get 10, the 5 left
+        are not a snapshot and stay unallocated, as the MILP leaves them."""
+        config = self._cadence_config(3)
+        target = self._cadence(config, minutes=25, ss_min=10)
+
+        allocation = self._allocate(config, target)
+
+        parts = [s for s in allocation.seconds[1].values() if s > 0.0]
+        assert parts == [10 * MIN, 10 * MIN]
+
+
 class TestSolver:
     def test_a_level_without_a_solution_is_allocated_greedily(self) -> None:
         """If the solver finds nothing for the planned requests, after the
@@ -606,6 +671,35 @@ class TestDispatchPreference:
         assert target.merit_breakdown.value == pytest.approx(60.0)
         assert target.merit == pytest.approx(40.0)
 
+    def test_the_bonus_covers_a_shortened_snapshot(self) -> None:
+        """Collection cut to 300 s by a deadline, 240 allocated seconds cover
+        80 % of it: merit 40 is worth 56 and beats 50, where measured against
+        the full 20-minute snapshot it would be worth 44."""
+        config = _config(2)
+        ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
+        queue_targets(
+            ditl,
+            [
+                _target(config, 1, 105.0, 10.0, merit=40, ss_min=5),
+                _target(config, 2, 110.0, 10.0, merit=50, ss_min=5),
+            ],
+        )
+        queue = _queue(ditl)
+        queue.prefer = lambda obsid: 240.0 if obsid == 1 else 0.0
+        queue.allocation_bonus = 0.5
+        queue.slew_distance_weight = 1e-9
+
+        target = queue.get(
+            105.0,
+            10.0,
+            T0 + 10 * MIN,
+            collection_deadline=lambda target, slew_end: slew_end + 300.0,
+        )
+
+        assert target is not None and int(target.obsid) == 1
+        assert target.merit_breakdown is not None
+        assert target.merit_breakdown.allocation == pytest.approx(16.0)
+
     @pytest.mark.parametrize(
         ("remaining", "chosen", "allocation"),
         [(1200.0, 1, 20.0), (240.0, 2, 4.0), (0.0, 2, 0.0)],
@@ -693,6 +787,31 @@ class TestAllocatedTime:
         # 40 * 1.1 < 50: merit wins; 40 * 1.5 > 50: the allocation wins.
         assert [o for o, _ in self._low_allocated_high_ahead(0.1)] == [2, 1]
         assert [o for o, _ in self._low_allocated_high_ahead(0.5)] == [1, 2]
+
+    @pytest.mark.parametrize(
+        ("scheduler", "options"),
+        [(PriorityScheduler, {}), (LocalSearchScheduler, {"max_iterations": 0})],
+    )
+    def test_a_zero_bonus_ignores_the_allocation(
+        self, scheduler: type[PriorityScheduler], options: dict[str, object]
+    ) -> None:
+        """Allocated to the second hour but with no bonus, the request is
+        planned as if unallocated: at once."""
+        config = _config(3)
+        later = _target(config, 1, 105.0, 10.0, merit=10)
+
+        plan = scheduler(
+            config,
+            [later],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [self.SECOND_HOUR]},
+            allocation_bonus=0.0,
+            **options,  # type: ignore[arg-type]
+        ).schedule()
+
+        ((_, begin),) = _science(plan)
+        assert begin < T0 + HOUR
 
     def test_local_search_scores_the_bonus(self) -> None:
         config = _config(3)
