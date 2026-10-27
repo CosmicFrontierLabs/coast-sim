@@ -326,9 +326,9 @@ def test_admission_preview_does_not_change_queue_targets_or_log(
     preview_admission = ditl._preview_too_admission
     previews = []
 
-    def preview(dispatch_time, candidates):
+    def preview(dispatch_time, candidates, **kwargs):
         before = _queue_state(ditl)
-        result = preview_admission(dispatch_time, candidates)
+        result = preview_admission(dispatch_time, candidates, **kwargs)
         assert _queue_state(ditl) == before
         previews.append(result)
         return result
@@ -361,10 +361,10 @@ def test_admission_exception_does_not_leak_target_state_or_logs(monkeypatch):
             raise RuntimeError("preview failed")
         return result
 
-    def preview(dispatch_time, candidates):
+    def preview(dispatch_time, candidates, **kwargs):
         before = _queue_state(ditl)
         try:
-            return preview_admission(dispatch_time, candidates)
+            return preview_admission(dispatch_time, candidates, **kwargs)
         finally:
             assert _queue_state(ditl) == before
 
