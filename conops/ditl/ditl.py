@@ -310,7 +310,11 @@ class DITL(DITLMixin, DITLStats):
 
             # Determine the power usage in Watts based on mode from config
             bus_power = self.spacecraft_bus.power(mode, in_eclipse=self.acs.in_eclipse)
-            payload_power = self.payload.power(mode, in_eclipse=self.acs.in_eclipse)
+            payload_power = self.payload.power(
+                mode,
+                in_eclipse=self.acs.in_eclipse,
+                instrument_modes=self._instrument_modes_now(mode),
+            )
             power_usage = bus_power + payload_power
 
             # Calculate solar panel illumination and power (more efficient than separate calls)
@@ -484,6 +488,7 @@ class DITL(DITLMixin, DITLStats):
                 collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
                 solar_array_drive_angles=drive_angles,
+                instrument_modes=self._instrument_modes_telemetry(mode),
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,

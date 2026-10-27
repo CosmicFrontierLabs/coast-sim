@@ -2419,7 +2419,7 @@ class TestRecordSpacecraftState:
             in_eclipse=False,
         )
         queue_ditl.payload.power.assert_called_once_with(
-            mode=ACSMode.SCIENCE, in_eclipse=False
+            mode=ACSMode.SCIENCE, in_eclipse=False, instrument_modes=None
         )
 
     def test_record_state_power_sum(self, queue_ditl) -> None:
@@ -5981,6 +5981,7 @@ class TestTOOFunctionality:
             exptime: int,
             deadline: float | None = None,
             science_data: dict[str, ScienceData] | None = None,
+            instrument_modes: dict[str, str] | None = None,
         ) -> Pointing:
             target = Pointing(
                 config=queue_ditl.config,
@@ -6037,6 +6038,7 @@ class TestTOOFunctionality:
             exptime=3600,
             deadline=5000.0,
             science_data={},
+            instrument_modes={},
         )
 
     def test_queued_too_carries_its_science_data(

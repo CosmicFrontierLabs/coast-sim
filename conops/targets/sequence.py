@@ -34,6 +34,13 @@ class SequenceStep(BaseModel):
     instrument_name: str | None = Field(
         default=None, description="Instrument observing the step; None: the target's"
     )
+    instrument_modes: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The instruments the step uses and the mode each is in, by name; "
+            "None: the target's"
+        ),
+    )
     science: bool = Field(
         default=True,
         description=(

@@ -854,6 +854,10 @@ class PriorityScheduler:
         cadence_weight = merit_model.cadence_weight
         requests = []
         for target in self.targets:
+            check = getattr(target, "check_instrument_modes", None)
+            if callable(check) and not target.done:
+                # A request naming no modes uses every instrument with modes.
+                check()
             exptime = target.exptime if target.exptime is not None else target.ss_max
             remaining = float(exptime) - reserved.get(int(target.obsid), 0.0)
             if (
@@ -2200,6 +2204,7 @@ class PriorityScheduler:
             config=self.config,
             name=target.name,
             instrument_name=telescope.name if telescope is not None else None,
+            instrument_modes=dict(target.instrument_modes),
             science_data=target.science_data,
             ra=target.ra,
             dec=target.dec,

@@ -77,6 +77,14 @@ class AttitudeRotationSchema(AttitudeRotationConventionSchema):
     values: tuple[float, float, float, float]
 
 
+def instrument_modes_of(entry: object) -> dict[str, str] | None:
+    """The instrument modes in effect for ``entry``, or None for an object
+    that cannot say, such as a test double: every instrument then generates."""
+    modes = getattr(entry, "effective_instrument_modes", None)
+    resolved = modes() if callable(modes) else None
+    return resolved if isinstance(resolved, dict) else None
+
+
 class AttitudePointingSchema(BaseModel):
     """Pointing parameters used to generate a target attitude."""
 
@@ -126,6 +134,15 @@ class PlanEntry(BaseModel):
     ephem: rust_ephem.Ephemeris | None = Field(default=None, exclude=True)
     name: str = ""
     instrument_name: str | None = None
+    instrument_modes: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda v: not v,
+        description=(
+            "The instruments this observation uses and the mode each is in, "
+            "by name; instruments not named idle. Empty: the instrument the "
+            "observation names, or every instrument with modes, in SCIENCE"
+        ),
+    )
     science_data: dict[str, ScienceData] = Field(
         default_factory=dict,
         exclude_if=lambda v: not v,
@@ -526,6 +543,21 @@ class PlanEntry(BaseModel):
                 roll_source=roll_source,
             ),
         )
+
+    def effective_instrument_modes(self) -> dict[str, str]:
+        """The mode each instrument is in during this entry, by name: as
+        named; else, for a science observation, every instrument with modes
+        in ``SCIENCE``; else none. Instruments left out idle. The instrument
+        an observation names for its pointing is not a restriction: a
+        request that uses some instruments only names them."""
+        if self.instrument_modes:
+            return dict(self.instrument_modes)
+        if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
+            return {}
+        default = getattr(self.config.payload, "default_instrument_modes", None)
+        modes = default() if callable(default) else None
+        # A test double's payload has no instruments.
+        return dict(modes) if isinstance(modes, dict) else {}
 
     def science_telescope(self) -> Telescope | None:
         """Return the telescope assigned to this target, if configured."""
