@@ -519,10 +519,13 @@ class TestRollingHorizon:
 
 def _driven_config(rate: float = 1.0) -> MissionConfig:
     """The side-panel scenario with contacts and the panel on a single-axis
-    drive about the boresight that tracks the Sun during contacts and holds
-    its angle in every other mode: a contact leaves the panel turned, and the
-    science after it generates at that angle, not the initial one. The drive
-    turns at ``rate`` degrees per second."""
+    drive about the boresight that tracks the Sun during contacts and charges
+    and holds its angle in every other mode: a contact leaves the panel
+    turned, and the science after it generates at that angle, not the initial
+    one. A charge tracks too: a contact can leave the panel turned onto the
+    boresight, which the Sun constraint keeps from the Sun, and a charge
+    holding that angle barely charges. The drive turns at ``rate`` degrees
+    per second."""
     config = _battery_config(SIDE, stations=True)
     config.solar_panel = SolarPanelSet(
         panels=[
@@ -537,7 +540,9 @@ def _driven_config(rate: float = 1.0) -> MissionConfig:
                     max_rate_deg_per_s=rate,
                     initial_angle_deg=0.0,
                 ),
-                drive_control=SolarArrayDriveControl(sun_tracking_modes=[ACSMode.PASS]),
+                drive_control=SolarArrayDriveControl(
+                    sun_tracking_modes=[ACSMode.PASS, ACSMode.CHARGING]
+                ),
             )
         ]
     )

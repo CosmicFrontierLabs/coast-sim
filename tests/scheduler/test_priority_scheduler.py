@@ -21,6 +21,7 @@ from conops.config import (
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.schedulers.priority_scheduler import _Move
+from conops.simulation import Pass
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
@@ -595,19 +596,24 @@ class TestGroundContacts:
         )
         plan = scheduler.schedule()
 
-        predicted = {
-            gspass.station: gspass for gspass in scheduler.ctx.predict_passes()
+        # A station can have several passes in the window, so a pass is
+        # known by its station and its end, which the contact keeps.
+        predicted: dict[tuple[str | None, float | None], Pass] = {
+            (gspass.station, gspass.end): gspass
+            for gspass in scheduler.ctx.predict_passes()
         }
         contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
-        assert {entry.station for entry in contacts} == set(predicted)
+        assert {(entry.station, entry.contact_end) for entry in contacts} == set(
+            predicted
+        )
         off_grid = [
             entry
             for entry in contacts
-            if (predicted[entry.station].begin - T0) % step  # type: ignore[index]
+            if (predicted[(entry.station, entry.contact_end)].begin - T0) % step
         ]
         assert off_grid
         for entry in contacts:
-            gspass = predicted[entry.station]  # type: ignore[index]
+            gspass = predicted[(entry.station, entry.contact_end)]
             acquire = scheduler.ctx.ceil_step(gspass.begin)
             assert entry.contact_begin == acquire
             assert entry.contact_end == gspass.end
@@ -703,14 +709,20 @@ class TestGroundContacts:
         )
         plan = scheduler.schedule()
 
+        # A station can have several passes in the window, so a pass is
+        # known by its station and its end, which the contact keeps.
         unreachable = {
-            gspass.station
+            (gspass.station, gspass.end)
             for gspass in scheduler.ctx.predict_passes()
             if scheduler.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
         }
         assert unreachable
-        stations = {entry.station for entry in plan if entry.obstype == ObsType.GSP}
-        assert stations and not stations & unreachable
+        reserved = {
+            (entry.station, entry.contact_end)
+            for entry in plan
+            if entry.obstype == ObsType.GSP
+        }
+        assert reserved and not reserved & unreachable
         ditl = _execute(config, plan, hours, step)
         assert ditl.validate_plan_matches_execution() == []
 
