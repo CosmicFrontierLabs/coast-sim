@@ -15,12 +15,20 @@ from pydantic import Field, field_validator
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
+from ..common.numerics import ROUNDOFF, UNIT_MAGNITUDE_TOLERANCE
 from ._base import ConfigModel
 
 if TYPE_CHECKING:
     from shapely.geometry.base import BaseGeometry
 
 __all__ = ["PanelGeometry", "compute_shadow_fraction"]
+
+
+_PARALLEL_DOT = 1e-9
+"""A ray whose direction has a dot product with a plane's normal below this
+runs parallel to the plane."""
+_POLYGON_VERTICES = 3
+"""The fewest vertices a polygon has."""
 
 
 class PanelGeometry(ConfigModel):
@@ -66,7 +74,7 @@ class PanelGeometry(ConfigModel):
         cls, vec: tuple[float, float, float]
     ) -> tuple[float, float, float]:
         mag = float(np.sqrt(sum(x**2 for x in vec)))
-        if mag < 0.99 or mag > 1.01:
+        if abs(mag - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(
                 f"PanelGeometry spanning vectors must be unit vectors, got magnitude {mag:.4f}"
             )
@@ -104,7 +112,7 @@ def _shadow_poly_2d(
 
     # Use abs: n_rec = u×v may be antiparallel to the component's orientation.normal.
     # The sign of s_dot_n only affects the sign of t, which we check explicitly below.
-    if abs(s_dot_n) < 1e-9:
+    if abs(s_dot_n) < _PARALLEL_DOT:
         # Sun nearly parallel to receiver face — no projection possible.
         return None
 
@@ -118,7 +126,7 @@ def _shadow_poly_2d(
         # t > 0 means the occluder corner is on the sun-side of the receiver plane.
         # Include t == 0 (corner exactly on receiver plane) as a valid boundary point.
         t = float(np.dot(q - c_rec, n_rec)) / s_dot_n
-        if t < -1e-12:
+        if t < -ROUNDOFF:
             continue
         shadow_pt = q - t * sun_unit
         pts_2d.append(
@@ -128,7 +136,7 @@ def _shadow_poly_2d(
             )
         )
 
-    if len(pts_2d) < 3:
+    if len(pts_2d) < _POLYGON_VERTICES:
         return None
 
     geom: BaseGeometry = Polygon(pts_2d)

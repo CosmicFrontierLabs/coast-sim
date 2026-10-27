@@ -906,7 +906,7 @@ class StoredMomentumTracker:
             stored_momentum_body_n_m_s=np.asarray(momentum_before, dtype=np.float64),
         )
         torques: dict[str, tuple[float, float, float]] = {}
-        torque_body = np.zeros(3, dtype=np.float64)
+        torque_body: npt.NDArray[np.float64] = np.zeros(3, dtype=np.float64)
         for source in self.sources:
             contribution = np.asarray(source.torque_body_n_m(sample), dtype=np.float64)
             torques[source.name] = _as_tuple(contribution)

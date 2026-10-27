@@ -26,6 +26,11 @@ from ..contacts import (
     run_window,
     station_colors,
 )
+from ..mpl.ditl_timeline import (
+    _extract_activities,
+    _extract_repoints,
+    _extract_sequence_steps,
+)
 
 # Mapping of matplotlib color names to CSS color names that Plotly accepts
 MATPLOTLIB_TO_PLOTLY_COLORS = {
@@ -579,6 +584,64 @@ def plot_ditl_timeline_plotly(
             )
         )
 
+    # Sequence steps, hatched over their observation bars
+    for i, (start, duration) in enumerate(
+        _extract_sequence_steps(ditl, t_start, offset_hours)
+    ):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Observations"]),
+                orientation="h",
+                marker={
+                    "color": "rgba(0,0,0,0)",
+                    "pattern": {"shape": "/", "fgcolor": "black"},
+                    "line": {"color": "black", "width": 0.5},
+                },
+                name="Sequence Step",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate=_bar_hover_template("Sequence Step", start, duration),
+            )
+        )
+
+    # Antenna repoints during observations
+    repoint_times = _extract_repoints(ditl, t_start, offset_hours)
+    if repoint_times:
+        fig.add_trace(
+            go.Scatter(
+                x=repoint_times,
+                y=cast(Any, ["Observations"] * len(repoint_times)),
+                mode="markers",
+                marker={"symbol": "triangle-down", "size": 9, "color": "red"},
+                name="Antenna Repoint",
+                showlegend=True,
+                hovertemplate="Antenna Repoint<br>Time: %{x:.2f} h<extra></extra>",
+            )
+        )
+
+    # Scheduled activities, momentum dumps apart from the rest
+    dumps, activities = _extract_activities(ditl, t_start, offset_hours)
+    for label, color, segments in (
+        ("Momentum Dump", "purple", dumps),
+        ("Activity", "olive", activities),
+    ):
+        for i, (start, duration) in enumerate(segments):
+            fig.add_trace(
+                go.Bar(
+                    x=[duration],
+                    y=cast(Any, ["Activities"]),
+                    orientation="h",
+                    marker_color=color,
+                    name=label,
+                    showlegend=(i == 0),
+                    base=start,
+                    width=0.8,
+                    hovertemplate=_bar_hover_template(label, start, duration),
+                )
+            )
+
     # Plot slews
     slew_segments = _extract_slews(ditl, t_start, offset_hours)
     for i, (start, duration) in enumerate(slew_segments):
@@ -725,7 +788,7 @@ def plot_ditl_timeline_plotly(
     if show_saa:
         y_categories.insert(0, "SAA")
     y_categories = ["Safe Mode"] + y_categories
-    y_categories = ["Charging", "Slewing", "Observations"] + y_categories
+    y_categories = ["Charging", "Activities", "Slewing", "Observations"] + y_categories
     if show_orbit_numbers:
         y_categories = ["Orbit"] + y_categories
 

@@ -44,7 +44,13 @@ from ..config.constraint import (
 from ..config.data_storage import RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
-from .track import TrackPoint, position_along, rate_along, validate_track
+from .track import (
+    TrackPoint,
+    position_along,
+    positions_along,
+    rate_along,
+    validate_track,
+)
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
@@ -140,6 +146,50 @@ class PlanEntry(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    EXECUTION_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "begin",
+            "end",
+            "slewtime",
+            "insaa",
+            "roll",
+            "slewdist",
+            "done",
+            "exposure",
+            "exporig",
+            "target_attitude",
+            "isat",
+            "obstype",
+            "collection_begin",
+            "collection_end",
+            "spacecraft_attitude",
+            "visit",
+            "slewpath",
+            # Contact and tracking end points are run state too.
+            "station",
+            "station_lat_deg",
+            "station_lon_deg",
+            "station_alt_m",
+            "contact_begin",
+            "contact_end",
+            "activity_hold_begin",
+            "activity_hold_end",
+            "track_start_ra",
+            "track_start_dec",
+            "track_start_roll",
+            "track_end_ra",
+            "track_end_dec",
+            "track_end_roll",
+        }
+    )
+    """The fields a run fills in as it schedules and executes an entry; a
+    request written to a program file leaves them out."""
+
+    kind: Literal["entry"] = Field(
+        default="entry",
+        description="The entry's class, for a file to read it back as that class",
+    )
+
     _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
         {ObsType.PPT, ObsType.AT, ObsType.TOO}
     )
@@ -182,6 +232,24 @@ class PlanEntry(BaseModel):
         description=(
             "Whether this activity entry is a thruster momentum dump, after "
             "which the wheels hold the dump's residual"
+        ),
+    )
+    activity_hold_begin: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold start, including any part before this run",
+    )
+    activity_hold_end: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold end, including any part after this run",
+    )
+    activity_requires_stationary: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether this activity reserves a stationary hold after ingress; "
+            "slewing or an unexpected hold mode violates the plan"
         ),
     )
     own_timing: ObservationTiming | None = Field(
@@ -307,6 +375,9 @@ class PlanEntry(BaseModel):
         instance = handler(data)
         if exptime is not None:
             instance._exptime = exptime
+            # Without run state, the original exposure is the exposure.
+            if exporig is None:
+                instance._exporig = exptime
         if exporig is not None:
             instance._exporig = exporig
         if target_attitude is not None:
@@ -424,6 +495,24 @@ class PlanEntry(BaseModel):
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
     @property
+    def activity_partial(self) -> bool:
+        """Whether this entry covers only part of its full activity hold."""
+        return (
+            self.activity_hold_begin is not None
+            and float(self.begin) > self.activity_hold_begin
+        ) or (
+            self.activity_hold_end is not None
+            and float(self.end) < self.activity_hold_end
+        )
+
+    @property
+    def activity_finishes(self) -> bool:
+        """Whether the reserved interval reaches the full hold's end."""
+        return (
+            self.activity_hold_end is None or float(self.end) >= self.activity_hold_end
+        )
+
+    @property
     def collected_seconds(self) -> float:
         """Science collection credited to this target so far."""
         return self._collected_seconds
@@ -433,20 +522,27 @@ class PlanEntry(BaseModel):
         """When this target last collected science, or None if never."""
         return self._last_collection_time
 
-    def record_collection(self, utime: float, seconds: float) -> None:
+    def record_collection(
+        self, utime: float, seconds: float, *, step: float = 0.0
+    ) -> None:
         """Credit executed science collection to this target.
 
         Reduces the remaining exposure time and records when the target was
-        last observed.
+        last observed. A remainder shorter than ``step``, the step the
+        simulation runs at, ends the target: it is rounding, not science.
 
         Args:
             utime: Time the collection ended.
             seconds: Seconds of science collected.
+            step: The simulation step, in seconds; 0 keeps any remainder.
         """
         if seconds <= 0:
             return
         if self.exptime is not None:
             self.exptime = max(0, self.exptime - seconds)
+            if 0 < self.exptime < step:
+                # A remainder shorter than a simulation step is rounding.
+                self.exptime = 0
         self._collected_seconds += seconds
         self._last_collection_time = utime
 
@@ -875,13 +971,13 @@ class PlanEntry(BaseModel):
             # A moving target: the constraint along its track, resampled on
             # the ephemeris grid, which the moving-body evaluation wants.
             times = list(self.ephem.timestamp)
-            positions = [
-                position_along(self.track, float(t.timestamp())) for t in times
-            ]
+            ras, decs = positions_along(
+                self.track, [float(t.timestamp()) for t in times]
+            )
             moving = combined_constraint.evaluate_moving_body(
                 self.ephem,
-                target_ras=[ra for ra, _ in positions],
-                target_decs=[dec for _, dec in positions],
+                target_ras=[float(ra) for ra in ras],
+                target_decs=[float(dec) for dec in decs],
                 times=times,
                 target_roll=effective_roll,
             )
@@ -998,15 +1094,17 @@ class PlanEntry(BaseModel):
         )
 
 
-def snapshot_min_seconds(entry: PlanEntry) -> float:
+def snapshot_min_seconds(entry: PlanEntry, step: float = 0.0) -> float:
     """The least a snapshot of ``entry`` may collect, in seconds.
 
     ``ss_min`` for its first snapshot; once it has collected anything, the
     smaller of ``ss_min`` and what remains, so a target cut short by an
     interruption, or left with a remainder, finishes its exposure instead
-    of losing what is below ``ss_min``. Reads the public attributes, so a
-    test double with a numeric ``ss_min`` and no collection record gets its
-    ``ss_min``.
+    of losing what is below ``ss_min``. A remainder shorter than ``step``,
+    the step the simulation runs at, is rounding rather than science and
+    gets no snapshot: the minimum stays ``ss_min``. Reads the public
+    attributes, so a test double with a numeric ``ss_min`` and no
+    collection record gets its ``ss_min``.
     """
     ss_min = float(entry.ss_min)
     collected = getattr(entry, "collected_seconds", 0.0)
@@ -1015,6 +1113,7 @@ def snapshot_min_seconds(entry: PlanEntry) -> float:
         not isinstance(collected, (int, float))
         or collected <= 0.0
         or not isinstance(remaining, (int, float))
+        or float(remaining) < step
     ):
         return ss_min
     return min(ss_min, max(0.0, float(remaining)))

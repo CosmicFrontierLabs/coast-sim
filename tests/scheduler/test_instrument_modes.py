@@ -467,7 +467,7 @@ class TestScienceData:
         assert ditl.calc()
         assert max(ditl.recorder_volume_gb) == pytest.approx(0.6, abs=0.001)
         if named_recorders:
-            views = config.recorder_views()
+            views = ditl.config.recorder_views()
             assert views["camera"].recorder.current_volume_gb == pytest.approx(0.6)
             assert views["spectrograph"].recorder.current_volume_gb == 0.0
 

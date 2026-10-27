@@ -1,16 +1,19 @@
 """LocalSearchScheduler: improve priority-first plans without breaking execution."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from pydantic import BaseModel, Field
 
 from conops import DITL
 from conops.common import ObsType
 from conops.config import MissionConfig, TargetConfig
 from conops.config.observation_categories import ObservationCategory
 from conops.ditl import RollingHorizonDITL
-from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers import CpSatScheduler, LocalSearchScheduler, PriorityScheduler
+from conops.schedulers import local_search_scheduler as search_module
 from conops.schedulers.priority_scheduler import program_shares
 from conops.targets import Plan, PlanEntry, Pointing
 
@@ -339,7 +342,7 @@ class TestEarliness:
         plan = scheduler.schedule()
 
         assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
-        assert scheduler.score > scheduler.initial_score
+        assert scheduler.score == scheduler.initial_score == (60 + 50) * 20 * MIN
 
     def test_earliest_start_is_kept_by_every_change(self) -> None:
         config = _config(3)
@@ -632,3 +635,190 @@ class TestRollingHorizon:
 
         assert len(ditl.replans) == 3
         assert ditl.validate_plan_matches_execution() == []
+
+
+class TestSearchBudgetReporting:
+    @staticmethod
+    def _scheduler(scheduler_type=LocalSearchScheduler, **options):
+        return scheduler_type(
+            _config(1), [], BEGIN, BEGIN + timedelta(hours=1), **options
+        )
+
+    @staticmethod
+    def _clock(monkeypatch, ticks):
+        values = iter(ticks)
+        monkeypatch.setattr(
+            search_module,
+            "time",
+            SimpleNamespace(perf_counter=lambda: next(values, ticks[-1])),
+        )
+
+    @pytest.mark.parametrize(
+        "seconds,limit,ticks,count,ending",
+        [
+            (10, 2, [0, 0, 0, 0], 2, "iteration budget"),
+            (1, 5, [0, 0, 2], 1, "wall clock"),
+            (1, None, [0, 0, 2], 1, "wall clock"),
+            (0, 5, [0, 0], 0, "disabled"),
+            (10, 0, [0, 0], 0, "disabled"),
+            (1, 2, [0, 0, 0, 2], 2, "iteration budget"),
+        ],
+    )
+    def test_reports_the_budget_that_ended_a_pass(
+        self, monkeypatch, seconds, limit, ticks, count, ending
+    ):
+        scheduler = self._scheduler(time_limit=seconds, max_iterations=limit)
+        monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
+        self._clock(monkeypatch, ticks)
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        assert scheduler._search(start) is start
+        assert scheduler.search_iterations == [count]
+        assert scheduler.search_limits == [ending]
+
+    def test_a_later_completed_pass_does_not_hide_an_earlier_timeout(self, monkeypatch):
+        scheduler = self._scheduler(time_limit=1, max_iterations=3)
+        monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        self._clock(monkeypatch, [0, 0, 2])
+        scheduler._search(start)
+        self._clock(monkeypatch, [0])
+        scheduler._search(start)
+        assert scheduler.iterations == 3
+        assert scheduler.search_iterations == [1, 3]
+        assert scheduler.search_limits == ["wall clock", "iteration budget"]
+
+    @pytest.mark.parametrize("scheduler_type", [LocalSearchScheduler, CpSatScheduler])
+    def test_each_schedule_starts_with_fresh_diagnostics(
+        self, monkeypatch, scheduler_type
+    ):
+        scheduler = self._scheduler(scheduler_type)
+        scheduler.search_iterations.append(1)
+        scheduler.search_limits.append("wall clock")
+        empty = Plan(entries=[])
+
+        def passes(build):
+            assert scheduler.search_iterations == scheduler.search_limits == []
+            return empty
+
+        monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
+        assert scheduler.schedule() is empty
+
+    def test_a_noop_does_not_skip_an_evaluated_history_slot(self, monkeypatch):
+        class State(BaseModel):
+            score: float
+            timeline: list[object] = Field(default_factory=list)
+
+        class Candidate(BaseModel):
+            final: State
+
+        outcomes = []
+        for proposals in [[(1,), (2,), (3,)], [(1,), None, (2,), (3,)]]:
+            scheduler = self._scheduler(
+                history_length=2, max_iterations=len(proposals), time_limit=60
+            )
+            moves = iter(proposals)
+            decoded_from = []
+
+            def decode(current, step):
+                decoded_from.append(current.final.score)
+                if step == 3:
+                    score = 13 if current.final.score == 11 else 12
+                else:
+                    score = {1: 12, 2: 11}[step]
+                return Candidate(final=State(score=score))
+
+            monkeypatch.setattr(scheduler, "_random_move", lambda *args: next(moves))
+            monkeypatch.setattr(scheduler, "_redecode", decode)
+            best = scheduler._search(Candidate(final=State(score=10)))
+            outcomes.append((best.final.score, decoded_from))
+            assert scheduler.search_iterations == [len(proposals)]
+            assert scheduler.search_limits == ["iteration budget"]
+            assert len(decoded_from) == 3
+        # A no-op proposal uses an attempt but leaves the evaluated neighbours unchanged.
+        assert outcomes == [(13, [10, 12, 11]), (13, [10, 12, 11])]
+
+
+class TestDecoderReuse:
+    @staticmethod
+    def _planner(*, battery: bool = True) -> LocalSearchScheduler:
+        config = _config(
+            2,
+            weights=TargetConfig(urgency_weight=0, completion_deficit_weight=0),
+            open_sky=True,
+        )
+        if not battery:
+            config.battery.planning_level = None
+        merits = [32.3900381556679, 15.093408900710946, 65.09693795925497]
+        targets = [
+            _target(config, n, *PATCH[0], merit=merit, minutes=5)
+            for n, merit in enumerate(merits, 1)
+        ]
+        return LocalSearchScheduler(
+            config,
+            targets,
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            time_limit=0,
+            max_iterations=0,
+            include_passes=False,
+        )
+
+    def test_an_unchanged_sequence_retains_its_exact_score(self) -> None:
+        planner = self._planner(battery=False)
+        start = planner._start_from_priority_plan()
+        repeated = planner._redecode(start, list(start.sequence), 0, 0, 0)
+        fresh = planner._decode(start.sequence)
+        assert repeated.final.score == fresh.final.score == start.final.score
+
+    @pytest.mark.parametrize(
+        "left,right",
+        [({"volumes": (0.3,)}, {"volumes": (0.3 + 5e-10,)}), ({}, {"score": 1.0})],
+    )
+    def test_a_small_state_difference_requires_fresh_decoding(self, left, right):
+        planner = self._planner(battery=False)
+        initial = planner._start_from_priority_plan().states[0]
+        assert planner._ledger.active
+        assert not planner._same_state(
+            initial.model_copy(update=left), initial.model_copy(update=right)
+        )
+
+    def test_static_panel_history_does_not_block_identical_suffix_reuse(self):
+        planner = self._planner()
+        start = planner._start_from_priority_plan()
+        repeated = planner._step(start.states[0], start.sequence[0])
+        assert not planner._battery.driven
+        assert planner._same_state(repeated, start.states[1])
+
+
+def test_equal_value_does_not_postpone_the_priority_science() -> None:
+    config = _config(4)
+    config.constraint.sun_constraint = None
+    config.constraint.earth_constraint = None
+    target = _target(config, 100, *PATCH[0], minutes=20)
+    scheduler = LocalSearchScheduler(
+        config,
+        [target],
+        BEGIN,
+        BEGIN + timedelta(hours=4),
+        time_limit=0,
+        max_iterations=0,
+        include_passes=False,
+    )
+    start = scheduler._start_from_priority_plan()
+    delayed = scheduler._decode(
+        [
+            s.model_copy(update={"release": float(s.release or T0) + HOUR})
+            for s in start.sequence
+        ]
+    )
+    assert scheduler._objective(delayed.final) == scheduler.initial_score
+    assert (
+        delayed.final.timeline[0].entry.collection_begin
+        > scheduler._greedy_timeline[0].entry.collection_begin
+    )
+    plan = scheduler._finish_best(delayed)
+    assert (
+        plan.entries[0].collection_begin
+        == scheduler._greedy_timeline[0].entry.collection_begin
+    )
+    assert _execute([target], plan, 4).validate_plan_matches_execution() == []

@@ -328,6 +328,34 @@ class TestTargetsOfOpportunity:
         assert ditl.too_register[0].executed
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_a_too_collected_by_its_deadline_waits_for_the_observation(self) -> None:
+        """A ToO that needs a rapid replan but can begin collecting by its
+        deadline once the observation under way ends waits for it, as it
+        does in dispatch: nothing is cut, the ToO follows the observation
+        and is on time."""
+        ditl = _run(
+            3,
+            _long_observation(),
+            toos=({**GRB, "deadline": T0 + 2 * HOUR},),
+            replan_interval=timedelta(hours=4),
+        )
+
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert len(rapid) == 1 and rapid[0].interrupted_obsid is None
+        science = [e for e in ditl.plan if e.obstype.name == "AT"]
+        assert [int(e.obsid) for e in science] == [1, 1_000_001]
+        assert float(science[0].end) - float(science[0].begin) >= 60 * MIN
+        too_entry = science[1]
+        assert too_entry.collection_begin is not None
+        assert float(too_entry.collection_begin) <= T0 + 2 * HOUR
+        assert float(too_entry.begin) >= float(science[0].end)
+        assert any(
+            "waits for observation 1 under way at the commit cutoff" in e.description
+            for e in ditl.log.events
+        )
+        assert ditl.too_register[0].executed
+        assert ditl.validate_plan_matches_execution() == []
+
     def test_interrupted_observation_resumes_after_the_too(self) -> None:
         ditl = _run(
             3,

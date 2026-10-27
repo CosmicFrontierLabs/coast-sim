@@ -2,6 +2,7 @@
 
 import sys
 from datetime import timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,15 +13,22 @@ from ortools.sat.python import cp_model, cp_model_helper  # noqa: E402
 
 from conops import DITL  # noqa: E402
 from conops.common import ObsType  # noqa: E402
+from conops.common.vector import quaternion_attitude_delta  # noqa: E402
 from conops.config import MissionConfig, TargetConfig  # noqa: E402
+from conops.config.acs import scheduled_slew_time  # noqa: E402
 from conops.config.observation_categories import ObservationCategory  # noqa: E402
-from conops.ditl import RollingHorizonDITL  # noqa: E402
+from conops.ditl import RollingHorizonDITL
 from conops.schedulers import CpSatScheduler  # noqa: E402
-from conops.schedulers.cpsat_scheduler import _ChunkModel, _Task  # noqa: E402
-from conops.schedulers.local_search_scheduler import _Snapshot  # noqa: E402
+from conops.schedulers.cpsat_scheduler import (  # noqa: E402
+    _ChunkModel,
+    _Task,
+    search_ending,
+)
+from conops.schedulers.local_search_scheduler import _Decoded, _Snapshot  # noqa: E402
 from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
 
+from .momentum_scenario import dump_entries, dumping_config, momentum_targets  # noqa: E402
 from .planning_scenario import BEGIN, CONSTRAINED, HOUR, MIN, PATCH, T0  # noqa: E402
 from .planning_scenario import make_config as _config  # noqa: E402
 from .planning_scenario import make_target as _target  # noqa: E402
@@ -175,7 +183,11 @@ def _collected(plan: Plan) -> float:
 class TestPlans:
     def test_never_worse_than_priority_first_and_executes_exactly(self) -> None:
         targets = _targets(4)
-        scheduler = _scheduler(targets, 4)
+        # Exercise a completed native search, independent of CI contention.
+        # Exhaustion/fallback has its own explicitly wall-limited regression.
+        scheduler = _scheduler(
+            targets, 4, solver_deterministic_time=1.0, solver_time_limit=30.0
+        )
 
         plan = scheduler.schedule()
         ditl = _execute(targets, plan, 4)
@@ -183,6 +195,10 @@ class TestPlans:
         assert scheduler.score >= scheduler.initial_score
         assert scheduler.solver_statuses
         assert set(scheduler.solver_statuses) <= {"OPTIMAL", "FEASIBLE"}
+        assert set(scheduler.solver_search_limits) <= {
+            "optimal",
+            "deterministic budget",
+        }
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_collected(plan))
@@ -849,3 +865,340 @@ class TestArguments:
 
         with pytest.raises(ImportError, match="ortools"):
             _scheduler(targets, 1).schedule()
+
+
+class TestSlewSettle:
+    """The model and exact slews include the same fixed settling time."""
+
+    @staticmethod
+    def _tasks(
+        start: tuple[float, float, float], end: tuple[float, float, float]
+    ) -> list[_Task]:
+        return [
+            _Task(None, (start, start), (0, 0)),
+            _Task((1, 0.0), (end, end), (0, HOUR), collection=(300, 300)),
+        ]
+
+    def test_the_table_of_many_tasks_matches_each_pair(self) -> None:
+        """The slew table is computed for every pair at once; each entry is
+        the scheduled slew between that pair's attitudes, including settling."""
+        config = _config(6)
+        acs = config.spacecraft_bus.attitude_control
+        acs.settle_time = 300.0
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        rng = np.random.default_rng(11)
+        attitudes = [
+            (
+                float(rng.uniform(0, 360)),
+                float(rng.uniform(-80, 80)),
+                float(rng.uniform(0, 360)),
+            )
+            for _ in range(7)
+        ]
+        tasks = [_Task(None, (attitudes[0], attitudes[0]), (0, 0))]
+        for k, attitude in enumerate(attitudes[1:], start=1):
+            leaving = attitudes[(k + 3) % 7]
+            tasks.append(
+                _Task((k, 0.0), (attitude, leaving), (0, HOUR), collection=(300, 300))
+            )
+        slews = scheduler._slews(tasks)
+        assert config.constraint.ephem is not None
+        for i, before in enumerate(tasks):
+            for j, after in enumerate(tasks):
+                if i == j:
+                    assert slews[i, j] == 0
+                    continue
+                distance, axis = quaternion_attitude_delta(
+                    *before.attitude_out, *after.attitude_in
+                )
+                assert slews[i, j] == scheduled_slew_time(acs.slew_time(distance, axis))
+
+    def test_a_roll_slew_includes_the_settling_time(self) -> None:
+        config = _config(6)
+        acs = config.spacecraft_bus.attitude_control
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        start, end = (PATCH[0][0], PATCH[0][1], 0.0), (PATCH[0][0], PATCH[0][1], 180.0)
+        distance, axis = quaternion_attitude_delta(*start, *end)
+        slews = scheduler._slews(self._tasks(start, end))
+        assert slews[0, 1] == scheduled_slew_time(acs.slew_time(distance, axis))
+
+
+class TestDeterministicTime:
+    """A search ended by wall-clock time ends at a different point on each
+    run; one ended by CP-SAT's deterministic time ends at the same point."""
+
+    def test_the_budget_reaches_the_solver(self, monkeypatch) -> None:
+        seen: list[tuple[float, float]] = []
+        original = cp_model.CpSolver.solve
+
+        def solve(self: cp_model.CpSolver, model: cp_model.CpModel) -> int:
+            seen.append(
+                (
+                    self.parameters.max_deterministic_time,
+                    self.parameters.max_time_in_seconds,
+                )
+            )
+            return original(self, model)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", solve)
+        targets = _targets(1)
+        scheduler = _scheduler(
+            targets, 6, solver_deterministic_time=4.0, solver_time_limit=2.0
+        )
+        scheduler.schedule()
+        assert seen
+        chunks = len(seen)
+        assert all(
+            budget == pytest.approx(4.0 / chunks)
+            and wall == pytest.approx(2.0 / chunks)
+            for budget, wall in seen
+        )
+
+    def test_a_budget_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="solver_deterministic_time"):
+            _scheduler(_targets(1), 1, solver_deterministic_time=0.0)
+
+
+class TestInvalidModel:
+    def test_an_invalid_chunk_model_raises_instead_of_falling_back(self) -> None:
+        """A model CP-SAT finds invalid is one the scheduler built wrong; it
+        was kept quiet as a search that ran out of time, and the plan was the
+        priority-first plan's with nothing to say so."""
+        broken = _Task(
+            (1, 0.0), ORIGIN, (0, 3000), collection=(300, 200), window=(0, 3000)
+        )
+        tasks = [_Task(None, ORIGIN, (0, 0)), broken]
+        chunk = _ChunkModel(tasks, np.zeros((2, 2)), 60, 10_000, {1: 300})
+        with pytest.raises(ValueError, match="invalid"):
+            chunk.solve(10.0, 1, 1, 0.0)
+
+
+class TestSearchEnding:
+    @pytest.mark.parametrize(
+        ("status", "wall", "limit", "det", "budget", "expected"),
+        [
+            ("OPTIMAL", 10.0, 10.0, 5.0, 5.0, "optimal"),
+            ("FEASIBLE", 1.0, 10.0, 4.9, 5.0, "deterministic budget"),
+            ("FEASIBLE", 9.6, 10.0, 1.0, 5.0, "wall clock"),
+            ("FEASIBLE", 9.6, 10.0, 1.0, None, "wall clock"),
+            ("INFEASIBLE", 0.1, 10.0, 0.1, 5.0, "solver"),
+            ("UNKNOWN", 0.1, 10.0, 0.1, None, "solver"),
+            # Ambiguous endings are reported conservatively.
+            ("FEASIBLE", 9.6, 10.0, 4.9, 5.0, "wall clock"),
+            ("UNKNOWN", 10.0, 10.0, 5.0, 5.0, "wall clock"),
+            ("INFEASIBLE", 10.0, 10.0, 5.0, 5.0, "solver"),
+            ("FEASIBLE", 9.4, 10.0, 4.9, 5.0, "deterministic budget"),
+        ],
+    )
+    def test_what_ended_the_search(
+        self,
+        status: str,
+        wall: float,
+        limit: float,
+        det: float,
+        budget: float | None,
+        expected: str,
+    ) -> None:
+        assert search_ending(status, wall, limit, det, budget) == expected
+
+    def test_every_chunk_reports_what_ended_its_search(self) -> None:
+        scheduler = _scheduler(_targets(6), 6, solver_deterministic_time=4.0)
+        scheduler.schedule()
+        assert len(scheduler.solver_limits) == len(scheduler.solver_statuses) > 0
+        assert set(scheduler.solver_limits) <= {
+            "optimal",
+            "deterministic budget",
+            "wall clock",
+            "solver",
+        }
+
+
+class TestPlanningOnFromADump:
+    def test_chunks_before_the_kept_science_are_not_solved(self) -> None:
+        """A pass after a dump keeps the science before the dump, so the
+        chunks that end before the first slew it let go are not solved."""
+        config = dumping_config()
+        scheduler = CpSatScheduler(
+            config,
+            momentum_targets(config),
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            step_size=60,
+            chunk=timedelta(minutes=30),
+            solver_time_limit=4.0,
+        )
+        plan = scheduler.schedule()
+        assert dump_entries(plan)
+        assert scheduler._resume_from is not None
+        chunk_ends = [BEGIN.timestamp() + 1800.0 * k for k in range(1, 5)]
+        skipped = sum(1 for end in chunk_ends if end <= scheduler._resume_from)
+        assert len(scheduler.solver_statuses) <= 4 - skipped
+        assert scheduler._kept
+        assert all(block.entry in plan.entries for block in scheduler._kept)
+        # A pass that keeps the science past the second chunk solves the
+        # two after it only.
+        scheduler._keep_before(chunk_ends[1] + 60.0)
+        scheduler._resume_from = chunk_ends[1] + 60.0
+        scheduler._solve(scheduler._start_from_priority_plan())
+        assert len(scheduler.solver_statuses) == 2
+
+
+class TestSolverSearchReporting:
+    @staticmethod
+    def _scheduler():
+        return CpSatScheduler(
+            _config(1),
+            [],
+            BEGIN,
+            BEGIN + timedelta(hours=1),
+            chunk=timedelta(hours=1),
+            include_passes=False,
+        )
+
+    @staticmethod
+    def _mock_chunk_inputs(monkeypatch, scheduler):
+        pose = (0.0, 0.0, 0.0)
+        state = SimpleNamespace(
+            remaining={100: 60}, score=0.0, timeline=[], allocated_left={}
+        )
+        scheduler._by_obsid = {}
+        monkeypatch.setattr(
+            scheduler,
+            "ctx",
+            SimpleNamespace(ustart=T0, uend=T0 + HOUR, step_size=60),
+            raising=False,
+        )
+        monkeypatch.setattr(scheduler, "_initial_state", lambda: state)
+        monkeypatch.setattr(scheduler, "_chunk_origin", lambda state: (T0, pose))
+        monkeypatch.setattr(scheduler, "_pass_tasks", lambda *args: [])
+        monkeypatch.setattr(
+            scheduler,
+            "_candidates",
+            lambda *args: [
+                _Task(
+                    (100, T0),
+                    (pose, pose),
+                    (0, 3600),
+                    collection=(60, 60),
+                    window=(0, 3600),
+                    rate=1,
+                )
+            ],
+        )
+        monkeypatch.setattr(scheduler, "_slews", lambda tasks, *args: np.zeros((2, 2)))
+        monkeypatch.setattr(
+            scheduler, "_ledger", SimpleNamespace(members=[]), raising=False
+        )
+        monkeypatch.setattr(
+            scheduler, "_battery", SimpleNamespace(active=False), raising=False
+        )
+        monkeypatch.setattr(scheduler, "_category_caps", lambda *args: [])
+        monkeypatch.setattr(scheduler, "_hint", lambda *args: {})
+        return _Decoded.model_construct(sequence=[], states=[state])
+
+    @pytest.mark.parametrize(
+        "first",
+        [("UNKNOWN", "wall clock", None), ("FEASIBLE", "deterministic budget", [])],
+    )
+    def test_a_later_pass_does_not_hide_an_earlier_search(self, monkeypatch, first):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        results = iter([first, ("OPTIMAL", "optimal", [])])
+        monkeypatch.setattr(_ChunkModel, "solve", lambda *args: next(results))
+        scheduler._solve(start)
+        scheduler._solve(start)
+        assert scheduler.solver_statuses == ["OPTIMAL"]
+        assert scheduler.solver_limits == ["optimal"]
+        assert scheduler.solver_search_statuses == [first[0], "OPTIMAL"]
+        assert scheduler.solver_search_limits == [first[1], "optimal"]
+
+    def test_a_chunk_without_a_model_records_no_search(self, monkeypatch):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        monkeypatch.setattr(scheduler, "_candidates", lambda *args: [])
+        monkeypatch.setattr(
+            _ChunkModel, "solve", lambda *args: pytest.fail("no search")
+        )
+        scheduler._solve(start)
+        assert scheduler.solver_search_statuses == scheduler.solver_search_limits == []
+
+    def test_a_new_schedule_clears_the_previous_search_history(self, monkeypatch):
+        scheduler = self._scheduler()
+        scheduler.solver_search_statuses.append("UNKNOWN")
+        scheduler.solver_search_limits.append("wall clock")
+        scheduler._solve_cache.hits = 3
+        scheduler._intermediate_solve_cache.hits = 2
+        empty = Plan(entries=[])
+
+        def passes(build):
+            assert (
+                scheduler.solver_search_statuses == scheduler.solver_search_limits == []
+            )
+            assert scheduler.solver_reused_chunks == 0
+            return empty
+
+        monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
+        assert scheduler.schedule() is empty
+
+    def test_intermediate_churn_preserves_existing_final_chunk_reuse(self, monkeypatch):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        scheduler.workers = 1
+        scheduler._deterministic_per_chunk = 0.05
+        original = cp_model.CpSolver.solve
+        calls = []
+
+        def counted(self, *args, **kwargs):
+            calls.append(True)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", counted)
+        end = scheduler.ctx.uend
+        first = scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+        for offset in range(1, 21):
+            scheduler._solve_chunk(
+                start.final, end - offset * MIN, [], 2.0, {100: 60}, end
+            )
+        before_repeat = len(calls)
+        repeated = scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+        assert first == repeated
+        assert len(calls) == before_repeat
+        assert scheduler.solver_limits[-1] == "reused"
+
+
+@pytest.mark.parametrize("candidate_earlier", [False, True])
+def test_equal_value_solver_choice_prefers_earlier_science(
+    monkeypatch, candidate_earlier
+) -> None:
+    config = _config(4)
+    config.constraint.sun_constraint = None
+    config.constraint.earth_constraint = None
+    target = _target(config, 100, *PATCH[0], minutes=20)
+    scheduler = CpSatScheduler(
+        config,
+        [target],
+        BEGIN,
+        BEGIN + timedelta(hours=4),
+        chunk=timedelta(hours=4),
+        time_limit=0,
+        max_iterations=0,
+        include_passes=False,
+    )
+    early = scheduler._start_from_priority_plan()
+    late = scheduler._decode(
+        [
+            s.model_copy(update={"release": float(s.release or T0) + HOUR})
+            for s in early.sequence
+        ]
+    )
+    incumbent, proposed = (late, early) if candidate_earlier else (early, late)
+    assert scheduler._objective(incumbent.final) == scheduler._objective(proposed.final)
+    monkeypatch.setattr(
+        scheduler, "_solve_chunk", lambda *args, **kwargs: proposed.sequence
+    )
+    solved = scheduler._solve(incumbent)
+    assert scheduler.solver_chunks_used == [candidate_earlier]
+    assert (
+        solved.final.timeline[0].entry.collection_begin
+        == early.final.timeline[0].entry.collection_begin
+    )

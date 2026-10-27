@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import (
     Field,
@@ -23,6 +24,7 @@ from .visits import VisitWindow
 class Pointing(PlanEntry):
     """Define the basic parameters of an observing target with visibility checking."""
 
+    kind: Literal["pointing"] = Field(default="pointing")  # type: ignore[assignment]
     obsid: int = 0
     name: str = "FakeTarget"
     merit: float = 100.0
@@ -114,6 +116,7 @@ class Pointing(PlanEntry):
     _visits_done: set[int] = PrivateAttr(default_factory=set)
     _visit_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
     _visit_attempt_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
+    _collecting_visit: int | None = PrivateAttr(default=None)
     _visit_parent: "Pointing | None" = PrivateAttr(default=None)
 
     @field_validator("deadline", "earliest_start", mode="before")
@@ -297,16 +300,25 @@ class Pointing(PlanEntry):
         return self.deadline
 
     def record_collection(
-        self, utime: float, seconds: float, *, visit: int | None = None
+        self,
+        utime: float,
+        seconds: float,
+        *,
+        visit: int | None = None,
+        step: float = 0.0,
     ) -> None:
         """Credit ``seconds`` of science collected up to ``utime``, to the
         window of ``visit`` where given, else to the window the collection
         began in: a visit that runs past the next window's start is still
-        its own window's."""
-        super().record_collection(utime, seconds)
+        its own window's. A remainder shorter than ``step`` ends the target
+        (see :meth:`PlanEntry.record_collection`)."""
+        super().record_collection(utime, seconds, step=step)
         if self._visit_parent is not None:
             self._visit_parent.record_collection(
-                utime, seconds, visit=visit if visit is not None else self.visit
+                utime,
+                seconds,
+                visit=visit if visit is not None else self.visit,
+                step=step,
             )
         if seconds > 0 and self.visit_windows:
             index = (
@@ -315,6 +327,7 @@ class Pointing(PlanEntry):
                 else self.visit_index_at(utime - seconds)
             )
             if index is not None:
+                self._collecting_visit = index
                 self._visit_seconds[index] = (
                     self._visit_seconds.get(index, 0.0) + seconds
                 )
@@ -339,16 +352,19 @@ class Pointing(PlanEntry):
         """A visit cut short is taken again, whole, while its window is
         open: the window counts as visited only once one attempt has
         collected a whole visit's science in it, uninterrupted. The science
-        every attempt collected still counts."""
+        every attempt collected still counts. Follow the visit credited by
+        collection, including when it runs past the next window's opening."""
         super().record_interruption(utime)
         if self._visit_parent is not None:
             self._visit_parent.record_interruption(utime)
         if self.visit_windows:
-            index = self.visit_index_at(utime)
+            index = self._collecting_visit
+            self._collecting_visit = None
             if index is not None:
                 attempt = self._visit_attempt_seconds.pop(index, 0.0)
                 if attempt < self.per_visit_seconds - 1e-6:
                     self._visits_done.discard(index)
+                    self.done = False
                     self._exposure_is_the_visits_left()
 
     def visit_complete(self, index: int) -> bool:
@@ -624,6 +640,7 @@ class Pointing(PlanEntry):
         self._visits_done = set()
         self._visit_seconds = {}
         self._visit_attempt_seconds = {}  # Retries must start with no prior progress.
+        self._collecting_visit = None
         self.visit = None
         self.begin = 0
         self.end = 0
@@ -641,6 +658,7 @@ class MovingPointing(Pointing):
     ephemeris, from JPL Horizons or a SPICE kernel, when its visibility is
     first computed."""
 
+    kind: Literal["moving_pointing"] = Field(default="moving_pointing")  # type: ignore[assignment]
     body: str | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
