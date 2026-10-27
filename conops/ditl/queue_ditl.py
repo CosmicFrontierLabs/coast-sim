@@ -513,7 +513,12 @@ class QueueDITL(DITLMixin, DITLStats):
             ):
                 return False
             commitment = self._preview_too_admission(
-                dispatch_time, outranking, now=utime
+                dispatch_time,
+                outranking,
+                now=utime,
+                # Where _reserve_too_cleanup will stop the collection: so
+                # that the cleanup is over by the dispatch time.
+                collection_stop=utime + dispatch_time - cleanup_end,
             )
             if commitment is None:
                 return False
@@ -576,12 +581,15 @@ class QueueDITL(DITLMixin, DITLStats):
         too.executed = True
         return True
 
-    def _recorder_volume_at(self, now: float, later: float) -> float:
+    def _recorder_volume_at(
+        self, now: float, later: float, *, collection_stop: float | None = None
+    ) -> float:
         """The recorder's volume projected from ``now`` to ``later``, while
         the observation under way goes on: its science until its collection
-        ends or ``later`` comes, and housekeeping for the whole steps
-        between at the ``SCIENCE`` rate or the waiting rate, whichever is
-        higher, as a bound on what the steps generate."""
+        ends, or ``collection_stop`` where a replacement will cut it there,
+        and housekeeping for the whole steps between at the ``SCIENCE`` rate
+        or the waiting rate, whichever is higher, as a bound on what the
+        steps generate."""
         volume = float(self.recorder.current_volume_gb)
         if later <= now:
             return volume
@@ -593,7 +601,10 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         ppt = self.ppt
         if ppt is not None and ppt.collection_end is not None:
-            collecting = max(0.0, min(float(ppt.collection_end), later) - now)
+            until = min(float(ppt.collection_end), later)
+            if collection_stop is not None:
+                until = min(until, collection_stop)
+            collecting = max(0.0, until - now)
             if collecting > 0.0:
                 science = ppt.science_data
                 volume += float(
@@ -608,16 +619,20 @@ class QueueDITL(DITLMixin, DITLStats):
         candidates: list[tuple[TOORequest, Pointing, MeritBreakdown]],
         *,
         now: float | None = None,
+        collection_stop: float | None = None,
     ) -> _CommittedTOO | None:
         """Run normal admission on an isolated queue, target state and event
         log, at ``dispatch_time``, with the recorder's volume projected from
-        ``now`` to then: what the observation under way and its cleanup
-        generate meanwhile is on the recorder when the replacement starts."""
+        ``now`` to then: what the observation under way generates until the
+        replacement cuts its collection, at ``collection_stop``, and its
+        cleanup after, is on the recorder when the replacement starts."""
         assert self.ppt is not None
         preview = copy(self)
         preview.log = DITLLog()
         preview._recorder_volume_projected_gb = self._recorder_volume_at(
-            dispatch_time if now is None else now, dispatch_time
+            dispatch_time if now is None else now,
+            dispatch_time,
+            collection_stop=collection_stop,
         )
         # Config and ephemeris are read-only admission inputs and may contain
         # native objects that cannot be copied. Copy the policy's mutable state,

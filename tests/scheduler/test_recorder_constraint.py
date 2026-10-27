@@ -954,6 +954,47 @@ class TestDispatch:
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
 
+    def test_the_projection_stops_the_predecessor_where_the_too_cuts_it(
+        self,
+    ) -> None:
+        """The replacement cuts the observation under way where its cleanup
+        has to start to be over by the replacement's start, so the volume
+        projected to that start counts the predecessor's science only to
+        that cut, not to its original end: an urgent observation the
+        recorder can hold is admitted before its deadline rather than
+        refused on science that would never be generated."""
+        config = _recorder_config(stations=False)
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=60, cleanup_seconds=1200
+        )
+        target = _data_target(
+            config, 1, 105.0, 10.0, HIGH_RATE, merit=90, minutes=40, ss_min=1
+        )
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=2))
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        ditl.submit_too(
+            obsid=1_000_001,
+            name="ToO",
+            ra=110.0,
+            dec=12.0,
+            merit=500.0,
+            exptime=10 * MIN,
+            submit_time=T0 + 25 * MIN,
+            deadline=T0 + 55 * MIN,
+            science_data={"Default Instrument": ScienceData(rate_gbps=LOW_RATE)},
+        )
+        assert ditl.calc()
+
+        too = [e for e in ditl.plan if e.obsid == 1_000_001]
+        assert too
+        assert float(too[0].collection_begin) <= T0 + 55 * MIN
+        # The predecessor was cut for it, after collecting since its start.
+        assert 0.0 < self._collected(ditl, 1) < 40 * MIN
+        assert self._collected(ditl, 1_000_001) >= 60.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
     def test_a_fixed_amount_that_reaches_the_limit_exactly_is_passed_over(
         self,
     ) -> None:
