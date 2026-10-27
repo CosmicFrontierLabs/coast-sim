@@ -7,14 +7,19 @@ import pytest
 
 from conops import DITL
 from conops.common import ObsType
-from conops.config import MissionConfig, ObservationTiming
-from conops.ditl import RollingHorizonDITL
+from conops.config import BudgetStep, HousekeepingData, MissionConfig, ObservationTiming
+from conops.config.observation_categories import (
+    ObservationCategories,
+    ObservationCategory,
+)
+from conops.ditl import ReplanReason, RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
-from conops.targets import Plan, PlanEntry, Pointing
+from conops.targets import ObservationSequence, Plan, PlanEntry, Pointing, SequenceStep
 
-from .planning_scenario import BEGIN, MIN, PATCH
+from .planning_scenario import BEGIN, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
 from .planning_scenario import make_target as _target
+from .test_instrument_modes import _moded_config
 from .test_observation_sequences import REFERENCE, SCIENCE, SEQUENCE, TARGET, TIMING
 
 HOURS = 6
@@ -100,6 +105,142 @@ def _execute(config: MissionConfig, plan: Plan, hours: int = HOURS) -> DITL:
 
 
 class TestPriorityScheduler:
+    def test_step_entries_carry_their_modes_and_the_target_timing(self) -> None:
+        """A planned step is observed in the step's modes, with the
+        calibration step collecting no science data, and the visit's budgets
+        are the target's own where it has them."""
+        config = _moded_config(HOURS)
+        dark = BudgetStep(
+            name="dark",
+            duration_seconds=5 * MIN,
+            instrument_modes={"spectrograph": "SCIENCE"},
+            data_gb=0.2,
+        )
+        own = ObservationTiming(setup_seconds=60, cleanup_steps=[dark])
+        sequence = ObservationSequence(
+            steps=[
+                SequenceStep(
+                    name="flat",
+                    duration_seconds=5 * MIN,
+                    science=False,
+                    instrument_modes={"spectrograph": "SCIENCE"},
+                ),
+                SequenceStep(
+                    name="target",
+                    duration_seconds=10 * MIN,
+                    instrument_modes={"camera": "SCIENCE"},
+                ),
+                SequenceStep(name="again", duration_seconds=5 * MIN),
+            ]
+        )
+        target = Pointing(
+            config=config,
+            obsid=500,
+            name="Moded campaign",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=sequence,
+            instrument_modes={"camera": "SCIENCE", "spectrograph": "SCIENCE"},
+            own_timing=own,
+        )
+        scheduler = PriorityScheduler(config, [target], BEGIN, END, step_size=STEP)
+        plan = scheduler.schedule()
+        steps = {e.step: e for e in plan if e.obsid == 500}
+        assert set(steps) == {"flat", "target", "again"}
+        assert steps["flat"].instrument_modes == {"spectrograph": "SCIENCE"}
+        assert steps["target"].instrument_modes == {"camera": "SCIENCE"}
+        # A step naming no modes observes in the target's.
+        assert steps["again"].instrument_modes == {
+            "camera": "SCIENCE",
+            "spectrograph": "SCIENCE",
+        }
+        assert steps["flat"].calibration and steps["flat"].science_data == {}
+        assert all(e.own_timing == own for e in steps.values())
+        # The visit's block on the timeline carries them too, so the
+        # ledgers see the target's budgets.
+        visit = next(b for b in scheduler.timeline if b.is_visit)
+        assert visit.entry.own_timing == own
+        assert visit.entry.instrument_modes == target.instrument_modes
+        # The dark follows the last step, as the target's own cleanup.
+        last = steps["again"]
+        assert float(last.end) - float(last.collection_end) == pytest.approx(
+            5 * MIN, abs=STEP
+        )
+        assert last.extra_data_gb() == pytest.approx(0.2)
+        # The executed plan observes each step in its modes and ends the
+        # visit with the dark's frames on the recorder.
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        ditl = _execute(config, plan)
+        assert ditl.validate_plan_matches_execution() == []
+        samples = ditl.telemetry.housekeeping
+
+        def modes_during(entry: PlanEntry) -> set[tuple[tuple[str, str], ...]]:
+            begin, end = float(entry.collection_begin), float(entry.collection_end)
+            return {
+                tuple(sorted(hk.instrument_modes.items()))
+                for hk in samples
+                if begin + STEP <= hk.timestamp.timestamp() < end
+            }
+
+        assert modes_during(steps["flat"]) == {
+            (("camera", "IDLE"), ("spectrograph", "SCIENCE"))
+        }
+        assert modes_during(steps["target"]) == {
+            (("camera", "SCIENCE"), ("spectrograph", "IDLE"))
+        }
+        assert ditl.recorder_volume_gb[-1] == pytest.approx(
+            sum(e.extra_data_gb() for e in steps.values())
+            + sum(
+                config.science_generated(
+                    float(e.collection_end) - float(e.collection_begin),
+                    science=e.science_data,
+                    instrument_modes=e.instrument_modes,
+                )
+                for e in steps.values()
+                if not e.calibration
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "scheduler_class", [PriorityScheduler, LocalSearchScheduler]
+    )
+    def test_a_visit_at_the_end_of_the_horizon_stays_within_the_ephemeris(
+        self, scheduler_class: type[PriorityScheduler]
+    ) -> None:
+        """A visit whose last step would end at the horizon, with cleanup
+        beyond it, is dropped before its hold is sampled past the ephemeris,
+        which ends with the horizon here, so the plan is built whole."""
+        config = _config(2)
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=0, cleanup_seconds=3 * STEP, handoff_seconds=0
+        )
+        sequence = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=STEP),
+                SequenceStep(name="b", duration_seconds=STEP, roll_offset_deg=30.0),
+                SequenceStep(
+                    name="c", duration_seconds=STEP, ra=PATCH[1][0], dec=PATCH[1][1]
+                ),
+            ]
+        )
+        target = Pointing(
+            config=config,
+            obsid=500,
+            name="Dense",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=sequence,
+            visits=200,
+        )
+        end = BEGIN + timedelta(hours=2)
+        scheduler = scheduler_class(config, [target], BEGIN, end, step_size=STEP)
+        plan = scheduler.schedule()
+        assert len(plan) > 0
+        assert max(float(e.end) for e in plan) <= end.timestamp()
+        assert max(float(e.end) for e in plan) > T0 + 1.5 * 3600
+
     def test_a_visit_is_one_block_of_steps_that_executes(self) -> None:
         config = _timed_config()
         scheduler = PriorityScheduler(
@@ -235,3 +376,253 @@ class TestRolling:
         assert campaign.calibration_seconds == pytest.approx(
             10 * MIN * len(chains), abs=2 * STEP
         )
+
+
+class TestReplanCutoff:
+    def test_a_rapid_replan_does_not_cut_a_visit_for_a_too(self) -> None:
+        """A ToO that outranks the visit under way, submitted during its
+        middle step with a deadline inside the visit, waits for the visit
+        as it does in dispatch: the visit completes whole and the ToO is
+        placed after it, or not at all."""
+        config = _timed_config()
+        targets = _targets(config)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=timedelta(hours=2),
+            commit_lead_time=timedelta(minutes=5),
+            rapid_replans=True,
+            allow_interrupts=True,
+        )
+        ditl.step_size = STEP
+        # The visit is the first observation: its target step begins after
+        # the two reference steps and the setup.
+        submit = T0 + 20 * MIN
+        ditl.submit_too(
+            obsid=900,
+            ra=PATCH[4][0],
+            dec=PATCH[4][1],
+            merit=500.0,
+            exptime=10 * MIN,
+            name="ToO",
+            submit_time=submit,
+            deadline=submit + 90 * MIN,
+            interrupt=True,
+        )
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        rapid = [r for r in ditl.replans if r.reason is ReplanReason.RAPID]
+        assert len(rapid) == 1 and rapid[0].interrupted_obsid is None
+        chains = _chains(ditl.plan)
+        assert chains, "no visit was planned"
+        for chain in chains:
+            _check_chain(chain)
+        first = chains[0]
+        assert float(first[0].begin) < submit < float(first[-1].end)
+        too = [e for e in ditl.plan if e.obsid == 900]
+        assert too and all(float(e.begin) >= float(first[-1].end) for e in too)
+        descriptions = [e.description for e in ditl.log.events]
+        assert not any("interrupts observation 500" in d for d in descriptions)
+        assert any("waits for the visit of 500" in d for d in descriptions)
+        assert targets[0].collected_seconds == pytest.approx(
+            SCIENCE * len(chains), abs=2 * STEP
+        )
+
+    def test_a_visit_closing_on_a_step_named_like_its_first_is_finished(
+        self,
+    ) -> None:
+        """A visit that returns to the reference at its end carries the
+        first step's name again. Kept across a replan cutoff by the
+        sequence's step order, not the first step's name, the closing
+        steps stay committed and every executed visit is complete."""
+        closing = ObservationSequence(
+            steps=[
+                SequenceStep(
+                    name="ref",
+                    duration_seconds=10 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                    science=False,
+                ),
+                SequenceStep(name="target", duration_seconds=20 * MIN),
+                SequenceStep(
+                    name="ref",
+                    duration_seconds=5 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                ),
+            ]
+        )
+        config = _timed_config()
+        campaign = Pointing(
+            config=config,
+            obsid=500,
+            name="Campaign",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=closing,
+            visits=2,
+        )
+        targets = [campaign, *_targets(config)[1:]]
+        interval, lead = timedelta(minutes=30), timedelta(minutes=5)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=interval,
+            commit_lead_time=lead,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        names = [s.name for s in closing.steps]
+        chains: list[list] = []
+        expected = len(names)
+        for entry in ditl.plan:
+            if entry.obsid != 500 or entry.step is None:
+                continue
+            if expected >= len(names) or entry.step != names[expected]:
+                chains.append([entry])
+                expected = 1
+            else:
+                chains[-1].append(entry)
+                expected += 1
+        assert len(chains) >= 2
+        for chain in chains:
+            assert [e.step for e in chain] == names
+            for earlier, later in zip(chain, chain[1:]):
+                assert float(later.begin) == pytest.approx(
+                    float(earlier.collection_end)
+                )
+        begin = BEGIN.timestamp()
+        cutoffs = [
+            begin + k * interval.total_seconds() + lead.total_seconds()
+            for k in range(1, int(HOURS * 3600 / interval.total_seconds()))
+        ]
+        assert any(
+            float(chain[0].begin) < c < float(chain[-1].end)
+            for chain in chains
+            for c in cutoffs
+        ), "no visit crossed a replan cutoff"
+        assert campaign.collected_seconds == pytest.approx(
+            25 * MIN * len(chains), abs=2 * STEP
+        )
+
+    def test_a_visit_under_way_at_a_replan_cutoff_is_finished(self) -> None:
+        """Replanning every half hour with a five-minute commit lead puts a
+        cutoff inside the first visit. The visit is kept whole across it:
+        every chain in the executed plan is a complete visit, and the target
+        is credited one visit per chain."""
+        config = _timed_config()
+        targets = _targets(config, visits=2)
+        interval, lead = timedelta(minutes=30), timedelta(minutes=5)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=interval,
+            commit_lead_time=lead,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        chains = _chains(ditl.plan)
+        assert len(chains) >= 2
+        for chain in chains:
+            _check_chain(chain)
+        begin = BEGIN.timestamp()
+        cutoffs = [
+            begin + k * interval.total_seconds() + lead.total_seconds()
+            for k in range(1, int(HOURS * 3600 / interval.total_seconds()))
+        ]
+        straddled = [
+            chain
+            for chain in chains
+            if any(float(chain[0].begin) < c < float(chain[-1].end) for c in cutoffs)
+        ]
+        assert straddled, "no visit crossed a replan cutoff"
+        campaign = targets[0]
+        assert campaign.collected_seconds == pytest.approx(
+            SCIENCE * len(chains), abs=2 * STEP
+        )
+
+
+class TestStepBudgets:
+    def test_a_moving_step_pays_its_own_setup_once(self) -> None:
+        """A step that asks for setup is planned with its target's own setup
+        between its slew and its collection, as dispatch reserves it, not
+        the longest setup any observation in the run can have; the last
+        step pays its own cleanup. The plan then executes as timed."""
+        config = _timed_config()
+        config.observation_categories = ObservationCategories(
+            categories=[
+                ObservationCategory(
+                    name="Slow",
+                    obsid_min=100,
+                    obsid_max=200,
+                    observation_timing=ObservationTiming(
+                        setup_seconds=900, cleanup_seconds=300, handoff_seconds=0
+                    ),
+                )
+            ]
+        )
+        moving = ObservationSequence(
+            steps=[
+                SequenceStep(
+                    name="reference",
+                    duration_seconds=5 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                    science=False,
+                ),
+                SequenceStep(name="target", duration_seconds=20 * MIN, setup=True),
+                SequenceStep(
+                    name="reference again",
+                    duration_seconds=5 * MIN,
+                    ra=REFERENCE[0],
+                    dec=REFERENCE[1],
+                ),
+            ]
+        )
+        campaign = Pointing(
+            config=config,
+            obsid=500,
+            name="Campaign",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            merit=95.0,
+            sequence=moving,
+            visits=1,
+        )
+        targets = [campaign, *_targets(config)[1:]]
+        scheduler = PriorityScheduler(config, targets, BEGIN, END, step_size=STEP)
+        plan = scheduler.schedule()
+        steps = [e for e in plan if e.obsid == 500 and e.step is not None]
+        assert [e.step for e in steps] == [s.name for s in moving.steps]
+        target_step = steps[1]
+        assert float(target_step.collection_begin) - (
+            float(target_step.begin) + float(target_step.slewtime)
+        ) == pytest.approx(TIMING.setup_seconds)
+        assert float(steps[-1].end) - float(steps[-1].collection_end) == pytest.approx(
+            TIMING.post_collection_seconds
+        )
+        assert float(steps[0].collection_begin) - (
+            float(steps[0].begin) + float(steps[0].slewtime)
+        ) == pytest.approx(TIMING.setup_seconds)
+        ditl = _execute(config, plan)
+        assert ditl.validate_plan_matches_execution() == []
+        science = sum(
+            hk.collection_seconds or 0.0
+            for hk in ditl.telemetry.housekeeping
+            if hk.obsid == 500
+        )
+        # Every step collects, the calibration step too: the whole visit.
+        assert science == pytest.approx(30 * MIN, abs=2 * STEP)

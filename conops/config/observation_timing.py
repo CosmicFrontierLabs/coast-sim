@@ -2,14 +2,51 @@
 
 from collections.abc import Iterable
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ._base import ConfigModel
 
 
-class ObservationTiming(ConfigModel):
-    """Payload timing budgets, separate from ACS motion and settling."""
+class BudgetStep(ConfigModel):
+    """One calibration step inside an observation's setup or cleanup budget:
+    a target acquisition, a characterisation frame, a dark. It takes its
+    duration, puts the instruments it names in its modes, and puts its own
+    data on the recorder."""
 
+    name: str
+    duration_seconds: float = Field(gt=0.0, allow_inf_nan=False)
+    instrument_modes: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The instruments the step uses and the mode each is in, by name; "
+            "empty: the observation's own modes apply through the step"
+        ),
+    )
+    data_gb: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Data the step puts on the recorder, in Gb, such as its frames",
+    )
+
+
+class ObservationTiming(ConfigModel):
+    """Payload timing budgets, separate from ACS motion and settling.
+
+    A budget is one span of non-collection time unless it is given as
+    ``setup_steps`` or ``cleanup_steps``, in order: the budget's seconds are
+    then the steps' sum, each step puts the instruments it names in its
+    modes while it runs, and the steps' data goes on the recorder with the
+    observation's.
+    """
+
+    setup_steps: list[BudgetStep] = Field(
+        default_factory=list,
+        description="The calibration steps the setup budget consists of, in order",
+    )
+    cleanup_steps: list[BudgetStep] = Field(
+        default_factory=list,
+        description="The calibration steps the cleanup budget consists of, in order",
+    )
     setup_seconds: float = Field(
         default=0.0,
         ge=0,
@@ -28,6 +65,44 @@ class ObservationTiming(ConfigModel):
         allow_inf_nan=False,
         description="Reserved margin after cleanup before the next task, in seconds",
     )
+
+    @model_validator(mode="after")
+    def _steps_set_their_budget(self) -> "ObservationTiming":
+        """A budget given as steps is their sum."""
+        # Assigned only when different: assignment validates again.
+        if self.setup_steps:
+            setup = sum(step.duration_seconds for step in self.setup_steps)
+            if self.setup_seconds != setup:
+                self.setup_seconds = setup
+        if self.cleanup_steps:
+            cleanup = sum(step.duration_seconds for step in self.cleanup_steps)
+            if self.cleanup_seconds != cleanup:
+                self.cleanup_seconds = cleanup
+        return self
+
+    @property
+    def budget_data_gb(self) -> float:
+        """Data the setup and cleanup steps put on the recorder, in Gb."""
+        return sum(step.data_gb for step in (*self.setup_steps, *self.cleanup_steps))
+
+    @staticmethod
+    def _step_at(steps: list[BudgetStep], offset: float) -> BudgetStep | None:
+        """The step running ``offset`` seconds into its budget, if any."""
+        if offset < 0.0:
+            return None
+        for step in steps:
+            if offset < step.duration_seconds:
+                return step
+            offset -= step.duration_seconds
+        return None
+
+    def setup_step_at(self, offset: float) -> BudgetStep | None:
+        """The setup step running ``offset`` seconds after setup begins."""
+        return self._step_at(self.setup_steps, offset)
+
+    def cleanup_step_at(self, offset: float) -> BudgetStep | None:
+        """The cleanup step running ``offset`` seconds after collection ends."""
+        return self._step_at(self.cleanup_steps, offset)
 
     @property
     def post_collection_seconds(self) -> float:

@@ -957,7 +957,11 @@ base merit high enough for its importance.
   or the end of the current visibility window when no later window opens
   before the deadline. A target cannot be selected once its deadline has passed.
   A target with an ``earliest_start`` (``queue.add(..., earliest_start=...)``),
-  the earliest time science collection may begin, cannot be selected before it.
+  the earliest time science collection may begin, cannot be selected before it;
+  dispatch ends a lower-merit snapshot when such a target's window opens, so the
+  target can be selected then (see :doc:`planning`). A target with
+  ``visit_windows`` is selected only while one of its windows is open and not
+  yet visited, each window opening the same way.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the
@@ -1073,6 +1077,20 @@ Observation Timing Budgets
 science task. All three values are finite, nonnegative seconds and default to
 zero. ACS ``settle_time`` is already included in ``slewtime``; do not include it
 again in these payload budgets.
+
+A budget can be given as calibration steps instead of one number: ``setup_steps``
+and ``cleanup_steps`` list :class:`~conops.config.BudgetStep` entries in order, each
+with a ``name``, a ``duration_seconds``, the ``instrument_modes`` it puts the
+instruments in while it runs (empty: the observation's own modes apply through it)
+and a ``data_gb`` it puts on the recorder, such as its frames. The budget's seconds
+are then the steps' sum. A target acquisition followed by a characterisation
+frame before every observation, or a dark after it, is written this way; the
+instruments draw the step's modes during it, the mode telemetry records them, and
+the steps' data is counted with the observation's wherever its science data is,
+in the simulation, the recorder ledger and the data budget. A step's modes are
+checked against the payload when the configuration is made. A single target can
+carry its own timing with ``own_timing`` on the :class:`~conops.targets.Pointing`,
+in place of its category's (see :doc:`planning`).
 
 .. code-block:: yaml
 
@@ -1367,6 +1385,7 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
 * ``sun_constraint``: Minimum angle from the Sun
 * ``anti_sun_constraint``: Maximum angle from anti-Sun direction
 * ``moon_constraint``: Minimum angle from the Moon
+* ``eclipse_intervals``: Intervals, each a ``(start, end)`` pair in Unix seconds, datetimes or ISO-8601 strings, during which the spacecraft is taken to be in eclipse whatever the ephemeris says, for a test of an eclipse the orbit does not give. The constraint's eclipse test, the solar panels, the bus and instrument eclipse power, the planners' battery ledger, the momentum sources' Sun, telemetry and the timeline plots all see them
 * ``earth_constraint``: Minimum angle from Earth limb
 * ``panel_constraint``: Solar panel pointing constraint
 * ``ephem``: Ephemeris object (set at runtime, not serialized)

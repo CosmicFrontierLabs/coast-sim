@@ -19,7 +19,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
@@ -75,7 +75,9 @@ class AttitudeRateContinuityError(RuntimeError):
 
 
 class DITLMixin:
-    def _instrument_modes_telemetry(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_telemetry(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument with modes is in at this step, by name,
         resolved as its power is: the observation's for the instruments it
         uses, and IDLE or a mode named like the ACS mode for the rest. None
@@ -92,17 +94,20 @@ class DITLMixin:
             acs_mode = int(mode)
         except (TypeError, ValueError):
             acs_mode = None
-        named = self._instrument_modes_now(mode) or {}
+        named = self._instrument_modes_now(mode, utime) or {}
         return {
             instrument.name: instrument.mode_in(acs_mode, named.get(instrument.name))
             for instrument in with_modes
         }
 
-    def _instrument_modes_now(self, mode: ACSMode | int) -> dict[str, str] | None:
+    def _instrument_modes_now(
+        self, mode: ACSMode | int, utime: float | None = None
+    ) -> dict[str, str] | None:
         """The mode each instrument is in at this step: the observation's
-        while ACS is in SCIENCE mode, a scheduled activity's while ACS holds
-        for it in IDLE mode, else None, when every instrument idles or holds
-        a mode named like the ACS mode."""
+        while ACS is in SCIENCE mode, a calibration step's own during a
+        setup or cleanup step at ``utime``, a scheduled activity's while ACS
+        holds for it in IDLE mode, else None, when every instrument idles or
+        holds a mode named like the ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
@@ -121,6 +126,10 @@ class DITLMixin:
         ppt = getattr(self, "ppt", None)
         if acs_mode is not ACSMode.SCIENCE or ppt is None:
             return None
+        by_time = getattr(ppt, "instrument_modes_at", None)
+        if utime is not None and callable(by_time):
+            resolved = by_time(utime)
+            return resolved if isinstance(resolved, dict) else None
         modes = getattr(ppt, "effective_instrument_modes", None)
         # A test double's observation names no modes.
         resolved = modes() if callable(modes) else None
@@ -133,6 +142,7 @@ class DITLMixin:
     repoints_in_observations: list[tuple[float, int, str]]
     _data_observation: tuple[int, float] | None
     _data_collected: float
+    _activity_data_gb: float
     ra: list[float]
     dec: list[float]
     roll: list[float]
@@ -252,6 +262,8 @@ class DITLMixin:
         # The observation whose data is being generated, and its collection so far
         self._data_observation = None
         self._data_collected = 0.0
+        # What activities put on the recorder since the last data step
+        self._activity_data_gb = 0.0
 
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
@@ -278,6 +290,7 @@ class DITLMixin:
             self.ppt = None
             self._data_observation = None
             self._data_collected = 0.0
+            self._activity_data_gb = 0.0
             self.telemetry = Telemetry()
             self.executed_passes = PassTimes(config=self.config)
             self.repoints_in_observations = []
@@ -340,8 +353,12 @@ class DITLMixin:
         )
 
     def _timing_for(self, entry: PlanEntry) -> ObservationTiming:
-        """The setup, cleanup and handoff budgets of ``entry`` under the run's
-        configuration: its category's where that sets them, else the payload's."""
+        """The setup, cleanup and handoff budgets of ``entry``: its own where
+        it has them, else its category's under the run's configuration, else
+        the payload's."""
+        own = getattr(entry, "own_timing", None)
+        if isinstance(own, ObservationTiming):
+            return own
         return timing_for(self.config, int(getattr(entry, "obsid", 0) or 0))
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
@@ -724,6 +741,14 @@ class DITLMixin:
             start, min(utime + self.step_size, self.uend)
         )
 
+    def _add_activity_data(self, data_gb: float) -> None:
+        """Put what an activity generates on the recorder now, reported as
+        generated at the step's data step."""
+        if data_gb <= 0.0:
+            return
+        self.recorder.add_data(data_gb)
+        self._activity_data_gb += data_gb
+
     def _process_data_management(
         self,
         utime: float,
@@ -771,6 +796,9 @@ class DITLMixin:
                 data_generated -= self.config.science_generated(
                     before, science=science, instrument_modes=modes
                 )
+            else:
+                # Once per observation: its calibration steps' frames.
+                data_generated += extra_data_gb(self.ppt)
             self._data_observation = observation
             self._data_collected = after
 
@@ -810,10 +838,15 @@ class DITLMixin:
                 megabits = effective_rate_mbps * (contact_stop - contact_start)
                 data_to_downlink = megabits / 1000.0
 
+        # What the activities that began since the last step put on the
+        # recorder is on it already; the step reports it as generated.
+        activity_data = self._activity_data_gb
+        self._activity_data_gb = 0.0
+
         if data_to_downlink <= 0:
             if data_generated > 0:
                 self.recorder.add_data(data_generated)
-            return data_generated, data_downlinked
+            return data_generated + activity_data, data_downlinked
 
         # Generation runs on through the contact, so the step is taken in
         # pieces: what is generated before the contact is stored, what is
@@ -827,7 +860,7 @@ class DITLMixin:
             rate * (contact_stop - contact_start), data_to_downlink
         )
         self.recorder.add_data(rate * (utime + interval - contact_stop))
-        return data_generated, data_downlinked
+        return data_generated + activity_data, data_downlinked
 
     def _log_repoints(
         self, begin: float, end: float, collection_seconds: float

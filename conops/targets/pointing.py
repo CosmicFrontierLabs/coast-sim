@@ -9,13 +9,14 @@ from pydantic import (
     model_validator,
 )
 
-from ..common import unixtime2date
+from ..common import unixtime2date, unixtime_from
 from ..common.enums import ObsType
 from ..config.acs import AttitudeControlSystem
-from ..config.observation_timing import ObservationTiming, timing_for
+from ..config.observation_timing import ObservationTiming
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
 from .sequence import ObservationSequence
+from .visits import VisitWindow
 
 
 class Pointing(PlanEntry):
@@ -55,6 +56,17 @@ class Pointing(PlanEntry):
             "None for the whole snapshot"
         ),
     )
+    protect_opening: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether dispatch keeps the target's window open from its "
+            "opening: the observation before it ends there and candidates "
+            "that run into it are passed over. False: dispatch protects only "
+            "the latest start that still meets the deadline, and a target "
+            "without a deadline is not protected"
+        ),
+    )
     sequence: ObservationSequence | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
@@ -68,6 +80,16 @@ class Pointing(PlanEntry):
         ge=1,
         exclude_if=lambda v: v == 1,
         description="How many visits of the sequence are wanted",
+    )
+    visit_windows: list[VisitWindow] = Field(
+        default_factory=list,
+        exclude_if=lambda v: not v,
+        description=(
+            "When each visit may begin collecting, in time order and not "
+            "overlapping: one visit per window, taken whole (a snapshot of "
+            "ss_max seconds, or one visit of the sequence), in order. Empty "
+            "for a target observed whenever it ranks highest"
+        ),
     )
     roll_deg: float | None = Field(
         default=None,
@@ -88,6 +110,9 @@ class Pointing(PlanEntry):
     )
     _done: bool = PrivateAttr(default=False)
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
+    _visits_done: set[int] = PrivateAttr(default_factory=set)
+    _visit_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
+    _visit_parent: "Pointing | None" = PrivateAttr(default=None)
 
     @field_validator("deadline", "earliest_start", mode="before")
     @classmethod
@@ -95,15 +120,7 @@ class Pointing(PlanEntry):
         cls, v: float | int | str | datetime | None
     ) -> float | None:
         """Accept Unix timestamps, datetimes or ISO-8601 strings."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v = datetime.fromisoformat(v)
-        if isinstance(v, datetime):
-            if v.tzinfo is None:
-                v = v.replace(tzinfo=timezone.utc)
-            return v.timestamp()
-        return float(v)
+        return None if v is None else unixtime_from(v)
 
     @field_serializer("deadline", "earliest_start")
     def _serialize_request_time(self, v: float | None) -> str | None:
@@ -143,6 +160,194 @@ class Pointing(PlanEntry):
         return self
 
     @model_validator(mode="after")
+    def _windows_set_the_visits(self) -> "Pointing":
+        """A target with visit windows is visited once per window, each visit
+        whole: a plain pointing's snapshot is its ``ss_max``, and its
+        exposure is its visits' science unless given."""
+        windows = self.visit_windows
+        if not windows:
+            return self
+        if self.earliest_start is not None or self.deadline is not None:
+            raise ValueError(
+                "visit_windows bound each visit's start; earliest_start and "
+                "deadline cannot be set with them"
+            )
+        ordered = sorted(windows, key=lambda w: w.start)
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
+            if later.start <= earlier.deadline:
+                raise ValueError("visit windows must not overlap")
+        if ordered != windows:
+            self.visit_windows = ordered
+        self.visits = len(ordered)
+        if self.sequence is None:
+            self.ss_min = self.ss_max
+        if self.exptime is None:
+            self.exptime = self.visits * self.per_visit_seconds
+        return self
+
+    @property
+    def per_visit_seconds(self) -> float:
+        """Science one visit collects: the sequence's, or one snapshot."""
+        if self.sequence is not None:
+            return float(self.sequence.science_seconds)
+        return float(self.ss_max)
+
+    @property
+    def visits_done(self) -> frozenset[int]:
+        """The visit windows a whole visit has been collected in."""
+        return frozenset(self._visits_done)
+
+    @property
+    def visit_parent(self) -> "Pointing | None":
+        """The target this is one visit of, where a window gave the visit a
+        pointing or roll of its own; None for a target itself."""
+        return self._visit_parent
+
+    def visit_pointing(self, index: int | None) -> "Pointing":
+        """The pointing visit ``index`` observes: this target itself, unless
+        the window gives the visit a pointing or roll of its own, when it is
+        a pointing of this target's request at the window's pointing with
+        the window's roll request, bounded by the window, with its own
+        visibility, crediting its science and its interruptions to this
+        target."""
+        if index is None or not self.visit_windows:
+            return self
+        window = self.visit_windows[index]
+        if not window.own_request:
+            return self
+        roll_deg, roll_offset = self.roll_deg, self.roll_offset_deg
+        if window.roll_deg is not None or window.roll_offset_deg is not None:
+            roll_deg, roll_offset = window.roll_deg, window.roll_offset_deg
+        pointing = Pointing(
+            config=self.config,
+            ra=window.ra if window.ra is not None else self.ra,
+            dec=window.dec if window.dec is not None else self.dec,
+            obsid=self.obsid,
+            name=self.name,
+            merit=self.merit,
+            instrument_name=self.instrument_name,
+            science_data=dict(self.science_data),
+            instrument_modes=dict(self.instrument_modes),
+            sequence=self.sequence,
+            ss_min=self.ss_min,
+            ss_max=self.ss_max,
+            earliest_start=window.start,
+            deadline=window.deadline,
+            visit=index,
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset,
+        )
+        pointing.exptime = self.per_visit_seconds
+        pointing.merit_breakdown = self.merit_breakdown
+        pointing._visit_parent = self
+        if self.ephem is not None:
+            pointing.visibility()
+        return pointing
+
+    def visit_index_at(self, utime: float) -> int | None:
+        """The visit window that a collection at ``utime`` belongs to: the
+        last one starting at or before it, since a visit begins within its
+        window and the next window starts after the visit before it."""
+        index = None
+        for k, window in enumerate(self.visit_windows):
+            if window.start <= utime:
+                index = k
+        return index
+
+    def next_visit(self, utime: float, *, after_end: float | None = None) -> int | None:
+        """The next visit window to observe in: the first not yet visited
+        whose deadline is at or after ``utime``, and after the window of a
+        visit that ended at ``after_end``, if given. None without windows
+        or when none is left."""
+        last = (
+            self.visit_index_at(after_end - self.per_visit_seconds)
+            if after_end is not None
+            else None
+        )
+        for k, window in enumerate(self.visit_windows):
+            if k in self._visits_done or (last is not None and k <= last):
+                continue
+            if window.deadline >= utime:
+                return k
+        return None
+
+    def window_bounds(self, utime: float) -> tuple[float | None, float | None]:
+        """When collection may begin if the target is selected at ``utime``:
+        the next visit window's bounds, or the target's own earliest start
+        and deadline without windows. ``(None, None)`` when no visit is left."""
+        if not self.visit_windows:
+            return self.earliest_start, self.deadline
+        index = self.next_visit(utime)
+        if index is None:
+            return None, None
+        window = self.visit_windows[index]
+        return window.start, window.deadline
+
+    @property
+    def current_deadline(self) -> float | None:
+        """The latest time this observation may begin collecting: its visit
+        window's deadline when it is a visit, else the target's deadline."""
+        if self.visit_windows and self.visit is not None:
+            return self.visit_windows[self.visit].deadline
+        return self.deadline
+
+    def record_collection(
+        self, utime: float, seconds: float, *, visit: int | None = None
+    ) -> None:
+        """Credit ``seconds`` of science collected up to ``utime``, to the
+        window of ``visit`` where given, else to the window the collection
+        began in: a visit that runs past the next window's start is still
+        its own window's."""
+        super().record_collection(utime, seconds)
+        if self._visit_parent is not None:
+            self._visit_parent.record_collection(
+                utime, seconds, visit=visit if visit is not None else self.visit
+            )
+        if seconds > 0 and self.visit_windows:
+            index = (
+                visit
+                if visit is not None and 0 <= visit < len(self.visit_windows)
+                else self.visit_index_at(utime - seconds)
+            )
+            if index is not None:
+                self._visit_seconds[index] = (
+                    self._visit_seconds.get(index, 0.0) + seconds
+                )
+                self._visits_done.add(index)
+            self._exposure_is_the_visits_left()
+
+    def _exposure_is_the_visits_left(self) -> None:
+        """A windowed target's exposure is the science of the whole visits
+        still to take, whatever a visit cut short collected."""
+        left = len(self.visit_windows) - len(self._visits_done)
+        self.exptime = self.per_visit_seconds * max(0, left)
+
+    def record_calibration(self, utime: float, seconds: float) -> None:
+        super().record_calibration(utime, seconds)
+        if self._visit_parent is not None:
+            self._visit_parent.record_calibration(utime, seconds)
+
+    def record_interruption(self, utime: float) -> None:
+        """A visit cut short is taken again, whole, while its window is
+        open: the window counts as visited only once a whole visit's science
+        has been collected in it. The science collected still counts."""
+        super().record_interruption(utime)
+        if self._visit_parent is not None:
+            self._visit_parent.record_interruption(utime)
+        if self.visit_windows:
+            index = self.visit_index_at(utime)
+            if (
+                index is not None
+                and self._visit_seconds.get(index, 0.0) < self.per_visit_seconds - 1e-6
+            ):
+                self._visits_done.discard(index)
+                self._exposure_is_the_visits_left()
+
+    def visit_complete(self, index: int) -> bool:
+        """Whether a whole visit's science has been collected in window ``index``."""
+        return index in self._visits_done
+
+    @model_validator(mode="after")
     def _instrument_modes_are_known(self) -> "Pointing":
         """The modes a pointing names, its own and each sequence step's, name
         instruments the payload has, in modes they define, and are allowed
@@ -176,6 +381,11 @@ class Pointing(PlanEntry):
         for modes in checks:
             if modes or not named_only:
                 check(modes)
+        if self.own_timing is not None:
+            # The target's own calibration steps, as the configuration's are.
+            for step in (*self.own_timing.setup_steps, *self.own_timing.cleanup_steps):
+                if step.instrument_modes:
+                    check(step.instrument_modes)
 
     def step_pointing(self, index: int) -> "Pointing":
         """The pointing step ``index`` of this target's sequence observes: at
@@ -183,8 +393,9 @@ class Pointing(PlanEntry):
         this target's obsid and merit."""
         assert self.sequence is not None
         step = self.sequence.steps[index]
-        ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
-        base = timing_for(self.config, int(self.obsid))
+        base_ra, base_dec = self.visit_base_pointing
+        ra, dec = self.sequence.pointing_of(index, base_ra, base_dec)
+        base = self.observation_timing
         roll_deg, roll_offset = self._step_roll_request(step.roll_offset_deg)
         pointing = Pointing(
             config=self.config,
@@ -210,6 +421,7 @@ class Pointing(PlanEntry):
             ss_max=step.duration_seconds,
             step=step.name,
             calibration=not step.science,
+            visit=self.visit,
             roll_deg=roll_deg,
             roll_offset_deg=roll_offset,
         )
@@ -220,17 +432,39 @@ class Pointing(PlanEntry):
             pointing.visibility()
         return pointing
 
+    @property
+    def visit_base_pointing(self) -> tuple[float, float]:
+        """The pointing the visit under way is at: the current visit window's
+        where it has its own, else this target's."""
+        if self.visit_windows and self.visit is not None:
+            window = self.visit_windows[self.visit]
+            if window.ra is not None and window.dec is not None:
+                return window.ra, window.dec
+        return self.ra, self.dec
+
+    @property
+    def visit_roll_request(self) -> tuple[float | None, float | None]:
+        """The roll request of the visit under way, as ``(roll_deg,
+        roll_offset_deg)``: the current visit window's where it has its own,
+        else this target's."""
+        if self.visit_windows and self.visit is not None:
+            window = self.visit_windows[self.visit]
+            if window.roll_deg is not None or window.roll_offset_deg is not None:
+                return window.roll_deg, window.roll_offset_deg
+        return self.roll_deg, self.roll_offset_deg
+
     def _step_roll_request(
         self, offset: float | None
     ) -> tuple[float | None, float | None]:
         """The roll request a step carries, as ``(roll_deg, roll_offset_deg)``:
-        this target's, with the step's offset added to an absolute roll or
+        the visit's, with the step's offset added to an absolute roll or
         to the offset."""
+        roll_deg, roll_offset = self.visit_roll_request
         if offset is None:
-            return self.roll_deg, self.roll_offset_deg
-        if self.roll_deg is not None:
-            return (self.roll_deg + offset) % 360.0, None
-        return None, (self.roll_offset_deg or 0.0) + offset
+            return roll_deg, roll_offset
+        if roll_deg is not None:
+            return (roll_deg + offset) % 360.0, None
+        return None, (roll_offset or 0.0) + offset
 
     def sequence_overhead_seconds(
         self, acs: AttitudeControlSystem, timing: ObservationTiming
@@ -351,6 +585,13 @@ class Pointing(PlanEntry):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def done(self) -> bool:
+        if self.visit_windows:
+            # One visit per window, and every window has had its whole
+            # visit; a visit cut short and taken again collects more than
+            # the exposure, which does not end the target early.
+            if len(self._visits_done) >= len(self.visit_windows):
+                self._done = True
+            return self._done
         if self.exptime is not None and self.exptime <= 0:
             self._done = True
         return self._done
@@ -368,6 +609,9 @@ class Pointing(PlanEntry):
         self._interruptions = []
         self._merit_breakdown = None
         self.collection_limit = None
+        self._visits_done = set()
+        self._visit_seconds = {}
+        self.visit = None
         self.begin = 0
         self.end = 0
         self.slewtime = 0

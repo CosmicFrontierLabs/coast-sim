@@ -304,7 +304,7 @@ class DITL(DITLMixin, DITLStats):
             payload_power = self.payload.power(
                 mode,
                 in_eclipse=self.acs.in_eclipse,
-                instrument_modes=self._instrument_modes_now(mode),
+                instrument_modes=self._instrument_modes_now(mode, self.utime[i]),
             )
             power_usage = bus_power + payload_power
 
@@ -479,7 +479,7 @@ class DITL(DITLMixin, DITLStats):
                 collection_seconds=collection_seconds,
                 panel_illumination=panel_illumination,
                 solar_array_drive_angles=drive_angles,
-                instrument_modes=self._instrument_modes_telemetry(mode),
+                instrument_modes=self._instrument_modes_telemetry(mode, self.utime[i]),
                 power_usage=power_usage,
                 power_bus=bus_power,
                 power_payload=payload_power,
@@ -816,6 +816,7 @@ class DITL(DITLMixin, DITLStats):
         """Hold the entry's attitude in IDLE for the activity, slewing to it
         first where the spacecraft is elsewhere."""
         self.acs.end_science_observation()
+        self._add_activity_data(float(entry.fixed_data_gb))
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
         )

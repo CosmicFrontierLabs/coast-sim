@@ -1,6 +1,6 @@
 import hashlib
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -19,10 +19,12 @@ from ..config.acs import scheduled_slew_time
 from ..config.config import housekeeping_while_waiting
 from ..config.observation_categories import ObservationCategories
 from ..ditl.ditl_log import DITLLog
+from ..simulation.slew import Slew
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
-from .plan_entry import instrument_modes_of, snapshot_min_seconds
+from .plan_entry import extra_data_gb, instrument_modes_of, snapshot_min_seconds
 from .sequence import ObservationSequence
+from .visits import VisitWindow
 
 if TYPE_CHECKING:
     from ..simulation.coverage import StationCoverage
@@ -81,6 +83,15 @@ class TargetQueue:
         self.targets = []
         self.ephem = ephem
         self.utime = 0.0
+        self._opening_utime: float | None = None
+        """When the request openings were last computed."""
+        self._opening_allowance: float | None = None
+        """The slew allowance those openings were computed with."""
+        self._requests_by_obsid: dict[int, Pointing] = {}
+        """The requests behind those openings."""
+        self._due_requests: list[Pointing] = []
+        """The requests whose protected start had come when the openings
+        were computed."""
         self.log = log
         # Optional weight to penalize long slews when selecting next target
         self.slew_distance_weight = config.targets.slew_distance_weight
@@ -171,7 +182,11 @@ class TargetQueue:
         science_data: Mapping[str, ScienceData] | None = None,
         sequence: ObservationSequence | None = None,
         visits: int = 1,
+        visit_windows: Sequence[VisitWindow] | None = None,
         instrument_modes: Mapping[str, str] | None = None,
+        roll_deg: float | None = None,
+        roll_offset_deg: float | None = None,
+        protect_opening: bool = False,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -192,8 +207,19 @@ class TargetQueue:
                 may begin
             science_data: Science data observing the target generates, keyed
                 by instrument name; other instruments generate their own
+            sequence: The steps a visit of the target observes, if any
+            visits: How many visits of the sequence are wanted
+            visit_windows: When each visit may begin collecting, one visit
+                per window; the target is selected only while an unvisited
+                window is open
             instrument_modes: The instruments the observation uses and the
                 mode each is in, by name; instruments not named idle
+            roll_deg: The instrument roll to observe at, in degrees, instead
+                of the power-optimal roll
+            roll_offset_deg: An offset from the power-optimal roll to observe
+                at, in degrees; give this or ``roll_deg``, not both
+            protect_opening: Keep the target's window from its opening, rather
+                than from the latest start that meets its deadline
 
         Returns:
             The added target.
@@ -217,10 +243,17 @@ class TargetQueue:
             sequence=sequence,
             visits=visits,
             instrument_modes=dict(instrument_modes or {}),
+            visit_windows=list(visit_windows or []),
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset_deg,
+            protect_opening=protect_opening,
         )
-        pointing.exptime = (
-            visits * sequence.science_seconds if sequence is not None else exptime
-        )
+        if pointing.visit_windows:
+            pointing.exptime = pointing.visits * pointing.per_visit_seconds
+        else:
+            pointing.exptime = (
+                visits * sequence.science_seconds if sequence is not None else exptime
+            )
         # A request naming no modes uses every instrument with modes.
         pointing.check_instrument_modes()
         pointing.visibility()
@@ -228,8 +261,12 @@ class TargetQueue:
         return pointing
 
     def _timing(self, target: Pointing) -> ObservationTiming:
-        """The timing budgets of ``target``: its category's where that sets
-        them, else the queue's, which is the payload's unless changed."""
+        """The timing budgets of ``target``: its own where it has them, else
+        its category's where that sets them, else the queue's, which is the
+        payload's unless changed."""
+        own = getattr(target, "own_timing", None)
+        if isinstance(own, ObservationTiming):
+            return own
         categories = getattr(self.config, "observation_categories", None)
         obsid = getattr(target, "obsid", None)
         # A test double's target has no number for an obsid.
@@ -448,6 +485,241 @@ class TargetQueue:
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath
 
+    @staticmethod
+    def _bounds(target: Pointing, utime: float) -> tuple[float | None, float | None]:
+        """When ``target`` may begin collecting if selected at ``utime``: its
+        next visit window's bounds, or its own earliest start and deadline."""
+        windows = getattr(target, "visit_windows", None)
+        # A test double's target has no windows.
+        if isinstance(windows, list) and windows:
+            return target.window_bounds(utime)
+        start = getattr(target, "earliest_start", None)
+        deadline = getattr(target, "deadline", None)
+        return (
+            start if isinstance(start, (int, float)) else None,
+            deadline if isinstance(deadline, (int, float)) else None,
+        )
+
+    def _open_at(self, target: Pointing, utime: float) -> bool:
+        """Whether ``target`` may be selected at ``utime``: at or after its
+        earliest start and by its deadline, or within an unvisited visit
+        window; a target whose windows are all past or visited is not."""
+        start, deadline = self._bounds(target, utime)
+        windows = getattr(target, "visit_windows", None)
+        if isinstance(windows, list) and windows and deadline is None:
+            return False
+        if deadline is not None and utime > deadline:
+            return False
+        # Selected now, it collects after now.
+        return start is None or utime >= start
+
+    def _slew_allowance(self) -> float | None:
+        """The time to allow for reaching any request once its protected
+        start comes: the dispatch step on which it is selected, since an
+        observation ends on a step, and the ACS slew upper bound. None where
+        the configuration gives no bound."""
+        assert self.config is not None
+        try:
+            bound = Slew.duration_upper_bound(
+                self.config.spacecraft_bus.attitude_control
+            )
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(bound, (int, float)):
+            return None
+        step = getattr(self.ephem, "step_size", None)
+        # A test double's ephemeris has no step.
+        if isinstance(step, (int, float)) and not isinstance(step, bool):
+            return float(bound) + float(step)
+        return float(bound)
+
+    def _request_seconds(self, target: Pointing) -> float:
+        """What a request must collect once it starts: a whole visit for a
+        target with visit windows, else its minimum snapshot."""
+        windows = getattr(target, "visit_windows", None)
+        if isinstance(windows, list) and windows:
+            seconds = getattr(target, "per_visit_seconds", None)
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                return float(seconds)
+        return float(snapshot_min_seconds(target))
+
+    def _latest_visible_start(
+        self, target: Pointing, opening: float, latest: float
+    ) -> float | None:
+        """The latest time in ``[opening, latest]`` from which ``target`` is
+        visible for what it must collect, from its visibility windows; None
+        when it has no such time, or no windows to speak of."""
+        windows = getattr(target, "windows", None)
+        if not isinstance(windows, list):
+            return None
+        need = self._request_seconds(target)
+        best: float | None = None
+        for window in windows:
+            try:
+                begin, end = float(window[0]), float(window[1])
+            except (TypeError, ValueError, IndexError):
+                return None
+            if begin > latest or end < opening:
+                continue
+            start = min(latest, end - need)
+            if start >= max(begin, opening) and (best is None or start > best):
+                best = start
+        return best
+
+    def _protected_start(
+        self, target: Pointing, utime: float, allowance: float | None
+    ) -> float | None:
+        """The time dispatch keeps for ``target`` to start: the latest start
+        that still meets its deadline, less the slew ``allowance`` (see
+        :meth:`_slew_allowance`) and its setup, floored at its opening; its
+        opening itself when it asks (``protect_opening``). A target not
+        visible then is kept from the latest earlier time it is visible for
+        what it must collect, or, without one, from its first visibility
+        after. None for a target with no deadline that does not ask, which
+        is not protected, and for one that cannot meet its deadline."""
+        start, deadline = self._bounds(target, utime)
+        protect = getattr(target, "protect_opening", False) is True
+        if deadline is None and not protect:
+            return None
+        opening = max(float(start), utime) if start is not None else utime
+        latest = opening
+        if deadline is not None and not protect:
+            setup = self._timing(target).setup_seconds
+            latest = max(opening, float(deadline) - (allowance or 0.0) - setup)
+        protected = target.next_vis(latest)
+        if not isinstance(protected, (int, float)) or isinstance(protected, bool):
+            return None
+        if protected > latest:
+            # Not visible at its latest start: kept from the latest earlier
+            # time it is visible for what it must collect, if there is one.
+            earlier = self._latest_visible_start(target, opening, latest)
+            if earlier is not None:
+                protected = earlier
+        if deadline is not None and protected > deadline:
+            return None
+        return float(protected)
+
+    def _can_wait_for(
+        self,
+        target: Pointing,
+        utime: float,
+        allowance: float | None,
+        opening: float,
+        other: Pointing,
+    ) -> bool:
+        """Whether ``target`` still meets its own deadline if it begins after
+        ``other``, a request kept from ``opening``: with no deadline it can;
+        else its latest start, its deadline less the slew allowance and its
+        setup, must be at or after the other's start plus the allowance,
+        the other's overheads and what the other must collect."""
+        _, deadline = self._bounds(target, utime)
+        if deadline is None:
+            return True
+        allow = allowance or 0.0
+        latest = float(deadline) - allow - self._timing(target).setup_seconds
+        after_other = (
+            opening
+            + allow
+            + self._timing(other).total_seconds
+            + self._request_seconds(other)
+        )
+        return latest >= after_other
+
+    def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
+        """The requests dispatch keeps time for after ``utime``, as
+        ``(start, value, obsid)`` in time order: each request's protected
+        start (see :meth:`_protected_start`), where that is still to come."""
+        openings: list[tuple[float, float, int]] = []
+        allowance = self._slew_allowance()
+        self._opening_allowance = allowance
+        self._opening_utime = utime
+        self._requests_by_obsid = {}
+        self._due_requests = []
+        for other in self.targets:
+            if other.done or other.merit <= 0:
+                continue
+            protected = self._protected_start(other, utime, allowance)
+            if protected is None:
+                continue
+            if protected <= utime:
+                # Its protected start has come: a candidate that can wait
+                # for it gives way to it now.
+                self._due_requests.append(other)
+                continue
+            value = float(other.merit) * (1.0 + self._bonus(other))
+            openings.append((protected, value, int(other.obsid)))
+            self._requests_by_obsid[int(other.obsid)] = other
+        openings.sort()
+        return openings
+
+    def _due_request_to_wait_for(
+        self,
+        target: Pointing,
+        utime: float,
+        candidates: Sequence[Pointing],
+        last_unix: float,
+    ) -> Pointing | None:
+        """A request whose protected start has come, selectable now and
+        ranked below ``target``, that ``target`` can wait for (see
+        :meth:`_can_wait_for`); None when there is none. A request ranked
+        above the target is selected before it by merit anyway."""
+        if not self._due_requests:
+            return None
+        merit = getattr(target, "merit", None)
+        if not isinstance(merit, (int, float)) or isinstance(merit, bool):
+            return None
+        value = float(merit) * (1.0 + self._bonus(target))
+        obsid = int(target.obsid)
+        for request in self._due_requests:
+            if int(request.obsid) == obsid or request not in candidates:
+                continue
+            if float(request.merit) * (1.0 + self._bonus(request)) > value:
+                continue
+            if not self._can_fit_min_snapshot_with_zero_slew(
+                target=request, utime=utime, last_unix=last_unix
+            ):
+                continue
+            if self._can_wait_for(
+                target, utime, self._opening_allowance, utime, request
+            ):
+                return request
+        return None
+
+    def request_cut(
+        self,
+        target: Pointing,
+        openings: list[tuple[float, float, int]],
+        end: float,
+    ) -> tuple[float, int] | None:
+        """When, before ``end``, a request must start that ``target`` gives
+        way to, and that request's obsid; None when none must. A request
+        ranked above the target always cuts it; one ranked below cuts it
+        where the target still meets its own deadline after the request
+        (see :meth:`_can_wait_for`), so two requests that both fit are
+        taken in order of their deadlines."""
+        merit = getattr(target, "merit", None)
+        # A test double's target has no number for a merit.
+        if not openings or not isinstance(merit, (int, float)):
+            return None
+        value = float(merit) * (1.0 + self._bonus(target))
+        obsid = int(target.obsid)
+        for opening, other_value, other in openings:
+            if opening >= end:
+                return None
+            if other == obsid:
+                continue
+            if other_value > value:
+                return opening, other
+            request = self._requests_by_obsid.get(other)
+            utime = (
+                self._opening_utime if self._opening_utime is not None else self.utime
+            )
+            if request is not None and self._can_wait_for(
+                target, utime, self._opening_allowance, opening, request
+            ):
+                return opening, other
+        return None
+
     def get(
         self,
         ra: float,
@@ -484,6 +756,14 @@ class TargetQueue:
                 whole seconds are set as the target's ``collection_limit``
                 for the dispatcher to keep to. None checks nothing.
 
+        A candidate's snapshot ends when a request ranked above it must
+        start, if that is sooner, so a long observation does not make a
+        request miss its deadline: the latest start that meets the deadline,
+        less a slew and the setup, or the opening of a request that asks for
+        it (see :meth:`_protected_start`). A candidate whose minimum snapshot
+        does not fit before then is passed over, for a shorter one or for
+        nothing.
+
         Returns:
             Next target to observe, or None if no suitable target found.
         """
@@ -501,9 +781,7 @@ class TargetQueue:
             if t.merit > 0
             and self._visible_now(t)
             and not t.done
-            and (t.deadline is None or utime <= t.deadline)
-            # Selected now, it collects after now.
-            and (t.earliest_start is None or utime >= t.earliest_start)
+            and self._open_at(t, utime)
         ]
         # Candidates are scored, rather than the first in merit order taken,
         # when anything beyond base merit tells them apart. An allocation
@@ -521,6 +799,13 @@ class TargetQueue:
         )
         overfill = 0
         """Candidates passed over because the recorder cannot hold their data."""
+        openings = self.request_openings(utime)
+        blocked: list[tuple[float, int]] = []
+        """The openings that candidates were passed over for."""
+        waiting: list[tuple[int, int]] = []
+        """Candidates passed over for a request due now, with the request."""
+        cuts: dict[int, tuple[float, int]] = {}
+        """The opening each shortened candidate ends at, by obsid."""
         delivered_shares = (
             merit_model.delivered_shares(self.targets)
             if merit_model.completion_deficit_weight > 0.0
@@ -555,6 +840,12 @@ class TargetQueue:
                 target
             ):
                 continue
+            windows = getattr(target, "visit_windows", None)
+            if isinstance(windows, list) and windows:
+                # The visit this selection would be, evaluated at the
+                # visit's own pointing and roll where its window gives one.
+                target.visit = target.next_visit(utime)
+                target = target.visit_pointing(target.visit)
 
             # Reject score-bound losers before the deadline callback can compute
             # their roll and ground-pass ingress geometry.
@@ -590,12 +881,13 @@ class TargetQueue:
             )
 
             # A target must start collecting by its deadline.
+            _, deadline = self._bounds(target, utime)
             if (
-                target.deadline is not None
+                deadline is not None
                 and utime
                 + float(target.slewtime)
                 + self.observation_timing.setup_seconds
-                > target.deadline
+                > deadline
             ):
                 continue
 
@@ -627,11 +919,39 @@ class TargetQueue:
                         float(visibility_window[0]),
                         min(float(visibility_window[1]), cut[0]),
                     ]
+            due = (
+                self._due_request_to_wait_for(target, utime, targets, last_unix)
+                if visibility_window
+                else None
+            )
+            if due is not None:
+                # The request's start has come and this candidate can wait
+                # for it: passed over, for the request.
+                waiting.append((int(target.obsid), int(due.obsid)))
+                continue
+            cut = (
+                self.request_cut(target, openings, float(visibility_window[1]))
+                if visibility_window and openings
+                else None
+            )
+            if visibility_window and cut is not None:
+                # The snapshot ends where a request ranked above this
+                # candidate opens.
+                visibility_window = [float(visibility_window[0]), cut[0]]
+                cuts[int(target.obsid)] = cut
             if visibility_window:
                 target.begin = int(utime)
+                windows = getattr(target, "visit_windows", None)
+                if isinstance(windows, list) and windows:
+                    # The visit this selection would be.
+                    target.visit = target.next_visit(utime)
                 collection = self._candidate_collection_seconds(
                     target, visibility_window, utime
                 )
+                if collection < snapshot_min_seconds(target):
+                    if cut is not None:
+                        blocked.append(cut)
+                    continue
                 target.collection_limit = None
                 if recorder_room_gb is not None:
                     # Collect no more than the recorder can hold from its
@@ -647,8 +967,6 @@ class TargetQueue:
                         # The dispatcher applies the slew it flies and its
                         # own deadlines, but keeps to this.
                         target.collection_limit = collection
-                if collection < snapshot_min_seconds(target):
-                    continue
                 target.end = min(
                     float(visibility_window[1]),
                     utime
@@ -668,7 +986,8 @@ class TargetQueue:
                 # If nothing beyond merit order matters, return the first
                 # visible target in merit order (fast path)
                 if not score_candidates:
-                    self._select(target, value)
+                    self._log_blocked(utime, blocked, waiting)
+                    self._select(target, value, cut)
                     return target
                 # Otherwise, score all visible targets and pick best
                 slewdist = getattr(target, "slewdist", 0.0)
@@ -755,10 +1074,48 @@ class TargetQueue:
                 obsid=None,
                 acs_mode=None,
             )
+        self._log_blocked(utime, blocked, waiting)
         if best_target is not None:
             assert best_breakdown is not None
-            self._select(best_target, best_breakdown)
+            self._select(best_target, best_breakdown, cuts.get(int(best_target.obsid)))
         return best_target
+
+    def _log_blocked(
+        self,
+        utime: float,
+        blocked: list[tuple[float, int]],
+        waiting: list[tuple[int, int]] | None = None,
+    ) -> None:
+        """Log the candidates passed over because their minimum snapshot
+        does not fit before a request must start, and those passed over
+        for a request due now that they can wait for."""
+        if self.log is None:
+            return
+        if blocked:
+            opening, request = min(blocked)
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=(
+                    f"{len(blocked)} targets passed over: their minimum snapshot "
+                    f"does not fit before request {request} must start at "
+                    f"{unixtime2date(opening)}"
+                ),
+                obsid=None,
+                acs_mode=None,
+            )
+        if waiting:
+            requests = sorted({request for _, request in waiting})
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=(
+                    f"{len(waiting)} targets passed over: they can wait for "
+                    f"request {', '.join(str(r) for r in requests)}, due now"
+                ),
+                obsid=None,
+                acs_mode=None,
+            )
 
     def collection_within(self, target: Pointing, room_gb: float) -> float:
         """Seconds of collection whose data fits in ``room_gb``: without
@@ -831,16 +1188,34 @@ class TargetQueue:
             self.config.science_generated(
                 collection_seconds, target.science_data, instrument_modes_of(target)
             )
-        )
+        ) + extra_data_gb(target)
 
-    def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
-        """Freeze the selected target's value and log its terms."""
+    def _select(
+        self,
+        target: Pointing,
+        breakdown: MeritBreakdown,
+        cut: tuple[float, int] | None = None,
+    ) -> None:
+        """Freeze the selected target's value and log its terms, and the
+        request its snapshot ends for, if any."""
         target.merit_breakdown = breakdown
-        if self.log is not None:
+        if self.log is None:
+            return
+        self.log.log_event(
+            utime=self.utime,
+            event_type="QUEUE",
+            description=f"Selected {target.obsid}: {breakdown.describe()}",
+            obsid=target.obsid,
+            acs_mode=None,
+        )
+        if cut is not None:
             self.log.log_event(
                 utime=self.utime,
                 event_type="QUEUE",
-                description=f"Selected {target.obsid}: {breakdown.describe()}",
+                description=(
+                    f"Snapshot of {target.obsid} ends at "
+                    f"{unixtime2date(cut[0])}, when request {cut[1]} must start"
+                ),
                 obsid=target.obsid,
                 acs_mode=None,
             )

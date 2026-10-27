@@ -19,7 +19,7 @@ from ..config import MissionConfig
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .consumable import ConsumableLedger, Removal
 
 
@@ -203,7 +203,7 @@ class RecorderLedger(ConsumableLedger[float, float]):
         """What a snapshot of ``entry`` collecting for some seconds generates."""
         return self.config.science_generated(
             collection_seconds, entry.science_data, instrument_modes_of(entry)
-        )
+        ) + extra_data_gb(entry)
 
     def ingress_volume(
         self,
@@ -252,6 +252,11 @@ class RecorderLedger(ConsumableLedger[float, float]):
             if ingress != 0.0:
                 # Negative where the PASS rate is below the nominal one.
                 volumes[self.ingress_segment(entry)] += ingress
+            if entry_obstype(entry) == ObsType.ACTIVITY:
+                # An activity's frames, when it begins.
+                fixed = extra_data_gb(entry)
+                if fixed > 0.0:
+                    volumes[self.segment(float(entry.begin))] += fixed
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             seconds = float(entry.collection_end) - float(entry.collection_begin)
