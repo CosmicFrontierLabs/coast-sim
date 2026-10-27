@@ -606,6 +606,25 @@ class TestDispatchPreference:
         assert target.merit_breakdown.value == pytest.approx(60.0)
         assert target.merit == pytest.approx(40.0)
 
+    @pytest.mark.parametrize(
+        ("remaining", "chosen", "allocation"),
+        [(1200.0, 1, 20.0), (240.0, 2, 4.0), (0.0, 2, 0.0)],
+    )
+    def test_the_bonus_covers_the_allocated_part_of_a_snapshot(
+        self, remaining: float, chosen: int, allocation: float
+    ) -> None:
+        """With the allocated seconds remaining in the bin, the bonus is for
+        the part of the 20-minute snapshot they cover: all of it for 1200 s
+        (worth 60), a fifth for 240 s (worth 44, below 50), none for 0."""
+        queue = self._queue_with_preference(0.5)
+        queue.prefer = lambda obsid: remaining if obsid == 1 else 0.0
+
+        target = queue.get(105.0, 10.0, T0 + 10 * MIN)
+
+        assert target is not None and int(target.obsid) == chosen
+        (allocated,) = (t for t in queue.targets if int(t.obsid) == 1)
+        assert queue.allocation_term(allocated, 40.0) == pytest.approx(allocation)
+
 
 def _science(plan: Plan) -> list[tuple[int, float]]:
     return [
@@ -692,6 +711,39 @@ class TestAllocatedTime:
 
         # The 20 allocated minutes are worth 1.5 times their merit.
         assert scheduler.score == pytest.approx(1.5 * 10 * 20 * MIN)
+
+    @pytest.mark.parametrize(
+        ("scheduler", "options"),
+        [
+            (PriorityScheduler, {}),
+            (LocalSearchScheduler, {"max_iterations": 0}),
+            pytest.param(
+                CpSatScheduler,
+                {"solver_time_limit": 5.0, "workers": 1, "seed": 1},
+                marks=needs_ortools,
+            ),
+        ],
+    )
+    def test_entries_freeze_the_value_with_the_allocation(
+        self, scheduler: type[PriorityScheduler], options: dict[str, object]
+    ) -> None:
+        """An allocated snapshot's entry carries the value it was planned at,
+        bonus included, so a Target of Opportunity is compared with that."""
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, merit=40)
+
+        plan = scheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            allocated={1: [AllocatedTime(T0, T0 + HOUR, 20 * MIN)]},
+            allocation_bonus=0.5,
+            **options,  # type: ignore[arg-type]
+        ).schedule()
+
+        (entry,) = (e for e in plan if e.obstype != ObsType.GSP)
+        assert float(entry.merit) == pytest.approx(60.0)
 
     def test_rejects_a_negative_bonus(self) -> None:
         config = _config(2)
@@ -937,6 +989,148 @@ class TestSimulations:
                 queue=Policy(),  # type: ignore[arg-type]
                 allocator=self._allocator(config),
             )
+
+
+class _FixedAllocator(LongRangeAllocator):
+    """Allocates the same way every time it is asked."""
+
+    def __init__(self, config: MissionConfig, allocation: Allocation) -> None:
+        super().__init__(
+            config, BEGIN, BEGIN + timedelta(hours=2), bin_length=timedelta(hours=1)
+        )
+        self.fixed = allocation
+
+    def allocate(self, *args: object, **kwargs: object) -> Allocation:
+        return self.fixed
+
+
+class TestAllocatedTargetsOfOpportunity:
+    """A Target of Opportunity is compared with an allocated observation at
+    the same terms: the allocation's bonus on both sides."""
+
+    GRB = {
+        "obsid": 1_000_001,
+        "name": "GRB",
+        "ra": 115.0,
+        "dec": 10.0,
+        "exptime": 600,
+        "submit_time": T0 + 20 * MIN,
+        "deadline": T0 + 30 * MIN,
+    }
+
+    @staticmethod
+    def _allocator(config: MissionConfig) -> LongRangeAllocator:
+        return LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            bin_length=timedelta(hours=1),
+            efficiency=1.0,
+            reserve=0.0,
+            solver="greedy",
+        )
+
+    @staticmethod
+    def _allocated_hour(config: MissionConfig) -> Pointing:
+        """Merit 40, worth 60 with its hour allocated and a bonus of 0.5."""
+        return _target(
+            config, 1, 105.0, 10.0, merit=40, minutes=60, snapshot=60, ss_min=10
+        )
+
+    # Never considered by the allocation, the ToO has the whole bonus: merit
+    # 50 is worth 75 and interrupts the observation worth 60; merit 35 is
+    # worth 52.5 and does not, although it outranks the bare merit of 40.
+    @pytest.mark.parametrize(("merit", "interrupts"), [(50.0, True), (35.0, False)])
+    def test_dispatch_values_a_too_with_the_bonus(
+        self, merit: float, interrupts: bool
+    ) -> None:
+        config = _config(3)
+        ditl = QueueDITL(
+            config=config,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            allocator=self._allocator(config),
+        )
+        queue_targets(ditl, [self._allocated_hour(config)])
+        ditl.submit_too(**{**self.GRB, "merit": merit})  # type: ignore[arg-type]
+
+        ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert isinstance(first, Pointing) and first.merit_breakdown is not None
+        assert first.merit_breakdown.value == pytest.approx(60.0)
+        assert any(int(e.obsid) == self.GRB["obsid"] for e in ditl.plan) == interrupts
+
+    @pytest.mark.parametrize(("merit", "interrupts"), [(50.0, True), (35.0, False)])
+    def test_rolling_values_a_too_with_the_bonus(
+        self, merit: float, interrupts: bool
+    ) -> None:
+        config = _config(3)
+        ditl = RollingHorizonDITL(
+            config,
+            [self._allocated_hour(config)],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=4),
+            allocator=self._allocator(config),
+        )
+        ditl.step_size = 60
+        ditl.submit_too(**{**self.GRB, "merit": merit})  # type: ignore[arg-type]
+
+        assert ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert float(first.merit) == pytest.approx(60.0)
+        assert any(r.interrupted_obsid == 1 for r in ditl.replans) == interrupts
+
+    def test_dispatch_moves_on_once_the_allocated_seconds_are_collected(
+        self,
+    ) -> None:
+        """Allocated 12 of its 36 minutes in the first hour, a merit-40
+        request is worth 60 for two 6-minute snapshots and 40 after, when a
+        merit-50 request is selected ahead of it."""
+        config = _config(2)
+        allocation = Allocation(
+            bins=[(T0, T0 + HOUR), (T0 + HOUR, T0 + 2 * HOUR)],
+            capacity=[12 * MIN, 12 * MIN],
+            reserve=[0.0, 0.0],
+            seconds={1: {0: 12 * MIN, 1: 0.0}, 2: {0: 0.0, 1: 10 * MIN}},
+        )
+        ditl = QueueDITL(
+            config=config,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            allocator=_FixedAllocator(config, allocation),
+        )
+        queue_targets(
+            ditl,
+            [
+                _target(
+                    config,
+                    1,
+                    105.0,
+                    10.0,
+                    merit=40,
+                    minutes=36,
+                    snapshot=6,
+                    deadline=T0 + HOUR,
+                ),
+                _target(config, 2, 110.0, 10.0, merit=50, minutes=10),
+            ],
+        )
+
+        ditl.calc()
+
+        science = [int(e.obsid) for e in ditl.plan if e.obstype != ObsType.GSP]
+        assert science[:3] == [1, 1, 2]
+        values = [
+            e.merit_breakdown.value
+            for e in ditl.plan
+            if isinstance(e, Pointing)
+            and int(e.obsid) == 1
+            and e.merit_breakdown is not None
+        ]
+        assert values[:3] == pytest.approx([60.0, 60.0, 40.0])
 
 
 class TestConfiguration:

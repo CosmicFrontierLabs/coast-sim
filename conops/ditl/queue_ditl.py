@@ -514,6 +514,12 @@ class QueueDITL(DITLMixin, DITLStats):
                 visibility_window=visibility_window,
                 delivered_shares=delivered_shares,
             )
+            # With the allocation's bonus, as selection values it: the
+            # observation under way is valued with its own.
+            if isinstance(self.queue, Queue):
+                allocation = self.queue.allocation_term(target, value.value)
+                if allocation:
+                    value = value.model_copy(update={"allocation": allocation})
             if value.value > current_value:
                 outranking.append((too, target, value))
         if not outranking:
@@ -1985,7 +1991,30 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.allocation = allocation
         self._next_allocation = bin_end
-        self.queue.prefer = lambda obsid: allocation.prefers(obsid, utime, bin_end)
+        # What each request has collected when the bin begins: the bonus is
+        # for the seconds the bin allocates beyond that, so once a request
+        # has collected its allocation the rest competes at its merit.
+        targets = {int(t.obsid): t for t in self.queue.targets}
+        collected_before = {
+            obsid: float(target.collected_seconds) for obsid, target in targets.items()
+        }
+        current = allocation.bins_overlapping(utime, bin_end)
+
+        def remaining(obsid: int) -> float | None:
+            per_bin = allocation.seconds.get(obsid)
+            if per_bin is None:
+                # Never considered, as a Target of Opportunity submitted
+                # since: allocated without limit.
+                return None
+            target = targets.get(obsid)
+            collected = (
+                float(target.collected_seconds) - collected_before.get(obsid, 0.0)
+                if target is not None
+                else 0.0
+            )
+            return sum(per_bin.get(k, 0.0) for k in current) - collected
+
+        self.queue.prefer = remaining
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
         """Return whether a ground station contact is still active at utime."""

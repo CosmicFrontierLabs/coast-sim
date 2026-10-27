@@ -33,7 +33,6 @@ from .priority_scheduler import (
     program_shares,
 )
 
-
 _VOLUME_TOLERANCE_GB = 1e-9
 """Within which two ledgers' volumes are the same, allowing for rounding."""
 
@@ -280,15 +279,25 @@ class LocalSearchScheduler(PriorityScheduler):
         collection starts in, are worth ``_allocated_factor`` more, and use up
         that time in ``left``.
         """
-        worth = self._contribution(request, block, value)
+        return self._contribution(request, block, value) * self._allocation_scale(
+            left, request, block
+        )
+
+    def _allocation_scale(
+        self, left: dict[tuple[int, int], float], request: _Request, block: _Block
+    ) -> float:
+        """What a snapshot's value is multiplied by for the allocated time
+        it uses: ``_allocated_factor`` over the part of its seconds that what
+        is left of the allocated time of the span its collection starts in
+        covers, which it uses up in ``left``; 1 where none does."""
         entry = block.entry
         seconds = _collection_seconds(block)
         span = self._span_of(int(entry.obsid), entry.collection_begin)
         counted = min(seconds, left.get(span, 0.0)) if span is not None else 0.0
-        if counted > 0.0 and span is not None:
-            left[span] -= counted
-            worth *= 1.0 + (self._allocated_factor - 1.0) * counted / seconds
-        return worth
+        if counted <= 0.0 or span is None or seconds <= 0.0:
+            return 1.0
+        left[span] -= counted
+        return 1.0 + (self._allocated_factor - 1.0) * counted / seconds
 
     def _span_of(
         self, obsid: int, collection_begin: float | None
@@ -408,13 +417,14 @@ class LocalSearchScheduler(PriorityScheduler):
                 placed.append(moved)
                 placed.extend(timeline[index + 1 :])
 
-            # Freeze the value the snapshot has here onto its entry, as the
-            # priority-first scheduler does: a Target of Opportunity must beat
-            # it to interrupt the observation.
+            # Freeze the value the snapshot has here onto its entry, with the
+            # allocation's share, as the priority-first scheduler does: a
+            # Target of Opportunity must beat it to interrupt the observation.
             value = self._value(request, program_shares(state.programs))
-            block.entry.merit = value
             allocated_left = dict(state.allocated_left)
-            score = state.score + self._scored(allocated_left, request, block, value)
+            scale = self._allocation_scale(allocated_left, request, block)
+            block.entry.merit = value * scale
+            score = state.score + self._contribution(request, block, value) * scale
 
             left = dict(state.remaining)
             left[obsid] = remaining - _collection_seconds(block)

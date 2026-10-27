@@ -550,7 +550,9 @@ rebuilds it as the simulation runs:
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
    argument of ``submit_too``), the observation's category is ``interruptible``, and
    the ToO's value, evaluated now, beats the value frozen onto that observation.
-   Otherwise the ToO can start only after the observation ends. Science it has already
+   Both are valued with any `long-range allocation`_'s bonus, the ToO's for the
+   part of its exposure the allocation gives to now. Otherwise the ToO can start
+   only after the observation ends. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
    are tried highest-ranked first, and the first that outranks the observation and can
@@ -668,7 +670,13 @@ scheduling follows it:
   that is worth more than the allocated time it displaces;
 * local search and CP-SAT score allocated time the same way, so they improve a plan
   without trading away what the allocation put in a bin;
-* dispatch adds the same bonus to the requests allocated to the current bin.
+* every scheduler freezes the value with the bonus onto the entry, and a ToO is
+  valued with the bonus for the part of its exposure the allocation gives to now,
+  so the two are compared on the same terms (see `Targets of Opportunity`_ above);
+* dispatch adds the same bonus to the requests allocated to the current bin, for
+  the seconds allocated there that the bin has not yet collected: a snapshot
+  only partly covered gets that part of the bonus, and once a request has
+  collected its allocation the rest competes at its merit.
 
 A request the allocator hasn't seen, such as a ToO submitted after the last
 allocation, is treated as allocated throughout. Rolling runs re-allocate at every

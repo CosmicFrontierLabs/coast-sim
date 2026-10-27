@@ -44,10 +44,12 @@ class TargetQueue:
     acs_config: AttitudeControlSystem | None
     config: MissionConfig | None
     random_seed: int
-    prefer: Callable[[int], bool] | None
+    prefer: Callable[[int], bool | float | None] | None
     """Returns, for an obsid, whether to favour it, such as a target a
-    long-range allocation assigns to now. None (the default) treats all
-    targets alike."""
+    long-range allocation assigns to now: the seconds of its exposure still
+    allocated to now, or a bool, or None for a target favoured without limit,
+    such as one the allocation never considered. None for the attribute (the
+    default) treats all targets alike."""
     allocation_bonus: float
     """Fraction of its value a preferred target gains."""
 
@@ -83,11 +85,41 @@ class TargetQueue:
         self.prefer = None
         self.allocation_bonus = 0.5
 
-    def _bonus(self, target: Pointing) -> float:
-        """Fraction of its value a target gains for being preferred."""
-        if self.prefer is None or not self.prefer(int(target.obsid)):
+    def _allocated_seconds(self, target: Pointing) -> float:
+        """Seconds of the target's exposure the allocation still gives to
+        now: none without a preference, unlimited where the preference does
+        not limit the target, as for a request the allocation never
+        considered."""
+        if self.prefer is None:
             return 0.0
-        return self.allocation_bonus
+        remaining = self.prefer(int(target.obsid))
+        if remaining is None or remaining is True:
+            return math.inf
+        if remaining is False:
+            return 0.0
+        return max(0.0, float(remaining))
+
+    def _bonus(
+        self, target: Pointing, collection_seconds: float | None = None
+    ) -> float:
+        """Fraction of its value a target gains for being preferred: the
+        allocation bonus for the part of a snapshot of ``collection_seconds``
+        the allocated seconds remaining cover, and all of it where the
+        snapshot's length is not known, as a bound. Exposure beyond the
+        allocation competes at its ordinary merit."""
+        remaining = self._allocated_seconds(target)
+        if remaining <= 0.0:
+            return 0.0
+        if collection_seconds is None or collection_seconds <= 0.0:
+            return self.allocation_bonus
+        return self.allocation_bonus * min(1.0, remaining / collection_seconds)
+
+    def allocation_term(self, target: Pointing, value: float) -> float:
+        """What the allocation adds to a candidate's ``value``, for the
+        snapshot it would collect now (see :meth:`_bonus`)."""
+        exposure = target.exptime if target.exptime is not None else target.ss_max
+        snapshot = min(float(target.ss_max), float(exposure))
+        return self._bonus(target, snapshot) * value
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -163,7 +195,7 @@ class TargetQueue:
         every visible target."""
         self.targets.sort(
             key=lambda target: (
-                target.merit * (1.0 + self._bonus(target))
+                target.merit + self.allocation_term(target, target.merit)
                 if self._visible_now(target)
                 else -900,
                 self._target_tie_breaker(target),
@@ -523,9 +555,9 @@ class TargetQueue:
                     visibility_window=visibility_window,
                     delivered_shares=delivered_shares,
                 )
-                bonus = self._bonus(target)
-                if bonus:
-                    value = value.model_copy(update={"allocation": bonus * value.value})
+                allocation = self.allocation_term(target, value.value)
+                if allocation:
+                    value = value.model_copy(update={"allocation": allocation})
                 # If nothing beyond merit order matters, return the first
                 # visible target in merit order (fast path)
                 if not score_candidates:

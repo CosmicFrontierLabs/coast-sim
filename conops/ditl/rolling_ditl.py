@@ -603,6 +603,22 @@ class RollingHorizonDITL(DITL):
             len(scheduler.unplaced),
         )
 
+    def _too_allocation_bonus(self, target: Pointing, utime: float) -> float:
+        """The fraction of its value a Target of Opportunity gains from the
+        allocation at ``utime``: the bonus for the part of its exposure the
+        allocation gives to now, all of it for a request the allocation
+        never considered."""
+        if self.allocation is None or self.allocation_bonus <= 0.0:
+            return 0.0
+        exposure = float(
+            target.exptime if target.exptime is not None else target.ss_max
+        )
+        if exposure <= 0.0:
+            return 0.0
+        spans = self.allocation.allocated([int(target.obsid)], utime, utime + exposure)
+        seconds = sum(span.seconds for span in spans.get(int(target.obsid), []))
+        return self.allocation_bonus * min(1.0, seconds / exposure)
+
     def _interrupt_for(
         self, too: TOORequest, utime: float, cutoff: float, log: DITLLog
     ) -> tuple[PlanEntry, tuple[float, float | None, float | None]] | None:
@@ -634,6 +650,9 @@ class RollingHorizonDITL(DITL):
             utime,
             delivered_shares=self.merit_model.delivered_shares(self.targets),
         ).value
+        # With the allocation's bonus for the part of its exposure the
+        # allocation gives to now, as the plan's entries are valued.
+        too_value *= 1.0 + self._too_allocation_bonus(target, utime)
         if too_value <= float(entry.merit):
             return None
         # A slew under way finishes first, so the cut is at the step after the
