@@ -73,7 +73,15 @@ class TestMeritBreakdown:
 
         assert "urgency=+2.500" in text
         assert "cadence" not in text
+        assert "data" not in text
         assert "value=12.500" in text
+
+    def test_the_data_price_is_a_cost_term(self) -> None:
+        priced = MeritBreakdown(tier=0, base=10.0, data=-1.5)
+
+        assert priced.value == 10.0
+        assert priced.score == pytest.approx(8.5)
+        assert "data=-1.500" in priced.describe()
 
 
 class TestTier:

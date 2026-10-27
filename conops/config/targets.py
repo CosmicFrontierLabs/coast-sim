@@ -26,6 +26,14 @@ class TargetConfig(ConfigModel):
             "selection, in merit points per minute"
         ),
     )
+    data_volume_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Weight to penalize the data a snapshot would put on the recorder "
+            "during target selection, in merit points per gigabit"
+        ),
+    )
     radiator_sun_exposure_weight: float = Field(
         default=0.0,
         description="Weight to penalize radiator sun exposure during target selection",
