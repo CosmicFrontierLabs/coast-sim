@@ -671,3 +671,82 @@ For detailed API documentation, see:
 * :class:`~conops.config.groundstation.Antenna`
 * :class:`~conops.ditl.ditl.DITL`
 * :class:`~conops.ditl.queue_ditl.QueueDITL`
+
+Independent computer storage
+----------------------------
+
+Use ``MissionConfig.data_storage`` when the payload computer and spacecraft
+computer have independent storage. Keep ``recorder`` for existing missions with
+one shared recorder; supplying both models in a configuration is rejected.
+All storage quantities ending in ``_gb`` are **decimal gigabits**, not gigabytes:
+8 TB installed is 64,000 Gbit. Installed hardware capacity and usable recorder
+capacity are separate quantities.
+
+An inventory may contain unresolved hardware inputs::
+
+    data_storage:
+      stores:
+        payload_computer:
+          owner: payload
+          installed_capacity_gb: 64000
+          recorder: null
+        spacecraft_computer:
+          owner: spacecraft_bus
+          recorder: null
+      bus_housekeeping: spacecraft_computer
+      instrument_science:
+        Optical Imager: payload_computer
+      instrument_housekeeping:
+        Optical Imager: null
+      downlinks: null
+
+This configuration can be loaded and inspected. Planning and simulation raise
+an error listing the missing inputs. A null recorder never means unlimited
+storage and never inherits the legacy 32-Gbit default. Inspect
+``config.data_storage.unresolved(config)`` before running a campaign.
+
+For every store, replace ``recorder: null`` with an ``OnboardRecorder`` definition
+containing explicit, confirmed usable ``capacity_gb`` and initial
+``current_volume_gb``. A named recorder rejects omitted values for these fields.
+Set ``planning_limit`` to the fraction available for planning (for example,
+``0.8`` reserves 20 percent). Usable capacity cannot exceed installed capacity.
+An explicit ``planning_limit: null`` disables that store's planning constraint,
+just as in the single-recorder model; physical simulation still caps its storage.
+Route every instrument's science and housekeeping to a named store. Target-level
+science-rate and fixed-per-observation overrides retain their existing meaning.
+
+Configure direct downlink reservations only after confirming the hardware path.
+For example, if a station and the spacecraft both support Ka::
+
+    downlinks:
+      - station: SVAL
+        band: Ka
+        shares:
+          payload_computer: 0.95
+          spacecraft_computer: 0.05
+
+The physical link rate is the smaller of the station and spacecraft rates in
+that band. Shares are positive fractions totaling at most one. They divide
+that rate between stores; each store does not receive a whole link. Reservations
+are fixed, so an empty store's unused bandwidth remains unused. A station has
+one active downlink in this model. ``downlinks: []`` explicitly means no downlink;
+``null`` means the path is unresolved. Stations absent from the list provide no
+data removal, though they may still provide uplink contacts.
+
+Dispatch, priority, local-search and CP-SAT scheduling check every store's own
+planning limit. Rolling replanning carries a mapping of store names to projected
+volumes. Spare capacity and contact credit never move between stores. Execution
+uses the same source routing and downlink reservations. Per-store telemetry is
+in ``Housekeeping.recorders[name]``, including ``volume_gb``, ``capacity_gb``,
+``fill_fraction``, ``alert`` and cumulative ``generated_gb``, ``downlinked_gb`` and
+``lost_gb``. Default fault thresholds use ``recorders.<name>.fill_fraction``.
+The legacy scalar volume is a total; scalar fill and alert are the worst store.
+Data-management plots show the independent stores and their limits.
+
+This is a volume model. It does not model inter-computer staging, file delivery
+acknowledgments, retransmission queues or the age of individual products. If
+science must first be copied into spacecraft storage, leave its downlink path
+unresolved until transfer throughput, staging space and copy/delete semantics
+are implemented. A low fill fraction alone does not establish delivery latency
+or completeness. Science generation rates, file overheads and link efficiencies
+must also be supplied for a meaningful mission budget.

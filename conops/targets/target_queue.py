@@ -16,6 +16,7 @@ from ..config import (
 )
 from ..config.acs import scheduled_slew_time
 from ..config.config import housekeeping_while_waiting
+from ..config.data_storage import RecorderView
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
@@ -389,7 +390,7 @@ class TargetQueue:
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
         roll: float | None = None,
-        recorder_room_gb: float | None = None,
+        recorder_room_gb: float | Mapping[str, float] | None = None,
     ) -> Pointing | None:
         """Get the next best target to observe from the queue.
 
@@ -666,7 +667,7 @@ class TargetQueue:
                 event_type="QUEUE",
                 description=(
                     f"{overfill} targets passed over: the recorder can take "
-                    f"{recorder_room_gb:.2f} Gb of science before its next contact"
+                    f"{recorder_room_gb} Gb of science (by store when configured)"
                 ),
                 obsid=None,
                 acs_mode=None,
@@ -676,7 +677,27 @@ class TargetQueue:
             self._select(best_target, best_breakdown)
         return best_target
 
-    def collection_within(self, target: Pointing, room_gb: float) -> float:
+    def collection_within(
+        self, target: Pointing, room_gb: float | Mapping[str, float]
+    ) -> float:
+        if isinstance(room_gb, Mapping):
+            assert self.config is not None
+            views = self.config.recorder_views()
+            return min(
+                (
+                    self._collection_within_store(target, room, views[name])
+                    for name, room in room_gb.items()
+                ),
+                default=float("inf"),
+            )
+        return self._collection_within_store(target, room_gb)
+
+    def _collection_within_store(
+        self,
+        target: Pointing,
+        room_gb: float,
+        config: MissionConfig | RecorderView | None = None,
+    ) -> float:
         """Seconds of collection whose data fits in ``room_gb``: without
         limit when the visit generates nothing per second, and negative when
         not even its fixed data fits.
@@ -695,22 +716,24 @@ class TargetQueue:
         one execution is certain to deliver. Admission asks again with the
         slew it flies.
         """
+        config = self.config if config is None else config
+        assert config is not None
         step = self._step_size()
         timing = self.observation_timing
-        base = self._snapshot_science_gb(target, 0.0)
+        base = config.science_generated(0.0, target.science_data)
         fixed = (
             base
             + self._housekeeping_excess_gb(
-                ACSMode.SLEWING, whole_steps(float(target.slewtime), step)
+                ACSMode.SLEWING, whole_steps(float(target.slewtime), step), config
             )
             + self._housekeeping_excess_gb(
-                ACSMode.SCIENCE, timing.total_seconds + (step or 0.0)
+                ACSMode.SCIENCE, timing.total_seconds + (step or 0.0), config
             )
         )
         per_second = (
-            self._snapshot_science_gb(target, 1.0)
+            config.science_generated(1.0, target.science_data)
             - base
-            + self._housekeeping_excess_gb(ACSMode.SCIENCE, 1.0)
+            + self._housekeeping_excess_gb(ACSMode.SCIENCE, 1.0, config)
         )
         if per_second <= 0.0:
             # The room keeps the limit below already: no tolerance here,
@@ -718,17 +741,23 @@ class TargetQueue:
             return float("inf") if fixed <= room_gb else -1.0
         return (room_gb - fixed) / per_second
 
-    def _housekeeping_excess_gb(self, mode: ACSMode, seconds: float) -> float:
+    def _housekeeping_excess_gb(
+        self,
+        mode: ACSMode,
+        seconds: float,
+        config: MissionConfig | RecorderView | None = None,
+    ) -> float:
         """Gb of housekeeping ``seconds`` in ``mode`` generates beyond the
         waiting rate the room is net of; zero where the mode's rate is
         below it, as the saving is not counted on."""
-        assert self.config is not None
+        config = self.config if config is None else config
+        assert config is not None
         if seconds <= 0.0:
             return 0.0
         return max(
             0.0,
-            float(self.config.housekeeping_generated(seconds, mode=mode))
-            - housekeeping_while_waiting(self.config, seconds),
+            float(config.housekeeping_generated(seconds, mode=mode))
+            - housekeeping_while_waiting(config, seconds),
         )
 
     def _step_size(self) -> float | None:

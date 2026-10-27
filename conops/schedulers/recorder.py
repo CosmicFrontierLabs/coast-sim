@@ -12,21 +12,26 @@ instrument. The limit is the recorder's planning limit.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
+from ..config.data_storage import RecorderView
 from ..ditl.plan_validator import entry_obstype
 from ..targets import PlanEntry
 from .consumable import ConsumableLedger, Removal
 
 
-def contact_downlink_gb(config: MissionConfig, station: str, seconds: float) -> float:
+def contact_downlink_gb(
+    config: MissionConfig | RecorderView, station: str, seconds: float
+) -> float:
     """What a contact of ``seconds`` with ``station`` downlinks, in Gb.
 
     The same arithmetic as the simulation: the effective rate in Mbps, from
     the station's and spacecraft's bands, for the time in contact.
     """
+    if isinstance(config, RecorderView):
+        return config.downlink_rate(station) * max(0.0, seconds) / 1000.0
     try:
         ground_station = config.ground_stations.get(station)
     except KeyError:
@@ -73,7 +78,7 @@ class RecorderLedger(ConsumableLedger[float, float]):
 
     def __init__(
         self,
-        config: MissionConfig,
+        config: MissionConfig | RecorderView,
         begin: float,
         end: float,
         contacts: Sequence[PlanEntry],
@@ -233,3 +238,114 @@ class RecorderLedger(ConsumableLedger[float, float]):
             segment = self.segment(float(entry.collection_begin))
             volumes[segment] += self.science_volume(entry, seconds)
         return tuple(volumes)
+
+
+class RecorderLedgers:
+    """Independent scalar ledgers stored in one flat planning-state tuple.
+
+    Offsets identify stores; capacity and downlink credit never cross them.
+    """
+
+    def __init__(
+        self,
+        config: MissionConfig,
+        begin: float,
+        end: float,
+        contacts: Sequence[PlanEntry],
+        *,
+        start_volume_gb: float | Mapping[str, float] | None = None,
+        step_size: float | None = None,
+        origin: float | None = None,
+    ) -> None:
+        views = config.recorder_views()
+        if isinstance(start_volume_gb, Mapping) and set(start_volume_gb) != set(views):
+            raise ValueError("initial volumes must specify every recorder exactly once")
+        if (
+            isinstance(start_volume_gb, (int, float))
+            and config.data_storage is not None
+        ):
+            raise ValueError("named recorders require initial volumes by store")
+        self.members: list[tuple[str, RecorderLedger, int]] = []
+        offset = 0
+        for name, view in views.items():
+            start = (
+                start_volume_gb[name]
+                if isinstance(start_volume_gb, Mapping)
+                else start_volume_gb
+                if start_volume_gb is not None
+                else view.recorder.current_volume_gb
+            )
+            ledger = RecorderLedger(
+                view,
+                begin,
+                end,
+                contacts,
+                start_volume_gb=start,
+                step_size=step_size,
+                origin=origin,
+            )
+            self.members.append((name, ledger, offset))
+            offset += ledger.segments
+        self.segments = offset
+
+    @property
+    def active(self) -> bool:
+        return any(ledger.active for _, ledger, _ in self.members)
+
+    def initial_volumes(self, entries: Sequence[PlanEntry]) -> tuple[float, ...]:
+        return tuple(
+            v for _, ledger, _ in self.members for v in ledger.initial_volumes(entries)
+        )
+
+    def peaks(self, planned: Sequence[float]) -> list[float]:
+        return [
+            v
+            for _, ledger, offset in self.members
+            for v in ledger.peaks(planned[offset : offset + ledger.segments])
+        ]
+
+    def fits_all(
+        self, planned: Sequence[float], additions: Sequence[tuple[int, float]]
+    ) -> bool:
+        trial = self.add_all(planned, additions)
+        return all(
+            ledger.fits_all(trial[offset : offset + ledger.segments], [])
+            for _, ledger, offset in self.members
+        )
+
+    @staticmethod
+    def add_all(
+        planned: Sequence[float], additions: Sequence[tuple[int, float]]
+    ) -> tuple[float, ...]:
+        result = list(planned)
+        for segment, value in additions:
+            result[segment] += value
+        return tuple(result)
+
+    def science_volume(self, entry: PlanEntry, seconds: float) -> float:
+        return sum(
+            ledger.science_volume(entry, seconds) for _, ledger, _ in self.members
+        )
+
+    def science_additions(
+        self, entry: PlanEntry, seconds: float, time: float
+    ) -> list[tuple[int, float]]:
+        return [
+            (offset + ledger.segment(time), ledger.science_volume(entry, seconds))
+            for _, ledger, offset in self.members
+        ]
+
+    def ingress_additions(
+        self,
+        entry: PlanEntry,
+        *,
+        begin: float | None = None,
+        slewtime: float | None = None,
+    ) -> list[tuple[int, float]]:
+        return [
+            (
+                offset + ledger.ingress_segment(entry, begin=begin),
+                ledger.ingress_volume(entry, begin=begin, slewtime=slewtime),
+            )
+            for _, ledger, offset in self.members
+        ]

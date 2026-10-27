@@ -8,6 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from ...config.data_storage import DataStorage
 from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
@@ -79,73 +80,107 @@ def plot_data_management_telemetry_plotly(
         ],
     )
 
-    # ------------------------------------------------------------------
-    # Panel 1 — Recorder volume
-    # ------------------------------------------------------------------
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=np.array(
-                ditl.telemetry.housekeeping.recorder_volume_gb, dtype=np.float64
+    if isinstance(ditl.config.data_storage, DataStorage):
+        for name, view in ditl.config.recorder_views().items():
+            values = [
+                record.recorders.get(name, {}) for record in ditl.telemetry.housekeeping
+            ]
+            for row, field in [(1, "volume_gb"), (2, "fill_fraction")]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=times,
+                        y=[v.get(field) for v in values],
+                        name=f"{name} {field}",
+                        mode="lines",
+                    ),
+                    row=row,
+                    col=1,
+                )
+            fig.add_hline(
+                y=view.recorder.capacity_gb,
+                annotation_text=f"{name} capacity",
+                line_dash="dash",
+                row=1,
+                col=1,
+            )
+            if view.recorder.planning_limit is not None:
+                fig.add_hline(
+                    y=view.recorder.planning_limit,
+                    annotation_text=f"{name} planning limit",
+                    line_dash="dot",
+                    row=2,
+                    col=1,
+                )
+        fig.update_yaxes(title_text="Volume (Gb)", row=1, col=1)
+        fig.update_yaxes(title_text="Fill Fraction", row=2, col=1)
+    else:
+        # ------------------------------------------------------------------
+        # Panel 1 — Recorder volume
+        # ------------------------------------------------------------------
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.array(
+                    ditl.telemetry.housekeeping.recorder_volume_gb, dtype=np.float64
+                ),
+                mode="lines",
+                name="Recorder Volume",
+                line=dict(color="royalblue", width=2),
+                showlegend=True,
             ),
-            mode="lines",
-            name="Recorder Volume",
-            line=dict(color="royalblue", width=2),
-            showlegend=True,
-        ),
-        row=1,
-        col=1,
-    )
-    if capacity_gb is not None:
-        fig.add_hline(
-            y=capacity_gb,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"Capacity ({capacity_gb} Gb)",
-            annotation_position="top right",
             row=1,
             col=1,
         )
-    fig.update_yaxes(title_text="Volume (Gb)", row=1, col=1)
+        if capacity_gb is not None:
+            fig.add_hline(
+                y=capacity_gb,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Capacity ({capacity_gb} Gb)",
+                annotation_position="top right",
+                row=1,
+                col=1,
+            )
+        fig.update_yaxes(title_text="Volume (Gb)", row=1, col=1)
 
-    # ------------------------------------------------------------------
-    # Panel 2 — Fill fraction
-    # ------------------------------------------------------------------
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=np.array(
-                ditl.telemetry.housekeeping.recorder_fill_fraction, dtype=np.float64
+        # ------------------------------------------------------------------
+        # Panel 2 — Fill fraction
+        # ------------------------------------------------------------------
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=np.array(
+                    ditl.telemetry.housekeeping.recorder_fill_fraction, dtype=np.float64
+                ),
+                mode="lines",
+                name="Fill Fraction",
+                line=dict(color="mediumseagreen", width=2),
+                showlegend=True,
             ),
-            mode="lines",
-            name="Fill Fraction",
-            line=dict(color="mediumseagreen", width=2),
-            showlegend=True,
-        ),
-        row=2,
-        col=1,
-    )
-    if yellow_threshold is not None:
-        fig.add_hline(
-            y=yellow_threshold,
-            line_dash="dash",
-            line_color="orange",
-            annotation_text=f"Yellow ({yellow_threshold:.0%})",
-            annotation_position="top right",
             row=2,
             col=1,
         )
-    if red_threshold is not None:
-        fig.add_hline(
-            y=red_threshold,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"Red ({red_threshold:.0%})",
-            annotation_position="top right",
-            row=2,
-            col=1,
-        )
-    fig.update_yaxes(title_text="Fill Fraction", range=[0, 1], row=2, col=1)
+        if yellow_threshold is not None:
+            fig.add_hline(
+                y=yellow_threshold,
+                line_dash="dash",
+                line_color="orange",
+                annotation_text=f"Yellow ({yellow_threshold:.0%})",
+                annotation_position="top right",
+                row=2,
+                col=1,
+            )
+        if red_threshold is not None:
+            fig.add_hline(
+                y=red_threshold,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"Red ({red_threshold:.0%})",
+                annotation_position="top right",
+                row=2,
+                col=1,
+            )
+        fig.update_yaxes(title_text="Fill Fraction", range=[0, 1], row=2, col=1)
 
     # ------------------------------------------------------------------
     # Panel 3 — Cumulative data generated

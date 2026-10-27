@@ -36,6 +36,7 @@ from ..config.constraint import (
     attitude_constraint_name_for_scopes,
     attitude_constraint_scope_label,
 )
+from ..config.data_storage import DataStorage, RecorderView
 from ..schedulers import DispatchPolicy
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
@@ -241,7 +242,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # Queue target created for each activated TOO, keyed by id(TOORequest)
         self._too_targets: dict[int, Pointing] = {}
         self._committed_too: _CommittedTOO | None = None
-        self._recorder_volume_projected_gb: float | None = None
+        self._recorder_volume_projected_gb: float | dict[str, float] | None = None
         """The recorder's volume a preview of a later admission starts from."""
         self.merit_model = MeritModel(self.config)
 
@@ -649,21 +650,40 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _recorder_volume_at(
         self, now: float, later: float, *, collection_stop: float | None = None
-    ) -> float:
+    ) -> float | dict[str, float]:
         """The recorder's volume projected from ``now`` to ``later``, while
         the observation under way goes on: its science until its collection
         ends, or ``collection_stop`` where a replacement will cut it there,
         and housekeeping for the whole steps between at the ``SCIENCE`` rate
         or the waiting rate, whichever is higher, as a bound on what the
         steps generate."""
-        volume = float(self.recorder.current_volume_gb)
+        if isinstance(self.config.data_storage, DataStorage):
+            return {
+                name: self._store_volume_at(
+                    view, now, later, collection_stop=collection_stop
+                )
+                for name, view in self.config.recorder_views().items()
+            }
+        return self._store_volume_at(
+            self.config, now, later, collection_stop=collection_stop
+        )
+
+    def _store_volume_at(
+        self,
+        config: MissionConfig | RecorderView,
+        now: float,
+        later: float,
+        *,
+        collection_stop: float | None,
+    ) -> float:
+        volume = float(config.recorder.current_volume_gb)
         if later <= now:
             return volume
         step = float(self.step_size)
         span = whole_steps(later - now, step)
         volume += max(
-            self.config.housekeeping_while_waiting(span),
-            self.config.housekeeping_generated(span, mode=ACSMode.SCIENCE),
+            config.housekeeping_while_waiting(span),
+            config.housekeeping_generated(span, mode=ACSMode.SCIENCE),
         )
         ppt = self.ppt
         if ppt is not None and ppt.collection_end is not None:
@@ -674,8 +694,8 @@ class QueueDITL(DITLMixin, DITLStats):
             if collecting > 0.0:
                 science = ppt.science_data
                 volume += float(
-                    self.config.science_generated(collecting, science=science)
-                    - self.config.science_generated(0.0, science=science)
+                    config.science_generated(collecting, science=science)
+                    - config.science_generated(0.0, science=science)
                 )
         return volume
 
@@ -1443,6 +1463,7 @@ class QueueDITL(DITLMixin, DITLStats):
             charge_state=int(self.battery.charge_state),
             battery_alert=self.battery.battery_alert,
             obsid=self.obsid[-1] if self.obsid else None,
+            recorders=self._recorder_telemetry(),
             recorder_volume_gb=self.recorder.current_volume_gb,
             recorder_fill_fraction=self.recorder.get_fill_fraction(),
             recorder_alert=self.recorder.get_alert_level(),
@@ -3081,7 +3102,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _recorder_room_gb(
         self, utime: float, ra: float, dec: float, roll: float
-    ) -> float | None:
+    ) -> float | dict[str, float] | None:
         """Gb the recorder can take now, under its planning limit, beyond
         the housekeeping to come; None without a limit.
 
@@ -3100,19 +3121,36 @@ class QueueDITL(DITLMixin, DITLStats):
         waiting rate the queue counts against the room, as it does the
         science.
         """
-        limit = self.config.recorder.planning_limit_gb
+        if isinstance(self.config.data_storage, DataStorage):
+            rooms = {
+                name: self._store_room_gb(view, utime, ra, dec, roll)
+                for name, view in self.config.recorder_views().items()
+            }
+            return {name: room for name, room in rooms.items() if room is not None}
+        return self._store_room_gb(self.config, utime, ra, dec, roll)
+
+    def _store_room_gb(
+        self,
+        config: MissionConfig | RecorderView,
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+    ) -> float | None:
+        limit = config.recorder.planning_limit_gb
         # A test double's recorder has no number for a limit.
         if not isinstance(limit, (int, float)):
             return None
         step = float(self.step_size)
-        config = self.config
         # A preview of admission at a later time starts from the volume
         # projected to then (see _preview_too_admission).
         projected = getattr(self, "_recorder_volume_projected_gb", None)
+        if isinstance(projected, Mapping) and isinstance(config, RecorderView):
+            projected = projected[config.name]
         volume_now = (
             float(projected)
             if isinstance(projected, (int, float))
-            else float(self.recorder.current_volume_gb)
+            else float(config.recorder.current_volume_gb)
         )
         passes = sorted(
             (

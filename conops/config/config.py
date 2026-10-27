@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any, cast
 
 import yaml
-from pydantic import Field, field_validator, model_validator
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
@@ -11,6 +18,7 @@ from ._base import ConfigModel
 from .battery import Battery
 from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import ScienceData
+from .data_storage import DataStorage, RecorderView
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
@@ -149,6 +157,10 @@ class MissionConfig(ConfigModel):
         default_factory=OnboardRecorder,
         description="Onboard Data Recorder. Defines storage capacity and fill thresholds",
     )
+    data_storage: DataStorage | None = Field(
+        default=None, description="Independent stores and explicit data/downlink routes"
+    )
+
     fault_management: FaultManagement = Field(
         default_factory=FaultManagement,
         description="Fault Management System. Defines thresholds and responses for system health monitoring",
@@ -173,6 +185,30 @@ class MissionConfig(ConfigModel):
             "observe: queue dispatch, one plan, or rolling replanning"
         ),
     )
+
+    @model_validator(mode="after")
+    def _one_storage_model(self) -> MissionConfig:
+        if (
+            isinstance(self.data_storage, DataStorage)
+            and "recorder" in self.model_fields_set
+        ):
+            raise ValueError("configure either recorder or data_storage, not both")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_storage(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        result = handler(self)
+        if self.data_storage is not None:
+            result.pop("recorder", None)
+        return cast(dict[str, Any], result)
+
+    def recorder_views(self) -> dict[str, MissionConfig | RecorderView]:
+        if self.data_storage is None:
+            return {"default": self}
+        self.data_storage.require_ready(self)
+        return {name: RecorderView(self, name) for name in self.data_storage.stores}
 
     @field_validator("attitude_constraint_scopes", mode="before")
     @classmethod
@@ -215,7 +251,7 @@ class MissionConfig(ConfigModel):
                 name="battery_level", yellow=yellow, red=red, direction="below"
             )
         # Add recorder threshold if not already present
-        if not any(
+        if not isinstance(self.data_storage, DataStorage) and not any(
             t.name == "recorder_fill_fraction" for t in self.fault_management.thresholds
         ):
             # Use recorder's built-in thresholds
@@ -225,6 +261,24 @@ class MissionConfig(ConfigModel):
                 red=self.recorder.red_threshold,
                 direction="above",
             )
+        if isinstance(self.data_storage, DataStorage):
+            # The legacy aggregate threshold is meaningless for independent stores.
+            self.fault_management.thresholds = [
+                t
+                for t in self.fault_management.thresholds
+                if t.name != "recorder_fill_fraction"
+            ]
+            for name, store in self.data_storage.stores.items():
+                key = f"recorders.{name}.fill_fraction"
+                if store.recorder is not None and not any(
+                    t.name == key for t in self.fault_management.thresholds
+                ):
+                    self.fault_management.add_threshold(
+                        name=key,
+                        yellow=store.recorder.yellow_threshold,
+                        red=store.recorder.red_threshold,
+                        direction="above",
+                    )
         # Add star tracker threshold if not already present and star trackers are configured
         star_trackers = None
         try:

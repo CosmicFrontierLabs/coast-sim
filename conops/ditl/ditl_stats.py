@@ -5,6 +5,7 @@ import numpy as np
 
 from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
+from ..config.data_storage import DataStorage
 from ..simulation.acs import ACS
 from ..simulation.passes import PassTimes
 
@@ -199,7 +200,22 @@ class DITLStats:
             print("\n" + "-" * 70)
             print("DATA MANAGEMENT STATISTICS")
             print("-" * 70)
-            print(f"Recorder Capacity: {self.config.recorder.capacity_gb:.2f} Gb")
+            views = (
+                self.config.recorder_views()
+                if isinstance(self.config.data_storage, DataStorage)
+                else {"default": self.config}
+            )
+            if isinstance(self.config.data_storage, DataStorage):
+                for name, view in views.items():
+                    print(
+                        f"Recorder {name}: capacity {view.recorder.capacity_gb:.2f} Gb, "
+                        f"final volume {view.recorder.current_volume_gb:.2f} Gb"
+                    )
+                print(
+                    "Aggregate volumes below are totals; fill and alert are the worst store."
+                )
+            else:
+                print(f"Recorder Capacity: {self.config.recorder.capacity_gb:.2f} Gb")
             print(f"Initial Volume: {self.recorder_volume_gb[0]:.2f} Gb")
             print(f"Final Volume: {self.recorder_volume_gb[-1]:.2f} Gb")
             print(f"Peak Volume: {max(self.recorder_volume_gb):.2f} Gb")
@@ -249,12 +265,10 @@ class DITLStats:
             if hasattr(self, "recorder_alert") and self.recorder_alert:
                 alert_counts = Counter(self.recorder_alert)
                 print("\nRecorder Alerts:")
-                print(
-                    f"  Yellow Threshold: {self.config.recorder.yellow_threshold * 100:.0f}%"
-                )
-                print(
-                    f"  Red Threshold: {self.config.recorder.red_threshold * 100:.0f}%"
-                )
+                for name, view in views.items():
+                    print(
+                        f"  {name}: yellow {view.recorder.yellow_threshold:.0%}, red {view.recorder.red_threshold:.0%}"
+                    )
 
                 yellow_count = alert_counts.get(1, 0)  # 1 = yellow alert
                 red_count = alert_counts.get(2, 0)  # 2 = red alert

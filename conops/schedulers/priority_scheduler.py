@@ -29,7 +29,7 @@ from ..targets.merit import MeritBreakdown, MeritModel
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
-from .recorder import RecorderLedger
+from .recorder import RecorderLedgers
 
 CHARGE_OBSID = 999000
 """Obsid of the first planned charge; the rest follow."""
@@ -275,13 +275,14 @@ class PriorityScheduler:
         reserved_visits: Mapping[int, float] | None = None,
         held: Iterable[int] = (),
         successor_retries: int | None = 3,
-        start_volume_gb: float | None = None,
+        start_volume_gb: float | Mapping[str, float] | None = None,
         start_deficit_wh: float | None = None,
         start_drive_state: SolarArrayDriveState | None = None,
         passes: Sequence[Pass] | None = None,
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
         allocation_bonus: float = 0.5,
     ) -> None:
+        config.recorder_views()  # Fail on unresolved inventory before building an ephemeris.
         self.config = config
         self.targets = list(targets)
         self.held = frozenset(int(obsid) for obsid in held)
@@ -400,34 +401,24 @@ class PriorityScheduler:
             [block.entry for block in self.timeline]
         )
         """Science volume planned in each of the ledger's segments."""
-        limit = self._ledger.limit
-        if limit is not None:
-            over = max(self._ledger.peaks(self._volumes))
-            if over + 1e-9 >= limit:
-                # What is fixed already, with the housekeeping, reaches the
-                # limit: nothing placed here changes that, so it is said.
+        for name, ledger, offset in self._ledger.members:
+            limit = ledger.limit
+            over = max(ledger.peaks(self._volumes[offset : offset + ledger.segments]))
+            if limit is not None and over + 1e-9 >= limit:
                 self._log(
                     self.ctx.ustart,
-                    f"The recorder reaches {over:.2f} Gb, its planning limit "
-                    f"being {limit:.2f} Gb, from what is on it and the "
-                    "locked entries and housekeeping alone; no science is "
-                    "placed before it comes down",
+                    f"Recorder {name} reaches {over:.2f} Gb, its planning limit being "
+                    f"{limit:.2f} Gb from locked entries and housekeeping alone",
                 )
         self._energy = self._charged_energy(self.timeline)
 
-    def _recorder_ledger(self) -> RecorderLedger:
-        """The recorder over the horizon, downlinking during the reserved contacts."""
-        start_volume = (
-            self.start_volume_gb
-            if self.start_volume_gb is not None
-            else self.config.recorder.current_volume_gb
-        )
-        return RecorderLedger(
+    def _recorder_ledger(self) -> RecorderLedgers:
+        return RecorderLedgers(
             self.config,
             self.ctx.ustart,
             self.ctx.uend,
             [block.entry for block in self.timeline if block.is_pass],
-            start_volume_gb=start_volume,
+            start_volume_gb=self.start_volume_gb,
             step_size=self.ctx.step_size,
             origin=self.ctx.origin,
         )
@@ -435,21 +426,13 @@ class PriorityScheduler:
     def _ingress_deltas(
         self, block: _Block | None, slew: Slew | None
     ) -> list[tuple[int, float]]:
-        """How what the slew into ``block`` adds to the recorder changes, by
-        segment, were the slew flown as ``slew`` instead of as the block has
-        it: nothing unless the block is a contact."""
         if block is None or slew is None or not block.is_pass:
             return []
-        ledger = self._ledger
-        entry = block.entry
         return [
-            (
-                ledger.ingress_segment(entry, begin=float(slew.slewstart)),
-                ledger.ingress_volume(
-                    entry, begin=float(slew.slewstart), slewtime=float(slew.slewtime)
-                ),
+            *self._ledger.ingress_additions(
+                block.entry, begin=float(slew.slewstart), slewtime=float(slew.slewtime)
             ),
-            (ledger.ingress_segment(entry), -ledger.ingress_volume(entry)),
+            *((s, -v) for s, v in self._ledger.ingress_additions(block.entry)),
         ]
 
     def _battery_ledger(self) -> BatteryLedger:
@@ -525,12 +508,12 @@ class PriorityScheduler:
         """A timeline's energy with the charges its idle sunlit time holds."""
         return self._timeline_energy(self._charged_timeline(list(timeline)))
 
-    def _block_volume(self, block: _Block) -> float:
-        """What a science block puts on the recorder."""
-        return self._ledger.science_volume(block.entry, _collection_seconds(block))
-
-    def _block_segment(self, block: _Block) -> int:
-        return self._ledger.segment(float(block.entry.collection_begin or block.ready))
+    def _block_additions(self, block: _Block) -> list[tuple[int, float]]:
+        return self._ledger.science_additions(
+            block.entry,
+            _collection_seconds(block),
+            float(block.entry.collection_begin or block.ready),
+        )
 
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
         """Record and return the plan for a finished timeline, with its charging."""
@@ -1254,11 +1237,9 @@ class PriorityScheduler:
             candidate = self._fit_in_gap(request, pred, succ, not_before)
             if candidate is not None:
                 block, slew, succ_slew = candidate
-                volume = self._block_volume(block)
-                segment = self._block_segment(block)
                 # With what the slew into a contact after it comes to.
                 additions = [
-                    (segment, volume),
+                    *self._block_additions(block),
                     *self._ingress_deltas(succ, succ_slew),
                 ]
                 if not self._ledger.fits_all(self._volumes, additions):
@@ -1274,10 +1255,8 @@ class PriorityScheduler:
                     battery_low = True
                     continue
                 block, slew, succ_slew = charged
-                volume = self._block_volume(block)
-                segment = self._block_segment(block)
                 additions = [
-                    (segment, volume),
+                    *self._block_additions(block),
                     *self._ingress_deltas(succ, succ_slew),
                 ]
                 if not self._ledger.fits_all(self._volumes, additions):
@@ -1285,7 +1264,9 @@ class PriorityScheduler:
                     continue
                 # _commit adds the contact's change itself.
                 self._commit(index, block, slew, succ, succ_slew)
-                self._volumes = self._ledger.add(self._volumes, segment, volume)
+                self._volumes = self._ledger.add_all(
+                    self._volumes, self._block_additions(block)
+                )
             elif self._can_delay(succ):
                 # The snapshot fitted, but only the one after it was then
                 # unreachable: try again with that one, and any packed behind
@@ -1521,13 +1502,13 @@ class PriorityScheduler:
         #    contact, so they share a segment.
         if not self._worth_cutting(request, gained, moves):
             return None
-        segment = self._block_segment(new_block)
-        extra = self._block_volume(new_block) - sum(
-            self._block_volume(move.old_block) - self._block_volume(move.new_block)
-            for move in moves
-        )
-        # With what the slew into a contact after the run comes to.
-        additions = [(segment, extra), *self._ingress_deltas(after, after_slew)]
+        additions = [
+            *self._block_additions(new_block),
+            *self._ingress_deltas(after, after_slew),
+        ]
+        for move in moves:
+            additions.extend((s, -v) for s, v in self._block_additions(move.old_block))
+            additions.extend(self._block_additions(move.new_block))
         if not self._ledger.fits_all(self._volumes, additions):
             return None
         trial = [*self.timeline[:index], new_block, *(m.new_block for m in moves)]

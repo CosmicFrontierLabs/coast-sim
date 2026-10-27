@@ -410,7 +410,12 @@ class FaultManagement(ConfigModel):
 
         # Check if name is a valid Housekeeping attribute
         valid_housekeeping_fields = set(Housekeeping.model_fields.keys())
-        if name not in valid_housekeeping_fields:
+        if name not in valid_housekeeping_fields and not (
+            len(name.split(".")) == 3
+            and name.startswith("recorders.")
+            and name.endswith(".fill_fraction")
+            and name.split(".")[1]
+        ):
             raise ValueError(
                 f"Threshold name '{name}' is not a valid Housekeeping attribute. "
                 f"Valid predefined fields are: {sorted(valid_housekeeping_fields)}. "
@@ -560,7 +565,11 @@ class FaultManagementRun(FaultManagement):
         thresholds_by_name = {t.name: t for t in self.thresholds}
         values: dict[str, float] = {}
         for name in thresholds_by_name:
-            val = getattr(housekeeping, name, None)
+            if name.startswith("recorders."):
+                _, store, field = name.split(".", 2)
+                val = housekeeping.recorders.get(store, {}).get(field)
+            else:
+                val = getattr(housekeeping, name, None)
             if val is not None:
                 values[name] = float(val)
 

@@ -9,6 +9,7 @@ from .config import MissionConfig
 from .constants import DAY_SECONDS, DTOR
 from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import DataGeneration, HousekeepingData, ScienceData
+from .data_storage import DataStorage, DataStore, DownlinkRoute
 from .fault_management import (
     FaultConstraint,
     FaultEvent,
@@ -82,6 +83,9 @@ __all__ = [
     "DefaultConstraint",
     "HousekeepingData",
     "DataGeneration",
+    "DataStorage",
+    "DataStore",
+    "DownlinkRoute",
     "ScienceData",
     "FaultConstraint",
     "FaultEvent",
