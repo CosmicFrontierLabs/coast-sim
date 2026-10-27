@@ -371,6 +371,30 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``slew_requirements`` (list of :class:`~conops.config.SlewRequirement`, optional): the
+  mission's slew requirement classes, each a ``name``, the widest slew of the class as
+  the great-circle angle between the pointings it joins (``max_great_circle_deg``) and
+  the most such a slew may take, settled (``max_seconds``). A check on the slews the ACS
+  model flies, not a constraint on them: each plan entry records the great-circle angle
+  of its slew (``great_circle_deg``) beside the rotation flown (``slewdist``), which the
+  roll lengthens; the planners log a slew that takes longer than its class allows, a
+  run reports them with ``slew_requirement_mismatches()`` apart from the plan's
+  execution mismatches, and ``print_statistics`` summarises the slews by class with the
+  longest of each and how many broke the allowance
+* ``thermal_settling`` (list of :class:`~conops.config.ThermalSettlingStep`, optional): the
+  settle after a slew by how far the slew moves the Sun's direction in the body frame,
+  since the structure settles thermally after the Sun moves across it. Each step covers
+  changes up to ``max_sun_vector_change_deg`` and gives ``settle_seconds``; a slew takes
+  the settle of the first step wide enough for its change, or the last step's beyond the
+  table. Empty, the settle is ``settle_time`` for every slew. With a table the ACS model's
+  slews and the planners' record the change (``sun_vector_change_deg``) and the settle
+  (``settle_seconds``) on each plan entry and in the slew log; dispatch's slew estimate at
+  selection, the queue's own estimate and the sequential planner's use the same settle, so
+  target selection and the battery and recorder ledgers see the slew's full time, the
+  settle counted at the arrival attitude; an estimate made without the time or a roll takes
+  the table's longest settle. A category with ``skip_thermal_settling`` takes
+  ``settle_time`` (see `observation_categories`_). Bounds on a slew's duration allow for
+  the table's longest settle.
 * ``max_roll_from_optimum_deg`` (float, optional): How far a roll a target asks for
   (``roll_deg`` or ``roll_offset_deg`` on the :class:`~conops.targets.Pointing`) may
   differ from the power-optimal roll, in degrees either way. An offset beyond it is
@@ -1120,7 +1144,8 @@ base merit high enough for its importance.
 * ``config.targets.cadence_weight`` - Merit added once a target's category
   ``cadence_seconds`` has elapsed since it last collected science, rising
   linearly from ``0`` just after a visit. A target never yet observed gets the
-  full weight.
+  full weight. With the weight set, dispatch does not select a target again
+  until a cadence after its last visit, as the planners space visits.
 * ``config.targets.completion_deficit_weight`` - Merit per unit of program
   deficit: the category's ``time_share`` minus the program's delivered share of
   the science collected so far in the run, bounded to ``[-1, 1]``. Programs
@@ -1299,10 +1324,11 @@ or a cleanup/handoff budget longer than the available recharge warning time.
 
 Charging and ground-contact interruptions end the current visit, not the target's
 remaining integration allocation. A target with positive remaining ``exptime``
-stays eligible for later visits, subject to visibility and ``ss_min``. Exhausted
-or explicitly completed targets are not reopened. This does not automatically
-relax ``ss_min`` for a short final remainder, nor reset integration budgets at
-day boundaries.
+stays eligible for later visits, subject to visibility and ``ss_min``, which relaxes
+to the remainder once the target has collected anything, in dispatch and in the
+plans alike; a remainder shorter than the simulation step is rounding, not science,
+and ends the target. Exhausted or explicitly completed targets are not reopened, and
+integration budgets are not reset at day boundaries.
 
 Locked-attitude validation includes the ephemeris samples bracketing the whole
 planned interval, including the first sample at or after a fractional end time.
@@ -1564,6 +1590,25 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
    # Set ephemeris at runtime
    constraint.ephem = ephemeris
 
+A stray-light patch, a region beside the boresight into which a bright body scatters light, is written as a ``rust_ephem`` field-of-view polygon on ``science_constraint``: a :class:`~rust_ephem.constraints.BodyConstraint` for the Sun, Moon or Earth, or a :class:`~rust_ephem.constraints.BrightStarConstraint` for a list of stars, each with the patch as ``fov_polygon`` in the instrument frame (gnomonic degrees; at zero roll +v points north and +u east, and a roll is the position angle of +v east of north). Leave ``roll_deg`` unset so the roll in question is used. The patch turns with the instrument, so where it sits on the sky depends on the roll: the check is applied to science attitudes at their roll, named ``Science`` in the violation names, and the roll optimiser tests the candidate rolls in power order and takes the first that keeps the patch clear, or the power-optimal roll when none does. Charging, safe-mode and idle attitudes take the power-optimal roll regardless.
+
+.. code-block:: python
+
+   from rust_ephem.constraints import BodyConstraint, BrightStarConstraint
+
+   # A 10-degree patch 20 degrees from the boresight towards -u.
+   patch = [(-26.0, -5.0), (-16.0, -5.0), (-16.0, 5.0), (-26.0, 5.0)]
+   constraint = Constraint(
+       sun_constraint=rust_ephem.SunConstraint(min_angle=45.0),
+       science_constraint=(
+           BodyConstraint(body="Sun", fov_polygon=patch)
+           | BodyConstraint(body="Earth", fov_polygon=patch)
+           | BrightStarConstraint(
+               stars=[(101.287, -16.716), (279.235, 38.784)], fov_polygon=patch
+           )
+       ),
+   )
+
 ground_stations
 ~~~~~~~~~~~~~~~
 
@@ -1719,6 +1764,14 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``time_budget_seconds`` (float, optional): The most science the category's targets
+  may collect over a run, counting what they had collected before it. Dispatch does
+  not select a target of a category whose budget leaves less than its minimum
+  snapshot, or a visit of its sequence, and sizes an observation to what is left; the
+  planners cap each snapshot to what the plan leaves and place nothing once less than
+  a minimum snapshot is left, a visit only whole; the long-range allocator gives the
+  category's requests no more than the budget leaves; the category summary reports
+  the budget and the fraction of it the run used
 * ``observation_timing`` (:class:`~conops.config.ObservationTiming`, optional): The
   category's own setup, cleanup and handoff budgets, where they differ from
   ``payload.observation_timing`` (see `Observation Timing Budgets`_)
@@ -1727,6 +1780,53 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   keeps the category's snapshots between repoints (see :doc:`communications`)
 * ``interruptible`` (bool, default ``True``): Whether a Target of Opportunity may cut
   short the category's observations (see :doc:`target_of_opportunity`)
+* ``skip_thermal_settling`` (bool, default ``False``): Whether a slew into one of the
+  category's observations settles for the ACS's ``settle_time`` rather than the thermal
+  settling table's time for its Sun-vector change (see ``thermal_settling`` under
+  `spacecraft_bus`_), for a category that accepts degraded data, such as a Target of
+  Opportunity
+
+Observation groups
+~~~~~~~~~~~~~~~~~~
+
+Beside the categories, ``observation_groups`` (:class:`~conops.config.ObservationGroups`)
+lists named sets of targets observed under one window and one budget, and preferred
+one after another: the targets of one redshift bin or one field. Each
+:class:`~conops.config.ObservationGroup` has:
+
+* ``name`` (str) and ``members`` (list of observation IDs); a target belongs to at most
+  one group
+* ``window_start`` and ``window_deadline`` (Unix seconds, a datetime or an ISO string,
+  optional): the window in which the group's science may begin, which narrows each
+  member's own earliest start and deadline
+* ``time_budget_seconds`` (float, optional): the most science the group's targets may
+  collect together over a run, counting what they had collected before it, applied
+  beside their categories' budgets by dispatch, the planners and the allocator
+* ``prefer_contiguous`` (bool, default ``True``): whether the group's targets are
+  preferred one after another. Dispatch adds ``targets.group_contiguity_weight`` to a
+  member's merit once another member has just been observed, so a member outranked
+  by a target outside the group follows it anyway; the priority-first placement, which
+  seeds the local-search and CP-SAT planners, goes on with the group once it has placed
+  one of its targets. With the weight at 0 dispatch does not prefer them.
+
+.. code-block:: python
+
+   from conops.config import ObservationGroup, ObservationGroups
+
+   config.observation_groups = ObservationGroups(groups=[
+       ObservationGroup(
+           name="bin 0.3-0.5",
+           members=[10021, 10034, 10047],
+           window_start="2029-03-10T00:00:00Z",
+           window_deadline="2029-03-20T00:00:00Z",
+           time_budget_seconds=6 * 3600,
+       ),
+   ])
+   config.targets.group_contiguity_weight = 20.0
+
+The category summary's companion, ``summary_by_group``, reports each group's targets,
+those observed, its visits and science, and its budget and the fraction used (see
+:doc:`visualization`, Reporting).
 
 .. code-block:: python
 
@@ -1788,8 +1888,9 @@ dispatch, so configurations without this section behave as before.
 * local search, for ``local_search`` and ``cp_sat``: ``seed`` (defaults to
   ``random_seed``, which the priority scheduler uses to break ties), ``time_limit``,
   ``max_iterations``, ``earliness_weight``, ``neighborhood``, ``history_length``
-* CP-SAT, for ``cp_sat`` only: ``solver_time_limit``, ``chunk_seconds``, ``workers``,
-  ``max_candidates``
+* CP-SAT, for ``cp_sat`` only: ``solver_time_limit``, ``solver_deterministic_time``
+  (set it, with ``workers: 1`` and a ``seed``, for runs that repeat exactly),
+  ``chunk_seconds``, ``workers``, ``max_candidates``
 * ``replanning`` (:class:`~conops.config.ReplanSettings`): for ``rolling`` mode,
   ``horizon_seconds`` (default one day), ``replan_interval_seconds`` (default 12
   hours), ``commit_lead_time_seconds`` (default 0), ``rapid_replans`` and
@@ -1817,6 +1918,9 @@ See :doc:`planning` for what each mode and scheduler does.
      mode: rolling
      kind: cp_sat
      solver_time_limit: 10
+     solver_deterministic_time: 20
+     workers: 1
+     seed: 7
      time_limit: 5
      replanning:
        horizon_seconds: 43200

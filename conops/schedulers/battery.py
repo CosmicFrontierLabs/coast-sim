@@ -42,6 +42,7 @@ from typing import NamedTuple
 import numpy as np
 
 from ..common.enums import ACSMode, ObsType
+from ..common.numerics import TIME_TOLERANCE_S
 from ..config import MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..config.solar_panel import SolarArrayDriveState
@@ -55,6 +56,10 @@ from .context import Attitude
 
 MIN_CHARGE_SECONDS = 300.0
 """The shortest charge a plan reserves: a charge costs two slews."""
+
+
+_EXCESS_TOLERANCE_WH = 1e-9
+"""An excess over the battery limit below this many watt-hours is none."""
 
 
 class Addition(NamedTuple):
@@ -167,6 +172,10 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         self._generation_cache: dict[
             tuple[float, float, float, float, float], float
         ] = {}
+        self._watts_cache: dict[
+            tuple[ACSMode, bool, tuple[tuple[str, str], ...] | None], float
+        ] = {}
+        """The bus's and payload's draw by mode, eclipse and instrument modes."""
         self._addition_cache: dict[tuple[object, ...], Addition | None] = {}
         """Additions by entry identity and the fields they depend on: a
         scheduler re-slews entries as it places others before them, and reads
@@ -227,6 +236,17 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         return min(max(k, 0), len(self.grid) - 1)
 
     def in_eclipse(self, utime: float) -> bool:
+        """Whether the spacecraft is in eclipse at ``utime``: read from the
+        horizon's grid where ``utime`` is a step of it, as the additions
+        sample it, else asked of the constraint."""
+        eclipse = getattr(self, "eclipse", None)
+        if eclipse is not None and len(self.grid):
+            k = int(round((utime - self.grid[0]) / self.step_size))
+            if (
+                0 <= k < len(eclipse)
+                and abs(float(self.grid[k]) - utime) < TIME_TOLERANCE_S
+            ):
+                return bool(eclipse[k])
         return self.config.constraint.in_eclipse(ra=0.0, dec=0.0, time=utime)
 
     def sunlit_runs(self, begin: float, end: float) -> list[tuple[float, float]]:
@@ -245,12 +265,23 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
 
     def _watts(self, mode: ACSMode, in_eclipse: bool, modes: Modes = None) -> float:
         """The bus's and payload's draw in ``mode``, in watts, the
-        instruments in ``modes`` during an observation."""
-        return self.config.spacecraft_bus.power(
+        instruments in ``modes`` during an observation. Asked at every step
+        of every addition, so remembered by mode, eclipse and modes."""
+        key = (
+            mode,
+            in_eclipse,
+            None if modes is None else tuple(sorted(modes.items())),
+        )
+        cached = self._watts_cache.get(key)
+        if cached is not None:
+            return cached
+        watts = self.config.spacecraft_bus.power(
             mode.value, in_eclipse=in_eclipse
         ) + self.config.payload.power(
             mode.value, in_eclipse=in_eclipse, instrument_modes=modes
         )
+        self._watts_cache[key] = watts
+        return watts
 
     def _integrate(
         self, begin: float, end: float, watts_at: Callable[[float], float]
@@ -430,8 +461,12 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         path_start: Attitude | None = None,
         track: Callable[[float], tuple[float | None, float | None, float]]
         | None = None,
+        path_at: Callable[[Sequence[float]], Sequence[Attitude]] | None = None,
     ) -> Addition | None:
         """What a plan entry adds to the deficit over its span, or None if nothing.
+
+        ``path_at`` samples the slew's path at several times together, as
+        :meth:`Slew.attitudes` does, in place of ``path`` one by one.
 
         Every step draws its mode's power less what the panels generate at the
         attitude held then: along the slew's ``path`` from ``path_start``
@@ -485,8 +520,19 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             else (float(entry.ra), float(entry.dec), float(entry.roll))
         )
 
+        sampled: dict[float, Attitude] = {}
+        if path is not None and path_at is not None and arrival > begin:
+            times = [float(step) for step in self.steps(begin, min(arrival, braking))]
+            sampled = {
+                utime: (float(ra), float(dec), float(roll))
+                for utime, (ra, dec, roll) in zip(times, path_at(times), strict=True)
+            }
+
         def attitude_at(utime: float) -> Attitude | None:
             if utime < arrival:
+                known = sampled.get(utime)
+                if known is not None:
+                    return known
                 if path is None:
                     return None
                 ra, dec, roll = path(utime)
@@ -635,14 +681,65 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
     ) -> tuple[tuple[float, ...], Angles]:
         """An addition's energy step by step from ``angles``, in Wh, and the
         drive angles it leaves."""
+        if not self.driven:
+            return self._deltas_held(begin, profile), angles
         deltas = []
         utime = self._first_step(begin)
+        # The steps are the grid's from the first: eclipse is read along it.
+        k = self.index(utime)
+        on_grid = (
+            len(self.grid) > 0 and abs(float(self.grid[k]) - utime) < TIME_TOLERANCE_S
+        )
         for mode, attitude, modes in profile:
             watts, angles = self._step_generation(utime, mode, attitude, angles)
-            draw = self._watts(mode, self.in_eclipse(utime), modes) - watts
+            eclipse = (
+                bool(self.eclipse[k])
+                if on_grid and k < len(self.eclipse)
+                else self.in_eclipse(utime)
+            )
+            draw = self._watts(mode, eclipse, modes) - watts
             deltas.append(draw * self.step_size / 3600.0)
             utime += self.step_size
+            k += 1
         return tuple(deltas), angles
+
+    def _deltas_held(self, begin: float, profile: _Profile) -> tuple[float, ...]:
+        """An addition's energy step by step where nothing is driven: the
+        panels' power at every step with a known attitude is computed
+        together, as it is sample by sample with a drive."""
+        count = len(profile)
+        if count == 0:
+            return ()
+        first = self._first_step(begin)
+        times = first + self.step_size * np.arange(count, dtype=np.float64)
+        k = self.index(first)
+        on_grid = (
+            len(self.grid) > 0
+            and abs(float(self.grid[k]) - first) < TIME_TOLERANCE_S
+            and k + count <= len(self.eclipse)
+        )
+        eclipse = (
+            self.eclipse[k : k + count].astype(bool)
+            if on_grid
+            else np.array([self.in_eclipse(float(t)) for t in times], dtype=bool)
+        )
+        known = [
+            i for i, (_, attitude, _) in enumerate(profile) if attitude is not None
+        ]
+        watts = np.zeros(count, dtype=np.float64)
+        if known:
+            watts[known] = self.config.solar_panel.power_held_at(
+                [float(times[i]) for i in known],
+                [profile[i][1] for i in known],  # type: ignore[misc]
+                self.ephem,
+                [bool(eclipse[i]) for i in known],
+            )
+        return tuple(
+            (self._watts(mode, bool(eclipse[i]), modes) - float(watts[i]))
+            * self.step_size
+            / 3600.0
+            for i, (mode, _, modes) in enumerate(profile)
+        )
 
     def driven_deltas(
         self, addition: Addition, angles: Angles
@@ -815,7 +912,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         worth trying. It is a hint: whether a charge then fits is for the
         scheduler to find out.
         """
-        if self.limit is None or excess <= 1e-9:
+        if self.limit is None or excess <= _EXCESS_TOLERANCE_WH:
             return None
         at_start = self.level_at(planned, addition.begin)
         if at_start - excess < self.recharge_floor:

@@ -25,6 +25,26 @@ class TestSnapshotMinimum:
         assert snapshot_min_seconds(target) == 600.0, "only the remainder is left"
         assert target.snapshot_min_seconds == 600.0
 
+    def test_a_remainder_shorter_than_the_step_is_rounding(self) -> None:
+        """An exposure a second over two snapshots: the second's record ends
+        the target at the simulation step, and had it not, the remainder
+        would get no snapshot of its own."""
+        config = _config(HOURS)
+        target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
+        target.exptime = 2401.0
+        target.record_collection(T0 + 1200, 1200.0, step=60.0)
+        assert target.exptime == 1201.0
+        assert not target.done
+        target.record_collection(T0 + 2400, 1200.0, step=60.0)
+        assert target.exptime == 0
+        assert target.done
+        leftover = _target(config, 2, 105.0, 10.0, minutes=40, snapshot=20)
+        leftover.exptime = 2401.0
+        leftover.record_collection(T0 + 2400, 2400.0)
+        assert leftover.exptime == 1.0
+        assert snapshot_min_seconds(leftover) == 1.0
+        assert snapshot_min_seconds(leftover, 60.0) == 1200.0
+
     def test_an_open_ended_target_keeps_its_minimum(self) -> None:
         config = _config(HOURS)
         target = _target(config, 1, 105.0, 10.0, minutes=50, snapshot=20)
@@ -49,6 +69,24 @@ class TestDispatch:
         assert queued.done
         snapshots = [e for e in ditl.plan if e.obstype.name == "AT"]
         assert len(snapshots) == 3
+
+    def test_a_remainder_shorter_than_the_step_ends_the_target(self) -> None:
+        """A twenty-minute snapshot of an exposure a second longer: the
+        second is rounding, so the target is done after one snapshot and
+        is not revisited for it."""
+        config = _config(HOURS)
+        target = _target(config, 1, 105.0, 10.0, minutes=20, snapshot=20)
+        target.exptime = 20 * MIN + 1.0
+        ditl = create_ditl(config, [target], BEGIN, BEGIN + timedelta(hours=HOURS))
+        ditl.step_size = 60
+        assert isinstance(ditl, QueueDITL)
+        assert ditl.calc()
+
+        queued = ditl.queue.targets[0]
+        assert queued.collected_seconds == 1200.0
+        assert queued.done
+        snapshots = [e for e in ditl.plan if e.obstype.name == "AT"]
+        assert len(snapshots) == 1
 
     def test_an_interrupted_target_is_revisited_for_its_remainder(self) -> None:
         """A single thirty-minute snapshot cut short by a ToO after some

@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from ...ditl.ditl_mixin import DITLMixin
 
 
+_PIE_PARTS_WITH_AUTOTEXTS = 3
+"""A pie chart returns wedges, labels and, with percentages, their texts."""
+
+
 def plot_acs_mode_distribution(
     ditl: "DITLMixin",
     figsize: tuple[float, float] = (10, 8),
@@ -93,7 +97,11 @@ def plot_acs_mode_distribution(
         textprops={"fontsize": label_font_size, "fontfamily": font_family},
     )
     # Matplotlib returns a tuple in 3.10 and a PieContainer in 3.11+.
-    autotexts = pie_res[2] if isinstance(pie_res, tuple) and len(pie_res) > 2 else []
+    autotexts = (
+        pie_res[2]
+        if isinstance(pie_res, tuple) and len(pie_res) >= _PIE_PARTS_WITH_AUTOTEXTS
+        else []
+    )
     ax.set_title(
         "Percentage of Time Spent in Each ACS Mode", fontproperties=title_prop, pad=20
     )

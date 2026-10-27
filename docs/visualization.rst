@@ -32,11 +32,22 @@ The following plotting functions are available under `conops.visualization`:
   power, and observation IDs from telemetry data.
 - `plot_data_management_telemetry()` — recorder volume, fill fraction, generated/downlinked data, and alerts from telemetry data.
 - `plot_acs_mode_distribution()` — pie chart showing the distribution of time spent in each ACS mode from telemetry data.
-- `plot_ditl_timeline()` — timeline with orbit numbers, observations, slews, SAA, and eclipses.
+- `plot_ditl_timeline()` — timeline with orbit numbers, observations, slews, scheduled activities (thruster momentum dumps on their own, as ``Momentum Dump``), SAA, and eclipses; a sequence visit's steps are hatched over their observation and an antenna repoint during an observation is marked where it happens.
 - `plot_sky_pointing()` — an interactive Mollweide sky projection with current pointing and constraints.
 - `save_sky_pointing_movie()` — export the entire DITL sky pointing visualization as a movie (MP4, AVI, or GIF).
 - `plot_spacecraft_3d()` — rotatable 3-D spacecraft model built directly from a ``MissionConfig`` (no simulation required).
   See :doc:`spacecraft_3d_visualization` for full details.
+
+Reporting
+---------
+
+A finished simulation reports on itself through its statistics, printed by ``print_statistics()`` and available as data:
+
+- ``summary_by_category()`` — one :class:`~conops.ditl.ditl_stats.CategorySummary` per observation category that collected science: the program, the targets observed, the visits taken (a snapshot, or one visit of a sequence, each), the science and slew hours, the degrees slewed into its visits, its share of the run's science time, and the fraction the category's ``time_share`` allocates where it sets one. There is one row per configured category, in their order, a category that collected nothing included with zeros. The printed ``SCIENCE BY CATEGORY`` table shows the share against the allocation.
+- ``summary_by_group()`` — one :class:`~conops.ditl.ditl_stats.GroupSummary` per observation group (see :doc:`configuration`, Observation groups), in the configuration's order: its targets, those observed, its visits and science hours, and its time budget with the fraction the run used and its window where it sets them. Empty without groups. The printed ``SCIENCE BY GROUP`` table follows the category table.
+- ``slew_class_summary()`` — one :class:`~conops.simulation.slew_requirements.SlewClassSummary` per slew requirement class of the ACS (see :doc:`configuration`), in the table's order: the slews that fall in it by great-circle angle, the longest of them settled, and how many took longer than the class allows; a last row for slews wider than the widest class. Empty without a table. The printed ``SLEWS BY REQUIREMENT CLASS`` table follows the group table.
+- ``visit_table()`` — one :class:`~conops.ditl.ditl_stats.VisitRecord` per visit: the target, its category, the visit window where the target has windows and when the visit collected within it, the science collected, the slew into it and its roll, and a status of ``complete``, ``cut`` where the visit collected less than planned (less a step), or ``missed`` for a window with no visit. Every attempt is a row, so a visit cut short and taken again within its window is two; ``per_window=True`` gives one row per window, its verdict, with the attempts the visit took. The run's own requests give the windows; pass ``targets`` to use another set. The printed ``VISITS IN WINDOWS`` table lists the verdict per window for targets with windows.
+- ``instrument_mode_hours()`` — hours each instrument with modes spent in each mode, printed as ``INSTRUMENT MODE HOURS``.
 
 Examples and advanced usage
 ---------------------------

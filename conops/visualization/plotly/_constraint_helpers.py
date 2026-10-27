@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
+from ...common.numerics import ROUNDOFF
 from ...config.constants import EARTH_OCCULT, MOON_OCCULT, PANEL_CONSTRAINT, SUN_OCCULT
 from ...config.star_tracker import StarTracker
 from ._helpers import (
@@ -85,7 +86,7 @@ def resolve_constraint_plot_config(
         if _b is not None:
             _bv = np.asarray(_b, dtype=np.float64)
             _bn = np.linalg.norm(_bv)
-            if _bn > 1e-12:
+            if _bn > ROUNDOFF:
                 _bv = _bv / _bn
             st_boresight_offsets.append(
                 float(np.degrees(np.arccos(np.clip(_bv[0], -1.0, 1.0))))
@@ -335,7 +336,7 @@ def build_tail_constraint_traces(
     if cc.orbit_constraint is not None and cc.gcrs_vel is not None:
         v = cc.gcrs_vel[ei].copy()
         v_n = np.linalg.norm(v)
-        if v_n > 1e-12:
+        if v_n > ROUNDOFF:
             v = v / v_n
         ram_ra_deg = (np.degrees(np.arctan2(v[1], v[0])) + 360.0) % 360.0
         ram_dec_deg = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))

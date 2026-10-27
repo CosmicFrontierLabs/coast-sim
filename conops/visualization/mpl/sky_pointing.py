@@ -23,12 +23,19 @@ from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
 
 from ...common import dtutcfromtimestamp
+from ...common.numerics import ROUNDOFF
 from ...config import DTOR
 from ...config.observation_categories import ObservationCategories
 from ...config.visualization import VisualizationConfig
 
 if TYPE_CHECKING:
     from ...ditl import DITL, QueueDITL
+
+
+_MARKER_SIZE_BY_OBSID = ((1_000_000, 100), (20_000, 60), (10_000, 40))
+"""Marker sizes by the lowest obsid they apply to, largest first: Targets of
+Opportunity, then two tiers of pre-planned targets."""
+_DEFAULT_MARKER_SIZE = 40
 
 
 def _get_visualization_config(
@@ -556,7 +563,7 @@ class SkyPointingController:
         ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         y0 = np.cross(ref, x_hat)
         y0_norm = np.linalg.norm(y0)
-        if y0_norm < 1e-12:
+        if y0_norm < ROUNDOFF:
             ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
             y0 = np.cross(ref, x_hat)
             y0_norm = np.linalg.norm(y0)
@@ -594,7 +601,7 @@ class SkyPointingController:
             b = np.asarray(boresight, dtype=np.float64)
             v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
             v_norm = np.linalg.norm(v_st)
-            if v_norm < 1e-12:
+            if v_norm < ROUNDOFF:
                 continue
             v_st = v_st / v_norm
 
@@ -822,14 +829,16 @@ class SkyPointingController:
                 # Size by observation type or ID
                 if hasattr(ppt, "obsid"):
                     # Use obsid to determine size
-                    if ppt.obsid >= 1000000:
-                        sizes.append(100)
-                    elif ppt.obsid >= 20000:
-                        sizes.append(60)
-                    elif ppt.obsid >= 10000:
-                        sizes.append(40)
-                    else:
-                        sizes.append(40)
+                    sizes.append(
+                        next(
+                            (
+                                size
+                                for floor, size in _MARKER_SIZE_BY_OBSID
+                                if ppt.obsid >= floor
+                            ),
+                            _DEFAULT_MARKER_SIZE,
+                        )
+                    )
                 else:
                     sizes.append(40)
 
@@ -1155,7 +1164,7 @@ class SkyPointingController:
         ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         y0 = np.cross(ref, x_hat)
         y0_norm = np.linalg.norm(y0, axis=1)
-        pole_mask = y0_norm < 1e-12
+        pole_mask = y0_norm < ROUNDOFF
         if np.any(pole_mask):
             alt_ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
             y0[pole_mask] = np.cross(alt_ref, x_hat[pole_mask])
@@ -1278,7 +1287,7 @@ class SkyPointingController:
         y0_norm = np.linalg.norm(y0, axis=1)
 
         # Near poles, use alternate reference to avoid degeneracy.
-        pole_mask = y0_norm < 1e-12
+        pole_mask = y0_norm < ROUNDOFF
         if np.any(pole_mask):
             alt_ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
             y0[pole_mask] = np.cross(alt_ref, x_hat[pole_mask])

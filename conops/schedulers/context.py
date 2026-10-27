@@ -13,8 +13,9 @@ from datetime import datetime
 import numpy as np
 import rust_ephem
 
-from ..common import ACSMode, ObsType
+from ..common import ACSMode, ObsType, dtutcfromtimestamp
 from ..common.enums import SlewAlgorithm
+from ..common.numerics import MIN_SAMPLES
 from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..config.observation_timing import ObservationTiming, timing_for
@@ -79,6 +80,12 @@ class SchedulingContext:
         config.spacecraft_bus.radiators.set_ephem(ephem)
         self.config = config
         self.ephem: rust_ephem.Ephemeris = ephem
+        # Nothing can be planned, or checked, past the ephemeris's last
+        # sample: a horizon that reaches further ends there.
+        last_sample = ephem.timestamp[-1]
+        self.ephem_end = float(last_sample.timestamp())
+        if end.timestamp() > self.ephem_end:
+            end = last_sample
         self.begin = begin
         self.end = end
         self.ustart = begin.timestamp()
@@ -101,19 +108,37 @@ class SchedulingContext:
         """Targets' own budgets, by obsid, in place of their categories'."""
         self._initial_acs: ACS | None = None
         self._initial_attitudes: list[Attitude] = []
-        # Quaternion slews do not depend on when they start, so one slew per
-        # attitude pair is computed and re-timed for each start.
+        # A quaternion slew's path does not depend on when it starts, so one
+        # slew per attitude pair is predicted and retimed for each start: its
+        # settle follows the Sun where a thermal settling table is configured.
+        # A constraint-avoiding path is decided at the slew's start rounded
+        # to the ephemeris step, so it is predicted once per pair and step.
         self._slew_cache: dict[
-            tuple[Attitude, Attitude, ObsType, int, float], Slew
+            tuple[Attitude, Attitude, ObsType, int, float, float | None], Slew
         ] = {}
+        attitude_control = config.spacecraft_bus.attitude_control
+        self._time_independent_paths = (
+            attitude_control.slew_algorithm == SlewAlgorithm.QUATERNION
+        )
         self.slew_rate_fractions: dict[int, float] = {}
         """The fraction of the configured slew rates the slew into each
         target is flown at, by obsid, where a planner found its momentum
         does not fit the wheels at full rate; full rate where unset."""
-        self._time_independent_slews = (
-            config.spacecraft_bus.attitude_control.slew_algorithm
-            == SlewAlgorithm.QUATERNION
+        self._avoiding_paths = (
+            attitude_control.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING
         )
+        self._window_cache: dict[
+            tuple[int, float, float, str | None, str | None], list[tuple[float, float]]
+        ] = {}
+        """Targets' visibility windows by obsid, pointing, step and
+        instrument: a visit's step pointings are asked for again at every
+        selection of a window."""
+        self._hold_cache: dict[
+            tuple[Attitude, float, float, ACSMode], float | None
+        ] = {}
+        """Where a held attitude first violates a mode over a span, by the
+        span: a gap is searched for many requests, each from the attitude
+        held before it."""
 
     # ── Step grid ─────────────────────────────────────────────────────────
 
@@ -128,8 +153,11 @@ class SchedulingContext:
         return self.origin + float(steps) * self.step_size
 
     def steps(self, begin: float, end: float) -> np.ndarray:
-        """Return the grid steps in ``[begin, end)``."""
+        """Return the grid steps in ``[begin, end)``, within the ephemeris:
+        a slew or a hold that reaches past its last sample is checked up to
+        it, since the ephemeris has nothing beyond."""
         first = self.ceil_step(begin)
+        end = min(end, self.ephem_end + 1e-6)
         if first >= end:
             return np.empty(0)
         return np.arange(first, end, self.step_size, dtype=float)
@@ -203,26 +231,50 @@ class SchedulingContext:
     ) -> Slew:
         """Return the slew ACS would fly between two attitudes from ``slewstart``."""
         fraction = self.slew_rate_fractions.get(int(obsid), 1.0)
-        key = (start, end, obstype, obsid, fraction)
-        cached = self._slew_cache.get(key) if self._time_independent_slews else None
-        if cached is not None:
-            return cached.model_copy(
-                update={
-                    "slewrequest": slewstart,
-                    "slewstart": slewstart,
-                    "slewend": slewstart + cached.slewtime,
-                }
+        key: tuple[Attitude, Attitude, ObsType, int, float, float | None] | None = None
+        if self._time_independent_paths:
+            key = (start, end, obstype, obsid, fraction, None)
+        elif self._avoiding_paths:
+            # The path's constraint checks are made at the start rounded to
+            # the ephemeris step (see Slew._predict_slew_constraint_avoiding).
+            key = (
+                start,
+                end,
+                obstype,
+                obsid,
+                fraction,
+                self.ephem.timestamp[
+                    self.ephem.index(dtutcfromtimestamp(slewstart))
+                ].timestamp(),
             )
-        slew = Slew(config=self.config)
-        slew.slewrequest = slewstart
-        slew.slewstart = slewstart
-        slew.startra, slew.startdec, slew.startroll = start
-        slew.endra, slew.enddec, slew.endroll = end
-        slew.obstype = obstype
-        slew.obsid = obsid
-        slew.rate_fraction = fraction
+        cached = self._slew_cache.get(key) if key is not None else None
+        if cached is not None:
+            retimed = cached.model_copy()
+            retimed.retime(slewstart)
+            return retimed
+        # Built without validation: validating a slew validates the mission
+        # configuration it holds again, which costs more than the slew, and
+        # a scheduler builds tens of thousands. The fields a validated slew
+        # derives from its configuration are given directly.
+        slew = Slew.model_construct(
+            config=self.config,
+            ephem=self.ephem,
+            constraint=self.config.constraint,
+            acs_config=self.config.spacecraft_bus.attitude_control,
+            slewrequest=slewstart,
+            slewstart=slewstart,
+            startra=start[0],
+            startdec=start[1],
+            startroll=start[2],
+            endra=end[0],
+            enddec=end[1],
+            endroll=end[2],
+            obstype=obstype,
+            obsid=obsid,
+            rate_fraction=fraction,
+        )
         slew.calc_slewtime()
-        if self._time_independent_slews:
+        if key is not None:
             self._slew_cache[key] = slew
             return slew.model_copy()
         return slew
@@ -266,27 +318,37 @@ class SchedulingContext:
         self, attitude: Attitude, begin: float, end: float, mode: ACSMode
     ) -> float | None:
         """Return the first step in ``[begin, end)`` where a held attitude violates ``mode``."""
-        for utime in self.steps(begin, end):
-            if self.attitude_violation(attitude, float(utime), mode) is not None:
-                return float(utime)
-        return None
+        key = (attitude, begin, end, mode)
+        if key in self._hold_cache:
+            return self._hold_cache[key]
+        violation = None
+        times = [float(utime) for utime in self.steps(begin, end)]
+        with self.config.constraint.held_over(times):
+            for utime in times:
+                if self.attitude_violation(attitude, utime, mode) is not None:
+                    violation = utime
+                    break
+        self._hold_cache[key] = violation
+        return violation
 
     def first_science_violation(
         self, entry: PlanEntry, attitude: Attitude, begin: float, end: float
     ) -> float | None:
         """Return the first step in ``[begin, end)`` where observing ``entry`` is not allowed."""
-        for utime in self.steps(begin, end):
-            if self.science_violation(entry, attitude, float(utime)) is not None:
-                return float(utime)
+        times = [float(utime) for utime in self.steps(begin, end)]
+        with self.config.constraint.held_over(times):
+            for utime in times:
+                if self.science_violation(entry, attitude, utime) is not None:
+                    return utime
         return None
 
     def first_slew_violation(self, slew: Slew, mode: ACSMode) -> float | None:
         """Return the first step during a slew where its path violates ``mode``."""
-        for utime in self.steps(slew.slewstart, slew.slewend):
-            sample = slew.attitude(float(utime))
+        times = [float(utime) for utime in self.steps(slew.slewstart, slew.slewend)]
+        for utime, sample in zip(times, slew.attitudes(times), strict=True):
             attitude = (float(sample[0]), float(sample[1]), float(sample[2]))
-            if self.attitude_violation(attitude, float(utime), mode) is not None:
-                return float(utime)
+            if self.attitude_violation(attitude, utime, mode) is not None:
+                return utime
         return None
 
     def visibility_windows(self, target: PlanEntry) -> list[tuple[float, float]]:
@@ -296,6 +358,16 @@ class SchedulingContext:
         them before checking a specific roll. A mounted instrument's windows
         follow its science line of sight, not the body attitude.
         """
+        key = (
+            int(target.obsid),
+            float(target.ra),
+            float(target.dec),
+            getattr(target, "step", None),
+            target.instrument_name,
+        )
+        cached = self._window_cache.get(key)
+        if cached is not None:
+            return list(cached)
         constraint = (
             target.roll_independent_visibility_constraint()
             if target.constraint is not None
@@ -314,7 +386,9 @@ class SchedulingContext:
                 (window.start_time.timestamp(), window.end_time.timestamp())
                 for window in result.visibility
             ]
-        return self.without_repoints(target, windows)
+        windows = self.without_repoints(target, windows)
+        self._window_cache[key] = list(windows)
+        return windows
 
     def without_repoints(
         self, target: PlanEntry, windows: list[tuple[float, float]]
@@ -474,7 +548,7 @@ def tracking_rest(
     samples = tracking_samples(gspass, profile, acquire)
     if not samples:
         return None
-    if len(samples) < 2:
+    if len(samples) < MIN_SAMPLES:
         # A single sample is held, not tracked, so there is nothing to brake.
         return float(gspass.end), samples[-1][1]
     try:

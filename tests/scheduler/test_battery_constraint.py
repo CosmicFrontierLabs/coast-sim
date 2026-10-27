@@ -93,6 +93,48 @@ def _ledger(config: MissionConfig, start_deficit: float = 0.0) -> BatteryLedger:
     )
 
 
+def test_eclipse_at_a_grid_step_is_read_from_the_horizon() -> None:
+    """The ledger samples eclipse at its grid steps, which it holds for the
+    horizon; a time off the grid is asked of the constraint."""
+    config = _battery_config()
+    ledger = _ledger(config)
+    for step in ledger.grid[:: max(1, len(ledger.grid) // 20)]:
+        assert ledger.in_eclipse(float(step)) == config.constraint.in_eclipse(
+            ra=0.0, dec=0.0, time=float(step)
+        )
+    off = float(ledger.grid[1]) + 7.0
+    assert ledger.in_eclipse(off) == config.constraint.in_eclipse(
+        ra=0.0, dec=0.0, time=off
+    )
+
+
+def test_an_addition_sampled_along_its_slew_together_matches() -> None:
+    """A science entry's addition with the slew's path sampled at all of
+    its steps together equals the addition sampled one step at a time."""
+    config = _battery_config()
+    entry = _science_entry(config, T0 + 600.0, 20)
+    ctx = SchedulingContext(
+        config, BEGIN, BEGIN + timedelta(hours=HOURS), step_size=STEP
+    )
+    slew = ctx.slew(
+        (0.0, 0.0, 0.0),
+        (float(entry.ra), float(entry.dec), float(entry.roll)),
+        float(entry.begin),
+        obsid=1,
+    )
+    entry.slewtime = int(slew.slewtime)
+    entry.collection_begin = float(entry.begin) + slew.slewtime + 30.0
+    start = (float(slew.startra), float(slew.startdec), float(slew.startroll))
+    one_by_one = _ledger(config).addition(entry, path=slew.attitude, path_start=start)
+    together = _ledger(config).addition(
+        entry, path=slew.attitude, path_start=start, path_at=slew.attitudes
+    )
+    assert one_by_one is not None and together is not None
+    assert len(one_by_one.deltas) > 2
+    assert together.deltas == pytest.approx(one_by_one.deltas, abs=1e-9)
+    assert together.amount == pytest.approx(one_by_one.amount, abs=1e-9)
+
+
 def _empty(ledger: BatteryLedger) -> tuple[tuple[Addition, ...], ...]:
     return tuple(() for _ in range(ledger.segments))
 

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import (
     Field,
@@ -23,6 +24,7 @@ from .visits import VisitWindow
 class Pointing(PlanEntry):
     """Define the basic parameters of an observing target with visibility checking."""
 
+    kind: Literal["pointing"] = Field(default="pointing")  # type: ignore[assignment]
     obsid: int = 0
     name: str = "FakeTarget"
     merit: float = 100.0
@@ -294,16 +296,25 @@ class Pointing(PlanEntry):
         return self.deadline
 
     def record_collection(
-        self, utime: float, seconds: float, *, visit: int | None = None
+        self,
+        utime: float,
+        seconds: float,
+        *,
+        visit: int | None = None,
+        step: float = 0.0,
     ) -> None:
         """Credit ``seconds`` of science collected up to ``utime``, to the
         window of ``visit`` where given, else to the window the collection
         began in: a visit that runs past the next window's start is still
-        its own window's."""
-        super().record_collection(utime, seconds)
+        its own window's. A remainder shorter than ``step`` ends the target
+        (see :meth:`PlanEntry.record_collection`)."""
+        super().record_collection(utime, seconds, step=step)
         if self._visit_parent is not None:
             self._visit_parent.record_collection(
-                utime, seconds, visit=visit if visit is not None else self.visit
+                utime,
+                seconds,
+                visit=visit if visit is not None else self.visit,
+                step=step,
             )
         if seconds > 0 and self.visit_windows:
             index = (
@@ -630,6 +641,7 @@ class MovingPointing(Pointing):
     ephemeris, from JPL Horizons or a SPICE kernel, when its visibility is
     first computed."""
 
+    kind: Literal["moving_pointing"] = Field(default="moving_pointing")  # type: ignore[assignment]
     body: str | None = Field(
         default=None,
         exclude_if=lambda v: v is None,

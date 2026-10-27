@@ -16,13 +16,9 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import Field, model_validator
 
+from ..common.numerics import NEGLIGIBLE_NORM, UNIT_MAGNITUDE_TOLERANCE
 from ..common.vector import quaternion_rotate_vector, rotation_matrix_to_quaternion
 from ._base import ConfigModel
-
-NEGLIGIBLE_NORM = 1e-15
-"""A vector norm below this is treated as zero."""
-UNIT_MAGNITUDE_TOLERANCE = 0.01
-"""How far from 1 a unit vector's magnitude may be."""
 
 if TYPE_CHECKING:
     from .instrument import InstrumentMounting
@@ -31,6 +27,9 @@ Vector = tuple[float, float, float]
 
 ORTHOGONALITY_TOLERANCE = 1e-6
 """The largest cosine between the frame's two axes accepted as perpendicular."""
+
+IDENTITY_TOLERANCE = 1e-12
+"""How far each axis may lie from the canonical frame's and still count as it."""
 
 
 def _unit(value: Vector, name: str) -> npt.NDArray[np.float64]:
@@ -98,8 +97,17 @@ class SpacecraftFrame(ConfigModel):
 
     @property
     def is_identity(self) -> bool:
-        """Whether the frame is the canonical one."""
-        return bool(np.allclose(self.body_from_canonical, np.eye(3), atol=1e-12))
+        """Whether the frame is the canonical one. Read on every validation
+        of a mission configuration, so it compares the axes as given rather
+        than building the rotation."""
+        return all(
+            abs(float(axis[k]) - canonical[k]) <= IDENTITY_TOLERANCE
+            for axis, canonical in (
+                (self.boresight, (1.0, 0.0, 0.0)),
+                (self.sun_side, (0.0, 1.0, 0.0)),
+            )
+            for k in range(3)
+        )
 
     def body_vector(self, canonical: Vector) -> Vector:
         """A vector written in the canonical frame, in the body frame."""

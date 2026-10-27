@@ -24,6 +24,9 @@ from .plan_entry import PlanEntry
 
 ACTIVITY_OBSID = 998000
 """Obsids given to activities without one, in order."""
+CHARGE_OBSID = 999000
+"""The first obsid of the charging holds a planner reserves. Science obsids
+lie below the synthetic ones."""
 DESATURATION_OBSID = 997000
 """Obsids given to the thruster dumps dispatch calls for, in order."""
 

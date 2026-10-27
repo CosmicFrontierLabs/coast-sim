@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..common import find_boundaries, ics_date_conv, unixtime2date
 from ..common.enums import ACSMode, AntennaType, ObsType, SlewAlgorithm
+from ..common.numerics import FULL_TURN_DEG, HALF_TURN_DEG, MIN_SAMPLES, ROUNDOFF
 from ..common.vector import (
     attitude_for_body_vector_tracking,
     attitude_to_quat,
@@ -43,6 +44,9 @@ LEGACY_GSP_ANTENNA_BODY_VECTOR = (-1.0, 0.0, 0.0)
 _TRACKING_PATH_COST_DECIMALS = 9
 
 
+_MINUTES_PER_HOUR = 60.0
+
+
 def _tracking_path_cost_key(
     max_step: float,
     total_step: float,
@@ -72,7 +76,7 @@ def _cached_pass_attitude_delta(
 
 def _unit_vector_or_none(vector: np.ndarray) -> np.ndarray | None:
     norm = float(np.linalg.norm(vector))
-    if norm < 1e-12:
+    if norm < ROUNDOFF:
         return None
     return vector / norm
 
@@ -187,7 +191,7 @@ class Pass(BaseModel):
         now = time.time()
         timetopass = (self.begin - now) / 60.0
 
-        if timetopass < 60.0:
+        if timetopass < _MINUTES_PER_HOUR:
             timetopassstring = "%.0f mins " % timetopass
         else:
             timetopassstring = "%.1f hours" % (timetopass / 60.0)
@@ -746,10 +750,10 @@ class PassTimes(ContactScheduler):
             self.config.spacecraft_bus.attitude_control.gsp_tracking_phase_step_deg
         )
         offset = phase_step_deg
-        while offset <= 180.0:
+        while offset <= HALF_TURN_DEG:
             candidates.append(float(offset))
-            if offset < 180.0:
-                candidates.append(float(360.0 - offset))
+            if offset < HALF_TURN_DEG:
+                candidates.append(float(FULL_TURN_DEG - offset))
             offset += phase_step_deg
         return candidates
 
@@ -886,7 +890,7 @@ class PassTimes(ContactScheduler):
         Current pass-ingress slews arrive at rest. Only the first knot inherits
         that boundary rate; internal tracking knots do not stop.
         """
-        if len(profile) < 2:
+        if len(profile) < MIN_SAMPLES:
             return True
         try:
             AttitudeTrajectory.tracking(

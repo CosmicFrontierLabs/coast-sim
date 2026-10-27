@@ -16,6 +16,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.ephemeris import position_vectors
+from ..common.numerics import ANGLE_TOLERANCE_DEG
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -649,6 +650,16 @@ class DITL(DITLMixin, DITLStats):
                 and attitude-rate mismatches. Empty when the plan executed as
                 written.
         """
+        return self._plan_validator().validate()
+
+    def slew_requirement_mismatches(self) -> list[PlanExecutionMismatch]:
+        """The slews of the executed plan that took longer than their
+        requirement class allows (``attitude_control.slew_requirements``);
+        empty without a table. A report, not a fault: the run completes."""
+        return self._plan_validator().slew_requirement_mismatches()
+
+    def _plan_validator(self) -> PlanExecutionValidator:
+        """Build a validator over this run's plan and executed telemetry."""
         return PlanExecutionValidator(
             config=self.config,
             plan=self.plan,
@@ -675,7 +686,7 @@ class DITL(DITLMixin, DITLStats):
                 for violation in self._attitude_rate_violations()
             ],
             science_obstypes=PLAN_SCIENCE_OBSTYPES,
-        ).validate()
+        )
 
     def _credit_collection(self, entry: PlanEntry, start: float, stop: float) -> None:
         """Hook called for each step that collects science for ``entry``.
@@ -887,7 +898,7 @@ class DITL(DITLMixin, DITLStats):
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
         )
-        if distance > 1e-6:
+        if distance > ANGLE_TOLERANCE_DEG:
             self.acs._enqueue_slew(
                 entry.ra,
                 entry.dec,
@@ -1009,8 +1020,9 @@ class DITL(DITLMixin, DITLStats):
             ra, dec, roll = acquired
             if (
                 angular_separation(ra, dec, entry.track_start_ra, entry.track_start_dec)
-                <= 1e-6
-                and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0) <= 1e-6
+                <= ANGLE_TOLERANCE_DEG
+                and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0)
+                <= ANGLE_TOLERANCE_DEG
             ):
                 return profile
         return None

@@ -1,14 +1,15 @@
 """Ways of scheduling a scenario: dispatch, planned, rolling and configured."""
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 
 from ..config import MissionConfig
 from ..ditl import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from ..ditl.factory import queue_targets
-from ..schedulers import LongRangeAllocator, PriorityScheduler
-from .harness import BenchmarkScenario, Contender, Run
+from ..schedulers import LocalSearchScheduler, LongRangeAllocator, PriorityScheduler
+from ..targets import Pointing
+from .harness import BenchmarkScenario, Contender, Run, TOOSpec
 
 
 def _calculate(ditl: DITL | QueueDITL) -> None:
@@ -63,46 +64,95 @@ def dispatch(
     """
 
     def simulate(scenario: BenchmarkScenario) -> Run:
-        config = scenario.make_config()
-        ditl = QueueDITL(
-            config=config,
-            begin=scenario.begin,
-            end=scenario.end,
-            allocator=_allocator(config, scenario, allocation, allocation_reserve),
-        )
-        queue_targets(ditl, scenario.make_targets(config))
-        for too in scenario.toos:
-            ditl.submit_too(**too.model_dump())
-        _calculate(ditl)
-        return Run(simulation=ditl)
+        return Run(simulation=_dispatch(scenario, allocation, allocation_reserve))
 
     suffix = _allocation_suffix(allocation, allocation_reserve)
     return Contender(name=name or f"dispatch{suffix}", simulate=simulate)
 
 
+def _dispatch(
+    scenario: BenchmarkScenario,
+    allocation: timedelta | None = None,
+    allocation_reserve: float | None = None,
+) -> QueueDITL:
+    """Run the scenario dispatched by the queue, with its ToOs and activities."""
+    config = scenario.make_config()
+    ditl = QueueDITL(
+        config=config,
+        begin=scenario.begin,
+        end=scenario.end,
+        activities=scenario.activities,
+        allocator=_allocator(config, scenario, allocation, allocation_reserve),
+    )
+    queue_targets(ditl, scenario.make_targets(config))
+    for too in scenario.toos:
+        ditl.submit_too(**too.model_dump())
+    _calculate(ditl)
+    return ditl
+
+
+def too_targets(config: MissionConfig, toos: Sequence[TOOSpec]) -> list[Pointing]:
+    """The scenario's ToOs as requests a plan built in advance may take as
+    known: each may begin collecting from its submission until its deadline,
+    as the rolling simulation requests them when they arrive."""
+    targets = []
+    for too in toos:
+        target = Pointing(
+            config=config,
+            ra=too.ra,
+            dec=too.dec,
+            obsid=too.obsid,
+            name=too.name,
+            merit=too.merit,
+            ss_min=min(300, too.exptime),
+            ss_max=too.exptime,
+            earliest_start=too.submit_time,
+            deadline=too.deadline,
+        )
+        target.exptime = too.exptime
+        targets.append(target)
+    return targets
+
+
 def planned(
     scheduler: type[PriorityScheduler] = PriorityScheduler,
     name: str | None = None,
+    *,
+    seeded_by_dispatch: bool = False,
     **options: object,
 ) -> Contender:
     """One plan for the whole run, built up front and executed by DITL.
 
     Args:
         scheduler: Scheduler class to build the plan with.
-        name: Contender name; defaults to the scheduler's.
+        name: Contender name; defaults to the scheduler's, with
+            "seeded by dispatch" when seeded.
+        seeded_by_dispatch: Run the scenario dispatched by the queue first and
+            give the scheduler, a :class:`~conops.schedulers.LocalSearchScheduler`
+            or one built on it, the plan that run executed as its
+            ``start_plan``, with the scenario's ToOs as requests known in
+            advance, so the plan it returns scores at least as well as the
+            dispatch run in its own terms.
         **options: Extra keyword arguments for the scheduler.
     """
+    if seeded_by_dispatch and not issubclass(scheduler, LocalSearchScheduler):
+        raise TypeError("only the local-search schedulers take a start plan")
 
     def simulate(scenario: BenchmarkScenario) -> Run:
+        settings = dict(options)
         config = scenario.make_config()
         targets = scenario.make_targets(config)
+        if seeded_by_dispatch:
+            settings["start_plan"] = _dispatch(scenario).plan
+            targets = [*targets, *too_targets(config, scenario.toos)]
         began = time.perf_counter()
         builder = scheduler(
             config,
             targets,
             scenario.begin,
             scenario.end,
-            **options,  # type: ignore[arg-type]
+            activities=scenario.activities,
+            **settings,  # type: ignore[arg-type]
         )
         plan = builder.schedule()
         planning_seconds = time.perf_counter() - began
@@ -111,8 +161,9 @@ def planned(
         _calculate(ditl)
         return Run(simulation=ditl, planning_seconds=planning_seconds)
 
+    suffix = " seeded by dispatch" if seeded_by_dispatch else ""
     return Contender(
-        name=name or f"planned:{scheduler.scheduler_name}", simulate=simulate
+        name=name or f"planned:{scheduler.scheduler_name}{suffix}", simulate=simulate
     )
 
 
@@ -153,6 +204,7 @@ def rolling(
             commit_lead_time=commit_lead_time,
             scheduler=scheduler,
             scheduler_options=scheduler_options,
+            activities=scenario.activities,
             allocator=_allocator(config, scenario, allocation, allocation_reserve),
         )
         ditl.step_size = int(ditl.ephem.step_size)
@@ -182,7 +234,11 @@ def configured(name: str = "configured") -> Contender:
         config = scenario.make_config()
         began = time.perf_counter()
         ditl = create_ditl(
-            config, scenario.make_targets(config), scenario.begin, scenario.end
+            config,
+            scenario.make_targets(config),
+            scenario.begin,
+            scenario.end,
+            activities=scenario.activities,
         )
         planning: float | None = time.perf_counter() - began
         if isinstance(ditl, (QueueDITL, RollingHorizonDITL)):

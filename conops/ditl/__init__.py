@@ -1,3 +1,4 @@
+from ..targets.too import TOORequest
 from .ditl import DITL, DITLs
 from .ditl_event import DITLEvent
 from .ditl_log import DITLLog
@@ -10,7 +11,7 @@ from .plan_validator import (
     PlanExecutionMismatchError,
     PlanExecutionValidator,
 )
-from .queue_ditl import QueueDITL, TOORequest
+from .queue_ditl import QueueDITL
 from .rolling_ditl import ReplanReason, ReplanRecord, RollingHorizonDITL
 from .telemetry import Housekeeping, PayloadData, SolarArrayDriveAngle, Telemetry
 

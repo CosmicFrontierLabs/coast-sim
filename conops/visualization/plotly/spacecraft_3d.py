@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import plotly.graph_objects as go
 
+from ...common.numerics import ROUNDOFF
+
 if TYPE_CHECKING:
     from ...config import MissionConfig
 
@@ -60,16 +62,30 @@ _CONE_SIZE: float = 0.07
 # ---------------------------------------------------------------------------
 
 
+_NEAR_AXIS_COMPONENT = 0.9
+"""A unit vector whose component along an axis reaches this lies too near
+the axis for a cross product with it to give a direction."""
+_NO_DIRECTION = 0.5
+"""A normalised direction shorter than this was a zero vector: nothing to draw."""
+_RADIAL_MIN = 0.1
+"""A boresight component across the tube shorter than this gives no radial
+direction of its own."""
+
+
 def _unit(v: Any) -> np.ndarray:
     a = np.asarray(v, dtype=float)
     n = np.linalg.norm(a)
-    return a / n if n > 1e-12 else a
+    return a / n if n > ROUNDOFF else a
 
 
 def _perp_pair(v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Two unit vectors perpendicular to *v*."""
     v = _unit(v)
-    ref = np.array([0.0, 0.0, 1.0]) if abs(v[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    ref = (
+        np.array([0.0, 0.0, 1.0])
+        if abs(v[2]) < _NEAR_AXIS_COMPONENT
+        else np.array([1.0, 0.0, 0.0])
+    )
     u = np.cross(ref, v)
     u = _unit(u)
     w = _unit(np.cross(v, u))
@@ -277,7 +293,7 @@ def _arrow_traces(
 ) -> list[Any]:
     """[Scatter3d shaft, Cone arrowhead] for a labelled vector arrow."""
     d = _unit(direction)
-    if np.linalg.norm(d) < 0.5:
+    if np.linalg.norm(d) < _NO_DIRECTION:
         return []
     tip = origin + d * length
     shaft_end = origin + d * (length - cone_sz * 1.2)
@@ -709,7 +725,9 @@ def plot_spacecraft_3d(
             # Radial direction: component of boresight perpendicular to the tube axis.
             b_perp = b_vec - float(np.dot(b_vec, s_bore)) * s_bore
             radial = (
-                _unit(b_perp) if np.linalg.norm(b_perp) > 0.1 else _perp_pair(s_bore)[0]
+                _unit(b_perp)
+                if np.linalg.norm(b_perp) > _RADIAL_MIN
+                else _perp_pair(s_bore)[0]
             )
             # Position at 65 % along the tube, just outside the baffle surface.
             c = s_start + s_bore * (s_tube_len * 0.65) + radial * (s_outer_r + 0.005)

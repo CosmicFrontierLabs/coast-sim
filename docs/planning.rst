@@ -75,6 +75,11 @@ Building and executing a plan
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 
+The requests, the Targets of Opportunity, the scheduled activities and the observation
+groups a run schedules can be kept together in one file as a
+:class:`~conops.targets.Program` and given to ``create_ditl`` as ``program=`` (see
+:doc:`plan_serialization`).
+
 A target observed at set times is one request with ``visit_windows``: a list of
 :class:`~conops.targets.VisitWindow`, each the earliest and latest time one
 visit's collection may begin, in time order and not overlapping; a target with
@@ -158,7 +163,9 @@ plan records the modes on each entry. A Target of Opportunity names its modes wi
 argument of ``submit_too``.
 
 A target is observed at the power-optimal instrument roll unless it asks for
-another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
+another. Where the science constraint depends on the roll, as a stray-light patch
+written as a field-of-view polygon does (see :doc:`configuration`), the optimum is
+the best power roll that keeps it clear, when any roll does. Otherwise: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
 the roll itself (``queue.add(..., roll_offset_deg=...)`` or ``roll_deg=`` for a
 dispatch target). Dispatch and the planners observe the target at that roll where the
 constraints allow it, and the plan entry's ``roll`` records it. The ACS's
@@ -209,8 +216,9 @@ How a plan is built
    response whose slew would cross the activity's start is observed before it; nothing
    starts while the activity waits, and it keeps its length. The planners let the
    science before such an activity run into its window and hold the activity from
-   when that science ends, within the window, reserving the time up to its latest end
-   so nothing is placed where it may still be. An activity due while another activity
+   when that science ends, within the window: the block is reserved at its latest
+   start, settles to follow whatever is placed before it as the plan is built, and
+   the time after its settled end is open to what follows. An activity due while another activity
    is under way, ``fixed`` or not, begins when that one ends and keeps its length:
    dispatch begins it then, and the planners reserve it after the activity already on
    the timeline and settle it back to its own start where that activity slid and
@@ -233,7 +241,9 @@ How a plan is built
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
-   longer fits. A request whose deadline is close gains urgency and so is placed
+   longer fits; once any of it is placed, or the target has collected anything, its
+   remainder is placed however short, as dispatch finishes such a target, unless it is
+   shorter than the simulation step, which is rounding and ends the request. A request whose deadline is close gains urgency and so is placed
    ahead of flexible requests with higher base merit. Cadence and completion deficit
    follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
@@ -263,10 +273,19 @@ How a plan is built
    to make room, along with up to three more packed behind it, as long as the
    activity after them can still be reached. Moving a snapshot can cut it short
    where its target's visibility ends; that is allowed only if the new snapshot's
-   value-weighted seconds exceed those lost. Exposure cut short is left for the request to plan elsewhere.
-   Ground passes and locked entries are never moved. A cadence target's visit moves
-   only if it is the target's latest, and never earlier than it was, so its visits
-   stay a cadence apart.
+   value-weighted seconds exceed those lost. Exposure cut short is left for the
+   request to plan elsewhere. The same move fills the time before a scheduled
+   activity: the activity holds the attitude of whatever precedes it, so science
+   placed before it changes where the science after it slews from, and under a
+   long thermal settle that science can no longer be reached in time; it is then
+   moved later, and the activity holds the new snapshot's attitude. Ground passes
+   and locked entries are never moved. A
+   cadence target's visit never moves earlier than it was, and no later than leaves
+   its next visit a cadence after it, so its visits stay a cadence apart; a visit in a
+   window of its own moves only if it is the target's latest. A cadence visit placed
+   at the opening of its visibility window is otherwise an anchor nothing can precede,
+   since a slew into it from another attitude would start before the target is
+   visible.
 
    **Slewing before a target is visible.** Setting ``slew_before_visible`` in the
    ACS configuration lets a slew start early enough to arrive as its target rises,
@@ -285,6 +304,38 @@ starts are tried after that happens before the gap is given up (3 by default). T
 plans much faster in a crowded horizon, but can miss a fit late in a gap; set it to
 None to try every start. Rolling replans use the default.
 
+**What the gap search reuses.** A gap is searched for many requests, each from the
+attitude held before it, and each request is tried from many starts a step apart.
+The scheduling context keeps what repeats: where a held attitude first violates a
+mode over a span, by the span; and, with the quaternion slew algorithm, the path of
+each slew between two attitudes, predicted once and retimed for every start, so that
+with a thermal settling table only the settle, which follows the Sun, is computed per
+start. A constraint-avoiding path is decided at the slew's start rounded to the
+ephemeris step, so it is predicted once per pair of attitudes and step and retimed
+within the step, and the samples along each arc it checks are evaluated in one call
+to ``rust_ephem``, as the steps of a held attitude are when the context scans a hold.
+A slew is built without validating the configuration it holds. The
+context also keeps each target's visibility windows, and the scheduler those of each
+candidate snapshot, by target, pointing and, where the roll enters them, roll, so the
+constraints are evaluated over the ephemeris once per target rather than per
+candidate, which matters most for a moving target. The battery ledger reads eclipse
+at its grid steps from the horizon it samples once, remembers the bus's and payload's
+draw by mode, eclipse and instrument modes, samples a slew's path at all of an
+addition's steps together, as the constraint check along a slew does, and, where no
+panel is driven, computes the panels' power at all of an addition's steps at once.
+The local search decodes a trial plan for every change it tries, so these decide how
+many changes a search of a given length tries. The CP-SAT scheduler computes the slew
+table of a chunk's tasks for every pair at once, and decodes the rest of the
+priority-first plan once per chunk, carrying the decoding to the next chunk while
+chunks keep that plan.
+
+A rolling run can start from a plan: ``RollingHorizonDITL(start_plan=...)``, or
+``create_ditl(config, ..., start_plan=...)`` for a planned or rolling run, gives the
+local-search or CP-SAT scheduler of each replan the entries of that plan inside the
+horizon it plans, as a ``start_plan`` the scheduler improves on; a dispatch run's
+executed plan is the natural one. Each replan record says how many entries seeded it
+(``seed_entries``).
+
 Cadence and program shares in plans
 -----------------------------------
 
@@ -299,10 +350,24 @@ executed:
   re-ranks the requests after every snapshot, so a program falling behind its share
   moves up; local search values each snapshot by the shares in the plan before it;
   CP-SAT uses the shares at the start of each chunk.
+* **Observation groups.** A target in a group (``observation_groups``, see
+  :doc:`configuration`) has its earliest start and deadline narrowed by the group's
+  window, its snapshots capped by the group's time budget beside its category's, and,
+  where the group prefers contiguity, the priority-first placement goes on with the
+  group's other targets once it has placed one, so they are planned one after another
+  as dispatch observes them; the local-search and CP-SAT planners start from that
+  order and keep the window and the budget.
+* **Time budget.** A category with ``time_budget_seconds`` collects no more than
+  that over the run: each snapshot is capped to what the plan leaves of it, counting
+  what the category's targets had collected before the plan, and nothing is placed
+  once less than a minimum snapshot is left; a visit of a sequence is placed only
+  whole. Dispatch and the long-range allocator honour the same cap.
 * **Cadence.** With ``cadence_weight`` set, a target in a category with
   ``cadence_seconds`` is visited no sooner than that long after its last visit,
   planned or collected (``last_collection_time``), so every visit has the full
-  cadence value. The priority-first scheduler and local search place each visit at the
+  cadence value. Dispatch does not select such a target until a cadence after its
+  last visit either, so it is not revisited as soon as nothing outranks it. The
+  priority-first scheduler and local search place each visit at the
   earliest fit once it is due; CP-SAT keeps the same spacing between a target's
   candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
   after falling due, a cadence after the visit before it, up to ``earliness_weight``
@@ -388,8 +453,10 @@ and the idle time between them at the attitude held, sampled at the ephemeris st
 along a hold and at the configured attitude step along a slew, with each thruster
 dump unloading the wheels as it ends. Where the forecast reaches the planning level
 of the capacity and the spacecraft has thrusters, the planner reserves a dump, a
-fixed desaturation activity holding the attitude of whatever precedes it, and plans
-again from the start with the dumps so far. The dump goes between observations.
+fixed desaturation activity holding the attitude of whatever precedes it, keeps the
+science placed before the dump as it is, and plans on from there with the dumps so
+far: the first slew start the pass lets go is where the next pass places from, since
+nothing before it has changed. The dump goes between observations.
 Where the level is reached during an observation, the dump follows it, provided the
 wheels stay within the capacity through the dump's own length; where they would not,
 the dump goes before the observation, which then starts from empty wheels, provided
@@ -398,11 +465,15 @@ from empty is left out of the plan, with the reason logged, since a visit is not
 cut; a plain observation that does not fit has the dump at the crossing, and the next
 pass places a shorter snapshot after it. Where the level is reached between
 observations, in idle time, a slew or a contact, the dump goes at the crossing. A dump
-found earlier than one already reserved replaces it and those after it. Each dump
-costs a planning pass, and a plan reserves fifty at most; the passes share the spans
-of the timeline integrated so far, each keyed on its times, its attitude or slew and
-the momentum it starts from, so a pass integrates only from the dump it reserves
-onwards and the plan before it is read back. Without thrusters the plan
+found earlier than one already reserved replaces it and those after it. A pass
+reserves a dump for every crossing the forecast reaches, each found with the wheels
+unloaded at the dump before it, and the plan is built again once from the first; the
+science after a dump moves a little when the plan is built with it, so the next pass
+checks the dumps against the plan as built and replaces any that no longer answer its
+forecast. A plan reserves fifty dumps at most. The passes share the spans of the
+timeline integrated so far, each keyed on its times, its attitude or slew and the
+momentum it starts from, so a pass integrates only from the dump it reserves onwards
+and the plan before it is read back. Without thrusters the plan
 stands and the log says where the forecast passes the capacity; with them, the log
 says where the forecast still reaches it, if it does. A rolling-horizon run gives
 each replan the stored momentum it will have when its horizon starts, the committed
@@ -668,6 +739,12 @@ priority-first scheduler.
 
 ``LocalSearchScheduler`` takes the same arguments as ``PriorityScheduler``, plus:
 
+* ``start_plan``: a plan to start from where it scores higher than the priority-first
+  plan, such as the plan a dispatch run of the same requests executed: its science
+  entries are decoded in time order, each at its own start, a visit's steps as one,
+  and one that cannot be placed there is left out; the search then improves on the
+  better of the two starts, so the plan returned scores at least as well as either.
+  CP-SAT takes it the same way, each chunk's hint coming from it;
 * ``time_limit``: seconds of search after the priority-first plan is built
   (default 10);
 * ``max_iterations``: changes to try at most. A run limited only by time depends on
@@ -750,7 +827,9 @@ adjusted where the model's approximate slews need it, so the solver starts from 
 feasible solution. Each chunk finishes before the priority-first plan's next slew and
 leaves the exposure that plan collects later to it, so the rest of that plan can
 always follow. Because the model approximates slews (each target's roll is chosen
-before solving), each chunk's order is decoded with the scheduler's exact checks, as in
+before solving, and with a thermal settling table each slew settles for the change it
+makes to the Sun's direction in the body frame with the Sun where it is at the chunk's
+origin), each chunk's order is decoded with the scheduler's exact checks, as in
 local search. It is kept if, followed by the rest of the priority-first plan, it
 scores at least as well as that plan does from the same point; otherwise, or if the
 solver found no solution in its time, the priority-first plan's snapshots for the
@@ -771,13 +850,23 @@ where it is placed.
    plan = scheduler.schedule()
    print(scheduler.solver_statuses, scheduler.initial_score, "->", scheduler.score)
 
+``solver_statuses`` is CP-SAT's status for each chunk, ``solver_chunks_used`` whether the
+solver's snapshots were kept over the priority-first plan's, and ``solver_limits`` what
+ended each chunk's search: ``optimal``, the ``deterministic budget``, the ``wall clock``
+or the ``solver`` itself. A chunk model CP-SAT finds invalid is one the scheduler built
+wrong, not a search that ran out of time: it raises a ``ValueError`` naming the model's
+fault rather than falling back to the priority-first plan.
+
 ``CpSatScheduler`` takes the arguments of ``LocalSearchScheduler``, plus:
 
 * ``solver_time_limit``: seconds CP-SAT may search, shared across the chunks
   (default 20);
+* ``solver_deterministic_time``: units of CP-SAT's deterministic time the search may
+  take, shared across the chunks, so it ends at the same point every run whatever the
+  machine's speed; the wall-clock limit still applies. Set it, with ``workers`` 1 and
+  ``seed``, for runs that repeat exactly;
 * ``chunk``: length of each chunk (default three hours);
-* ``workers``: CP-SAT search workers (default 8). Use 1, with ``seed``, for runs that
-  repeat exactly;
+* ``workers``: CP-SAT search workers (default 8);
 * ``max_candidates``: candidates per chunk at most (default 120), those of the
   priority-first plan first, then in priority order.
 
@@ -829,17 +918,22 @@ rebuilds it as the simulation runs:
    worst-case slew and the setup time), a **rapid replan** runs at once. In a rapid
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
-   argument of ``submit_too``), the observation's category is ``interruptible``, and
-   the value frozen onto the ToO's first snapshot in the replacement plan beats
+   argument of ``submit_too``), the observation's category is ``interruptible``, the
+   ToO's value, evaluated now, beats the value frozen onto that observation, the
+   ToO would not begin collecting by its deadline with the observation left whole,
+   and the value frozen onto the ToO's first snapshot in the replacement plan beats
    the value frozen onto that observation. Both include any `long-range allocation`_'s
-   bonus. The replacement plan accounts for the horizon's share of each bin and
-   the allocation already collected or committed before valuing the snapshot.
-   Otherwise the ToO can start only after the observation ends. A sequence visit is
-   never cut: the ToO waits for it, as it does in dispatch. Science it has already
-   collected is kept, and its cleanup follows the cut. The cut is kept only if the new
-   plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
-   are tried highest-ranked first, and the first that outranks the observation and can
-   be placed interrupts it. A ToO that may not interrupt does not take the cut
+   bonus; the replacement plan accounts for the horizon's share of each bin and the
+   allocation already collected or committed before valuing the snapshot.
+   Otherwise the ToO can start only after the observation ends: the replan first plans
+   the horizon with the observation whole, and a ToO that plan collects by its deadline
+   waits for the observation, as it does in dispatch, so a cut, which costs the
+   observation's slew, settling and setup again, is made only where the deadline needs
+   it. A sequence visit is never cut: the ToO waits for it. Science an observation
+   has already collected is kept, and its cleanup follows the cut. The cut is kept
+   only if the new plan can collect the ToO. If several ToOs need a rapid replan at
+   the same time, they are tried highest-ranked first, and the first that outranks
+   the observation, needs the cut and can be placed interrupts it. A ToO that may not interrupt does not take the cut
    observation's place either, however it ranks: it is planned in after the
    interrupting ToO, or, if its deadline falls before that, in the next plan.
 
@@ -879,8 +973,10 @@ each plan by local search or with CP-SAT.
 * ``ditl.replans`` lists each replan as a
   :class:`~conops.ditl.rolling_ditl.ReplanRecord`: when and why it ran, the commit
   cutoff, how many entries were kept, dropped and added, how many targets did not
-  fit, the planning time, and any ToO that triggered it or observation it
-  interrupted.
+  fit, the planning time, any ToO that triggered it or observation it interrupted,
+  how many entries of the run's start plan seeded it, and for a CP-SAT plan the
+  solver's status for each chunk, whether each chunk's snapshots were kept and what
+  ended each chunk's search.
 * ``ditl.too_response_times()`` gives the seconds from each ToO's submission to its
   first science, or None if it was never observed.
 * ``ditl.plan`` is the plan that was actually followed: the committed parts of
@@ -1028,7 +1124,12 @@ that arrive during the run. The contenders are:
 
 * :func:`~conops.benchmark.dispatch`: ``QueueDITL`` picks each next target;
 * :func:`~conops.benchmark.planned`: one plan built up front by a scheduler and
-  executed by ``DITL``. A plan built in advance cannot react to ToOs;
+  executed by ``DITL``. A plan built in advance cannot react to ToOs. With
+  ``seeded_by_dispatch`` the scenario is first dispatched by the queue and the
+  scheduler, a local-search or CP-SAT one, takes the plan that run executed as its
+  ``start_plan``, with the scenario's ToOs as requests known in advance, so the plan
+  it returns scores at least as well as the dispatch run in the planner's own terms;
+  the table then shows both, the dispatch run as the bound the plan must meet;
 * :func:`~conops.benchmark.rolling`: ``RollingHorizonDITL`` with a scheduler and
   replanning settings;
 * :func:`~conops.benchmark.configured`: whatever the scenario configuration's
@@ -1074,7 +1175,7 @@ the table shows the error's type, and the full message is listed below it.
 Standard scenarios
 ^^^^^^^^^^^^^^^^^^
 
-:mod:`conops.benchmark.scenarios` provides six scenarios, each stressing a different
+:mod:`conops.benchmark.scenarios` provides seven scenarios, each stressing a different
 part of scheduling. All use one low-Earth orbit from a TLE, Sun and Earth-limb
 avoidance, the default ground stations, a battery that never limits operations (the
 spacecraft has no solar panels, so the battery's recharge alerts are turned off rather
@@ -1093,7 +1194,15 @@ than letting it drain into emergency charging), and seeded random targets:
 * ``long-range``: a week of 300 targets, half with deadlines spread across it, two
   programs by the Sun's avoidance zone ("Early" targets that the Sun covers as the
   week goes on and "Late" ones it uncovers), and 10 ToOs arriving through the week,
-  alternately due within hours and within days, for long-range allocation.
+  alternately due within hours and within days, for long-range allocation;
+* ``program``: two days with the structure of an observing campaign: deep fields
+  observed in resumable snapshots with per-category setup and cleanup budgets,
+  campaign targets visited as sequences of steps in visit windows of their own and
+  not interruptible, monitoring targets with a cadence, a pool of fillers, twice-daily
+  calibration blocks that may slide, a fixed maintenance window and a ToO a day with a
+  four-hour response, with base merits in bands wider than the dynamic merit terms
+  and no ground stations. It is the scenario the dispatch-seeded plans are measured
+  against the dispatch queue on.
 
 ``scripts/benchmark_schedulers.py`` runs the standard contenders on one scenario or all of
 them, with rolling replans every six hours (or four times in a shorter run) and a

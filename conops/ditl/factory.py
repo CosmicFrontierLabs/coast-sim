@@ -8,8 +8,9 @@ import rust_ephem
 from ..config import MissionConfig
 from ..config.scheduler import AllocationSettings, SchedulerMode
 from ..schedulers.allocator import LongRangeAllocator
+from ..schedulers.local_search_scheduler import LocalSearchScheduler
 from ..schedulers.registry import scheduler_class
-from ..targets import Plan, Pointing, Queue, ScheduledActivity
+from ..targets import Plan, Pointing, Program, Queue, ScheduledActivity, TOORequest
 from .ditl import DITL
 from .queue_ditl import QueueDITL
 from .rolling_ditl import RollingHorizonDITL
@@ -17,11 +18,13 @@ from .rolling_ditl import RollingHorizonDITL
 
 def create_ditl(
     config: MissionConfig,
-    targets: Sequence[Pointing],
+    targets: Sequence[Pointing] = (),
     begin: datetime | None = None,
     end: datetime | None = None,
     ephem: rust_ephem.Ephemeris | None = None,
     activities: Sequence[ScheduledActivity] = (),
+    program: Program | None = None,
+    start_plan: Plan | None = None,
 ) -> QueueDITL | DITL | RollingHorizonDITL:
     """Return a simulation of ``targets`` scheduled as ``config.scheduler`` says.
 
@@ -53,6 +56,16 @@ def create_ditl(
     ephemeris = config.constraint.ephem
     if ephemeris is None:
         raise ValueError("an ephemeris is required: pass ephem or set it on the config")
+    toos: Sequence[TOORequest] = ()
+    if program is not None:
+        # The program is what the run schedules: its requests, activities,
+        # groups and Targets of Opportunity, bound to this configuration.
+        if targets or activities:
+            raise ValueError("give a program or targets and activities, not both")
+        program.bind(config, ephemeris)
+        targets = [r for r in program.requests if isinstance(r, Pointing)]
+        activities = list(program.activities)
+        toos = list(program.toos)
     begin = begin or _as_utc(ephemeris.timestamp[0])
     end = end or _as_utc(ephemeris.timestamp[-1])
     settings = config.scheduler
@@ -72,6 +85,8 @@ def create_ditl(
     # How strongly scheduling follows the allocation, if there is one.
     steering = allocation or AllocationSettings()
 
+    if start_plan is not None and settings.mode is SchedulerMode.DISPATCH:
+        raise ValueError("dispatch takes no start plan; use a planned or rolling run")
     if settings.mode is SchedulerMode.DISPATCH:
         queue_ditl = QueueDITL(
             config=config,
@@ -82,10 +97,16 @@ def create_ditl(
             activities=activities,
         )
         queue_targets(queue_ditl, targets)
+        for too in toos:
+            queue_ditl.submit_too(too)
         return queue_ditl
 
     scheduler = scheduler_class(settings.kind)
     options = settings.scheduler_options()
+    if start_plan is not None and settings.mode is SchedulerMode.PLANNED:
+        if not issubclass(scheduler, LocalSearchScheduler):
+            raise ValueError("only the local-search schedulers take a start plan")
+        options = {**options, "start_plan": start_plan}
     if settings.mode is SchedulerMode.PLANNED:
         copies = [target.model_copy() for target in targets]
         _bind_targets(config, copies)
@@ -98,6 +119,11 @@ def create_ditl(
             activities=activities,
             **options,  # type: ignore[arg-type]
         )
+        if toos:
+            raise ValueError(
+                "a planned run cannot take Targets of Opportunity; use dispatch "
+                "or rolling replanning"
+            )
         ditl = DITL(config=config, plan=builder.schedule(), begin=begin, end=end)
         ditl.step_size = builder.ctx.step_size
         return ditl
@@ -118,11 +144,14 @@ def create_ditl(
         include_passes=settings.include_passes,
         scheduler=scheduler,
         scheduler_options=options,
+        start_plan=start_plan,
         allocator=allocator,
         allocation_bonus=steering.bonus,
         activities=activities,
     )
     rolling.step_size = int(ephemeris.step_size)
+    for too in toos:
+        rolling.submit_too(too)
     return rolling
 
 
