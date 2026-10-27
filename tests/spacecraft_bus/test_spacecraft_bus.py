@@ -91,7 +91,6 @@ class TestAttitudeControlSystem:
 
     def test_stored_momentum_tracking_defaults_off(self, default_acs):
         assert default_acs.stored_momentum.gravity_gradient_enabled is False
-        assert default_acs.stored_momentum.max_sample_interval_s == 10.0
         assert default_acs.stored_momentum.max_attitude_step_deg == 5.0
         assert default_acs.stored_momentum.initial_momentum_body_n_m_s == (
             0.0,
@@ -103,19 +102,13 @@ class TestAttitudeControlSystem:
         with pytest.raises(ValueError, match="finite"):
             StoredMomentumConfig(initial_momentum_body_n_m_s=(0.0, np.nan, 0.0))
 
-    @pytest.mark.parametrize(
-        "field, limit",
-        [("max_sample_interval_s", 10.0), ("max_attitude_step_deg", 5.0)],
-    )
-    @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf, "above"])
-    def test_momentum_sampling_limit_is_bounded(self, field, limit, value):
-        with pytest.raises(ValueError, match=field):
-            StoredMomentumConfig(**{field: limit + 0.1 if value == "above" else value})
+    @pytest.mark.parametrize("value", [0.0, -1.0, np.nan, np.inf, -np.inf])
+    def test_momentum_attitude_step_is_finite_and_positive(self, value):
+        with pytest.raises(ValueError, match="max_attitude_step_deg"):
+            StoredMomentumConfig(max_attitude_step_deg=value)
 
-    def test_momentum_sampling_limits_roundtrip(self):
-        config = StoredMomentumConfig(
-            max_sample_interval_s=0.5, max_attitude_step_deg=1.0
-        )
+    def test_momentum_attitude_step_roundtrips(self):
+        config = StoredMomentumConfig(max_attitude_step_deg=1.0)
         restored = StoredMomentumConfig.model_validate_json(config.model_dump_json())
         assert restored == config
         assert restored.max_attitude_step_deg == 1.0

@@ -590,3 +590,54 @@ def test_unrelated_programming_error_is_not_swallowed(fault_acs):
     ):
         with pytest.raises(ValueError, match="bug"):
             fault_acs.pointing(1000)
+
+
+def test_executor_recalls_the_motion_it_flew(limits):
+    """The state at a past time comes from the motion flying then, through
+    a trajectory, a hold and a replacement, however coarsely it advanced."""
+    executor = AttitudeExecutor(0, (0, 0, 0))
+    with pytest.raises(AttitudeExecutionError, match="not yet flown"):
+        executor.flown(1)
+    turn = AttitudeTrajectory.turn(10, (0, 0, 0), (20, 0, 0), limits)
+    executor.install(turn)
+    executor.advance(turn.end + 100)
+    executor.hold(turn.end + 100)
+    assert executor.flown(5).attitude == pytest.approx((0, 0, 0))
+    assert_attitude(
+        executor.flown(turn.end - 1).attitude, turn.state(turn.end - 1).attitude
+    )
+    assert_attitude(executor.flown(turn.end + 50).attitude, (20, 0, 0))
+    assert not executor.moved_between(0, 10)
+    assert executor.moved_between(5, 12)
+    assert executor.moved_between(turn.end - 1, turn.end + 100)
+    assert not executor.moved_between(turn.end, turn.end + 100)
+    assert not executor.moved_between(turn.end + 100, turn.end + 200)
+    second = AttitudeTrajectory.turn(turn.end + 200, (20, 0, 0), (40, 0, 0), limits)
+    executor.install(second)
+    executor.advance(second.end)
+    assert executor.moved_between(turn.end + 100, turn.end + 201)
+    assert_attitude(executor.flown(turn.end + 150).attitude, (20, 0, 0))
+    assert_attitude(
+        executor.flown(turn.end + 201).attitude,
+        second.state(turn.end + 201).attitude,
+    )
+
+
+def test_acs_reports_the_attitude_flown_within_a_coarse_step(physical_acs):
+    """A slew that starts and ends within one 120 s step is on record: the
+    ACS reports where it was at intermediate times and that it moved."""
+    acs = physical_acs
+    acs.pointing(1000)
+    assert not acs.attitude_moved(880, 1000)
+    slew = new_slew(acs, (10, 0, 0))
+    acs._start_slew(slew, 1000)
+    acs.pointing(1120)
+    assert slew.slewend < 1120
+    assert acs.attitude_moved(1000, 1120)
+    assert_attitude(acs.executed_attitude(1000), (0, 0, 0))
+    assert_attitude(acs.executed_attitude(1120), (10, 0, 0))
+    midway = acs.executed_attitude(1000 + slew.slewtime / 2)
+    assert 0 < midway[0] < 10
+    assert_attitude(midway, slew.attitude(1000 + slew.slewtime / 2), tolerance=0.05)
+    acs.pointing(1240)
+    assert not acs.attitude_moved(1120, 1240)

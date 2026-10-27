@@ -197,6 +197,25 @@ eclipse of observing:
 
 See :doc:`planning` (Planning within the battery) for reference.
 
+Stored Momentum from the Environment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Momentum_Tracking_Example.ipynb``
+
+This notebook tracks the momentum a spacecraft's wheels store from the torques the
+environment applies, gravity gradient and solar radiation pressure, over a day:
+
+* The surfaces sunlight acts on: the placeholder model built from the bus, the
+  array and the aperture, and how a mission's mass properties replace it
+* A day of dispatch, with the stored momentum and each source's share of it from
+  the telemetry, and the eclipses where sunlight contributes nothing
+* The same day holding one attitude, where both torques are secular, against the
+  varied schedule that averages them
+* The tracker run on its own with sunlight alone, showing how the centre of mass
+  sets sunlight's share
+
+See :doc:`configuration` (Stored momentum) and :doc:`telemetry` for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 

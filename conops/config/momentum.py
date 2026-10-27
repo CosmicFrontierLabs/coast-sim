@@ -1,7 +1,71 @@
+from typing import Literal
+
 import numpy as np
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
+
+
+class ThrusterDumpConfig(ConfigModel):
+    """A thruster momentum dump: a hold during which the wheels are unloaded."""
+
+    duration_seconds: float = Field(
+        default=120.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="How long a dump holds the spacecraft, in seconds",
+    )
+    residual_fraction: float = Field(
+        default=0.0,
+        ge=0.0,
+        lt=1.0,
+        allow_inf_nan=False,
+        description=(
+            "The fraction of the stored momentum a dump leaves in the wheels; "
+            "0 unloads them fully"
+        ),
+    )
+
+
+class AtmosphereConfig(ConfigModel):
+    """The atmosphere aerodynamic drag is computed in."""
+
+    model: Literal["table", "msis"] = Field(
+        default="table",
+        description=(
+            "The density model: 'table', the built-in piecewise exponential "
+            "profile by height for moderate solar activity; or 'msis', "
+            "NRLMSIS 2.1 through the optional pymsis package, at the solar "
+            "flux and geomagnetic activity below"
+        ),
+    )
+    f107: float = Field(
+        default=150.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The daily 10.7 cm solar flux the 'msis' model assumes, in sfu",
+    )
+    f107a: float = Field(
+        default=150.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The 81-day average 10.7 cm solar flux the 'msis' model assumes",
+    )
+    ap: float = Field(
+        default=4.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="The geomagnetic activity index the 'msis' model assumes",
+    )
+    density_scale: float = Field(
+        default=1.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "A factor on the density, for sensitivity studies: the density "
+            "varies by a factor of twenty between solar minimum and maximum"
+        ),
+    )
 
 
 class StoredMomentumConfig(ConfigModel):
@@ -14,26 +78,46 @@ class StoredMomentumConfig(ConfigModel):
             "gravity-gradient torque."
         ),
     )
-    max_sample_interval_s: float = Field(
-        default=10.0,
-        gt=0.0,
-        le=10.0,
-        allow_inf_nan=False,
+    solar_radiation_pressure_enabled: bool = Field(
+        default=False,
         description=(
-            "Maximum executed-attitude and ephemeris sample interval in seconds. "
-            "Further limited by max_attitude_step_deg at the fastest configured "
-            "slew rate. Coarser runs fail instead of aliasing torque."
+            "Accumulate stored momentum required to reject the torque of "
+            "sunlight on the spacecraft's surfaces (spacecraft_bus.surfaces, "
+            "or a placeholder model built from the bus, panels and telescopes)"
+        ),
+    )
+    aerodynamic_drag_enabled: bool = Field(
+        default=False,
+        description=(
+            "Accumulate stored momentum required to reject the torque of the "
+            "atmosphere on the spacecraft's surfaces (spacecraft_bus.surfaces, "
+            "or a placeholder model built from the bus, panels and telescopes), "
+            "at the density the atmosphere model gives"
+        ),
+    )
+    atmosphere: AtmosphereConfig = Field(
+        default_factory=AtmosphereConfig,
+        description="The atmosphere drag is computed in",
+    )
+    geomagnetic_field: Literal["dipole", "igrf"] = Field(
+        default="dipole",
+        description=(
+            "The field the magnetorquers unload against and the residual dipole "
+            "is torqued by: 'dipole', the built-in tilted dipole; or 'igrf', the "
+            "IGRF through the optional ppigrf package"
         ),
     )
     max_attitude_step_deg: float = Field(
         default=5.0,
         gt=0.0,
-        le=5.0,
         allow_inf_nan=False,
         description=(
-            "Maximum possible attitude motion between momentum samples in degrees. "
-            "Default five-degree sampling guard; lower for convergence studies. "
-            "This is not an integration-error guarantee."
+            "How far the attitude may move between momentum samples along a "
+            "slew, in degrees. The simulations and the planners' forecast sample "
+            "each slew at this step over the fastest configured slew rate, "
+            "whatever the ephemeris resolution; a held attitude is sampled at "
+            "the ephemeris resolution. Lower for convergence studies. This is "
+            "not an integration-error guarantee."
         ),
     )
     initial_momentum_body_n_m_s: tuple[float, float, float] = Field(
@@ -43,11 +127,93 @@ class StoredMomentumConfig(ConfigModel):
         ),
     )
 
-    @field_validator("initial_momentum_body_n_m_s")
+    magnetorquer_max_dipole_a_m2: float | None = Field(
+        default=None,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "The magnetorquers' greatest dipole, in A m²; they unload the wheels "
+            "against the geomagnetic field (a tilted dipole) continuously, taking "
+            "out the stored momentum across the field. None: no magnetorquers"
+        ),
+    )
+    magnetorquer_time_constant_s: float = Field(
+        default=1800.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "How quickly the magnetorquers aim to unload the stored momentum, "
+            "in seconds, within their dipole"
+        ),
+    )
+    residual_dipole_body_a_m2: tuple[float, float, float] | None = Field(
+        default=None,
+        description=(
+            "The spacecraft's residual magnetic dipole in body coordinates, in "
+            "A m², torqued by the geomagnetic field; None: none"
+        ),
+    )
+
+    capacity_n_m_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "The wheels' momentum capacity, in N m s, taken as the same about "
+            "every axis; None sets no capacity"
+        ),
+    )
+    planning_level: float = Field(
+        default=0.8,
+        gt=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+        description=(
+            "The fraction of the capacity at which a thruster dump is called "
+            "for, leaving the rest as margin"
+        ),
+    )
+    thruster_dump: ThrusterDumpConfig | None = Field(
+        default=None,
+        description=(
+            "Thruster dumps: dispatch begins one when the stored momentum reaches "
+            "the planning level of the capacity, holding the attitude it has for "
+            "the dump's length and starting no observation meanwhile; None: no "
+            "thrusters, so the wheels fill until a run reports it"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _dumps_need_a_capacity(self) -> "StoredMomentumConfig":
+        if self.thruster_dump is not None and self.capacity_n_m_s is None:
+            raise ValueError("thruster dumps need capacity_n_m_s to be triggered at")
+        return self
+
+    @property
+    def dump_level_n_m_s(self) -> float | None:
+        """The stored momentum at which a thruster dump is called for."""
+        if self.capacity_n_m_s is None or self.thruster_dump is None:
+            return None
+        return self.planning_level * self.capacity_n_m_s
+
+    @property
+    def enabled(self) -> bool:
+        """Whether any torque source is tracked."""
+        return (
+            self.gravity_gradient_enabled
+            or self.solar_radiation_pressure_enabled
+            or self.aerodynamic_drag_enabled
+            or self.magnetorquer_max_dipole_a_m2 is not None
+            or self.residual_dipole_body_a_m2 is not None
+        )
+
+    @field_validator("initial_momentum_body_n_m_s", "residual_dipole_body_a_m2")
     @classmethod
-    def _validate_initial_momentum(
-        cls, value: tuple[float, float, float]
-    ) -> tuple[float, float, float]:
+    def _validate_vector(
+        cls, value: tuple[float, float, float] | None
+    ) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
         if not all(np.isfinite(component) for component in value):
-            raise ValueError("initial stored momentum must contain finite values")
+            raise ValueError("a body vector must contain finite values")
         return float(value[0]), float(value[1]), float(value[2])

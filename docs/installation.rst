@@ -39,6 +39,19 @@ solver that comes with OR-Tools. OR-Tools is an optional dependency:
 
 The ``dev`` and ``test`` extras include it.
 
+Optional: atmosphere and geomagnetic field models
+-------------------------------------------------
+
+Stored-momentum tracking (see :doc:`momentum`) has a built-in atmosphere table and a
+tilted-dipole geomagnetic field. NRLMSIS 2.1 through ``pymsis`` and the IGRF through
+``ppigrf`` are optional:
+
+.. code-block:: bash
+
+   pip install -e ".[momentum]"
+
+The ``test`` extra includes them.
+
 Development Installation
 ------------------------
 

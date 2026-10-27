@@ -47,6 +47,7 @@ def _default_attitude_constraint_scopes() -> dict[str, list[AttitudeConstraintSc
             AttitudeConstraintScope.POWER_GENERATION,
         ],
         ACSMode.IDLE.name: [AttitudeConstraintScope.HARDWARE_SAFETY],
+        ACSMode.DESAT.name: [AttitudeConstraintScope.HARDWARE_SAFETY],
     }
 
 

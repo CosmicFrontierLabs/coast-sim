@@ -72,8 +72,11 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
 ``R_x(-roll)`` for the same physical attitude.
 
 **ACS State**
-   - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
+   - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, DESAT while a thruster momentum dump holds, etc.)
    - ``gravity_gradient_torque_body_n_m``: Gravity-gradient torque vector in spacecraft body coordinates (N m), or ``None`` when tracking is disabled
+   - ``disturbance_torques_body_n_m``: Each tracked torque source's torque vector in body coordinates (N m), by source name (``gravity_gradient``, ``solar_radiation_pressure``, ``residual_dipole``, ``magnetorquer_unloading``), or ``None`` when tracking is disabled
+   - ``disturbance_torque_body_n_m``: The tracked sources' total torque vector in body coordinates (N m), or ``None`` when tracking is disabled
+   - ``geomagnetic_field_body_t``: The geomagnetic field in body coordinates (T) where magnetorquers or a residual dipole are tracked, else ``None``
    - ``stored_momentum_body_n_m_s``: Accumulated stored-momentum vector in spacecraft body coordinates (N m s), or ``None`` when tracking is disabled
    - ``stored_momentum_norm_n_m_s``: Coordinate-invariant norm of accumulated stored momentum (N m s), or ``None`` when tracking is disabled
 
