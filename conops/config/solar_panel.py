@@ -11,11 +11,21 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 from ..common import dtutcfromtimestamp
 from ..common.enums import ACSMode
 from ..common.ephemeris import position_vectors
+from ..common.numerics import (
+    FULL_TURN_DEG,
+    NEGLIGIBLE_NORM,
+    ROUNDOFF,
+    VECTOR_COMPONENTS,
+)
+from ..common.vector import scbodyvectors
 from ._base import ConfigModel
 from .geometry import PanelGeometry
 
 if TYPE_CHECKING:
     from .frame import SpacecraftFrame
+
+_ARRAY_DIMENSIONS = 2
+"""Sun vectors come as one row of three components per sample."""
 
 
 def _unit_vector(
@@ -104,7 +114,7 @@ class SingleAxisSolarArrayDrive(ConfigModel):
             raise ValueError("SADA angles and rate must be finite")
         if self.min_angle_deg >= self.max_angle_deg:
             raise ValueError("min_angle_deg must be less than max_angle_deg")
-        if self.max_angle_deg - self.min_angle_deg > 360.0:
+        if self.max_angle_deg - self.min_angle_deg > FULL_TURN_DEG:
             raise ValueError("single-axis SADA travel cannot exceed 360 degrees")
         if not self.min_angle_deg <= self.initial_angle_deg <= self.max_angle_deg:
             raise ValueError("initial_angle_deg must lie within the drive travel")
@@ -138,7 +148,11 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         """Vectorized form of :meth:`optimal_angle` for Sun-vector candidates."""
         normal = _unit_vector(reference_normal, field_name="panel normal")
         sun = np.asarray(sun_body, dtype=np.float64)
-        if sun.ndim != 2 or sun.shape[1] != 3 or not np.all(np.isfinite(sun)):
+        if (
+            sun.ndim != _ARRAY_DIMENSIONS
+            or sun.shape[1] != VECTOR_COMPONENTS
+            or not np.all(np.isfinite(sun))
+        ):
             raise ValueError("Sun body vectors must have shape (N, 3) and be finite")
         sun_magnitudes = np.linalg.norm(sun, axis=1)
         if np.any(sun_magnitudes <= 0.0):
@@ -190,7 +204,7 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         # When the Sun is parallel to the drive axis, or the reference normal
         # is parallel to it, rotation cannot change illumination. Hold the
         # current physical angle instead of commanding an arbitrary endpoint.
-        flat_objective = np.hypot(cosine_coefficient, sine_coefficient) <= 1e-12
+        flat_objective = np.hypot(cosine_coefficient, sine_coefficient) <= ROUNDOFF
         return np.where(flat_objective, reference, best_angles)
 
     def step_toward(
@@ -703,7 +717,7 @@ class _PanelGeometry:
             normal,
             magnitudes,
             out=normal.copy(),
-            where=magnitudes > 1e-15,
+            where=magnitudes > NEGLIGIBLE_NORM,
         )
         self.max_power = max_power
         self.efficiency = efficiency
@@ -897,7 +911,11 @@ class SolarPanelSet(ConfigModel):
     ) -> npt.NDArray[np.float64]:
         """Purely score body-frame Sun candidates at one drive-state snapshot."""
         sun = np.asarray(sun_body, dtype=np.float64)
-        if sun.ndim != 2 or sun.shape[1] != 3 or not np.all(np.isfinite(sun)):
+        if (
+            sun.ndim != _ARRAY_DIMENSIONS
+            or sun.shape[1] != VECTOR_COMPONENTS
+            or not np.all(np.isfinite(sun))
+        ):
             raise ValueError("Sun body vectors must have shape (N, 3) and be finite")
         magnitudes = np.linalg.norm(sun, axis=1)
         if np.any(magnitudes <= 0.0):
@@ -990,6 +1008,57 @@ class SolarPanelSet(ConfigModel):
             roll=roll,
             drive_state=drive_state,
         )
+        return power
+
+    def power_held_at(
+        self,
+        times: Sequence[float],
+        attitudes: Sequence[tuple[float, float, float]],
+        ephem: rust_ephem.Ephemeris,
+        in_eclipse: Sequence[bool],
+    ) -> npt.NDArray[np.float64]:
+        """The power generated at each of ``times`` holding the matching
+        attitude of ``attitudes``, in degrees, with no drive advanced: what
+        :meth:`power` gives sample by sample, computed together, with
+        ``in_eclipse`` saying which samples are in eclipse. A set with a
+        driven panel is scored sample by sample, as the drive's angle at
+        each sample is its own."""
+        count = len(times)
+        power = np.zeros(count, dtype=np.float64)
+        panels = self.panels
+        if not panels or sum(panel.max_power for panel in panels) <= 0.0:
+            return power
+        if any(panel.single_axis_drive is not None for panel in panels):
+            for k, (utime, (ra, dec, roll)) in enumerate(
+                zip(times, attitudes, strict=True)
+            ):
+                power[k] = float(self.power(utime, ra, dec, ephem, roll=roll))
+            return power
+        lit = np.flatnonzero(~np.asarray(in_eclipse, dtype=bool))
+        if len(lit) == 0:
+            return power
+        times_lit = [float(times[int(k)]) for k in lit]
+        indices = np.array(
+            [ephem.index(dtutcfromtimestamp(utime)) for utime in times_lit], dtype=int
+        )
+        sunvec = (
+            position_vectors(ephem, "sun")[indices]
+            - position_vectors(ephem, "gcrs")[indices]
+        )
+        held = np.deg2rad(
+            np.asarray([attitudes[int(k)] for k in lit], dtype=np.float64)
+        )
+        sun_body = scbodyvectors(held, sunvec)
+        magnitude = np.linalg.norm(sun_body, axis=1)
+        unit = np.flatnonzero(magnitude > 0.0)
+        if len(unit) == 0:
+            return power
+        normalized = sun_body[unit] / magnitude[unit, np.newaxis]
+        geom = self._get_geometry()
+        illumination = normalized @ geom.normal.T
+        illumination = np.where(geom.gimbled[np.newaxis, :], 1.0, illumination)
+        illumination = np.maximum(illumination, 0.0)
+        power[lit[unit]] = illumination @ (geom.max_power * geom.efficiency)
         return power
 
     def take_eclipse_intervals_from(

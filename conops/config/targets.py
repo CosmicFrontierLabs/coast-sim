@@ -67,6 +67,15 @@ class TargetConfig(ConfigModel):
             "elapsed since its last visit, rising linearly before that"
         ),
     )
+    group_contiguity_weight: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Merit added to a target of an observation group that prefers "
+            "contiguity once another of its targets has just been observed, so "
+            "the group is observed one target after another; 0 disables it"
+        ),
+    )
     completion_deficit_weight: float = Field(
         default=0.0,
         ge=0.0,
