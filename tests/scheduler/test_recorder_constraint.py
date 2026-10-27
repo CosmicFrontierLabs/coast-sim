@@ -995,6 +995,35 @@ class TestDispatch:
         assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
         assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
 
+    def test_the_room_carries_the_recorder_through_slow_contacts(self) -> None:
+        """A contact too slow to empty the recorder leaves the rest to the
+        next, and the housekeeping between has to fit as well: with the
+        stations' downlinks at half a megabit a second, dispatch admits
+        only what keeps the recorder under the limit at every contact and
+        the run's end, so housekeeping between contacts never takes it into
+        the red; reserving to the next contact alone put it in safe mode."""
+        config = _recorder_config()
+        config.ground_stations = GroundStationRegistry(
+            stations=[
+                station.model_copy(
+                    update={"bands": [BandCapability(band="S", downlink_rate_mbps=0.5)]}
+                )
+                for station in config.ground_stations.stations
+            ]
+        )
+        ditl = create_ditl(
+            config, self._targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+
+        assert sum(1 for e in ditl.plan if e.obstype == ObsType.GSP) >= 3
+        assert self._collected(ditl, 1) > 0.0
+        assert max(ditl.recorder_volume_gb) <= LIMIT + 1e-6
+        assert max(ditl.recorder_alert) < 2
+        assert ACSMode.SAFE not in {hk.acs_mode for hk in ditl.telemetry.housekeeping}
+
     def test_a_fixed_amount_that_reaches_the_limit_exactly_is_passed_over(
         self,
     ) -> None:

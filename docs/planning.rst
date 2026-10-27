@@ -232,9 +232,12 @@ generate, less what a committed contact downlinks.
 
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much the recorder can take
-before its next contact: what is free under the planning limit now, less the
-housekeeping that accrues until that contact begins, or until the run ends if it
-ends first. Housekeeping is counted as the simulation generates it, for each whole
+now: the most that keeps the volume under the planning limit at every contact's
+start and at the run's end, carrying the recorder through the rest of the run, with
+each contact removing what its station's rate downlinks for its length and never
+below empty, so that a contact too short or too slow to empty the recorder leaves
+the rest to the next and the housekeeping between has to fit as well. Housekeeping
+is counted as the simulation generates it, for each whole
 step at the rate of the mode the step starts in: at the waiting rate, the highest of
 the nominal, ``IDLE``, ``CHARGING`` and ``SAA`` rates, since the dispatcher can spend
 the time in any of those modes, and at the ``PASS`` rate for the slew into the

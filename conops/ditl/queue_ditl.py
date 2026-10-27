@@ -37,6 +37,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..schedulers import DispatchPolicy
+from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
@@ -57,6 +58,8 @@ from .plan_validator import (
 from .telemetry import Housekeeping, PayloadData
 
 RECORDER_ROOM_TOLERANCE_GB = 1e-9
+_ROOM_BISECTIONS = 40
+"""Halvings of the room's search: 20 Gb to a fraction of a kilobit."""
 """What dispatch keeps the recorder below its planning limit by, as the
 schedulers' ledger does: the recorder's red alert fires at the threshold."""
 
@@ -2971,62 +2974,102 @@ class QueueDITL(DITLMixin, DITLStats):
     def _recorder_room_gb(
         self, utime: float, ra: float, dec: float, roll: float
     ) -> float | None:
-        """Gb the recorder can take before its next contact, under its
-        planning limit, beyond nominal housekeeping; None without a limit.
+        """Gb the recorder can take now, under its planning limit, beyond
+        the housekeeping to come; None without a limit.
 
-        What is free now, keeping the limit below rather than reached, less the housekeeping that accrues until the next
-        contact begins, or until the run ends if none is coming before
-        then: dispatch selects only what the recorder can hold until a
-        contact can empty it, as the schedulers place only what it can hold
-        before the next contact. Housekeeping is counted as the simulation
-        generates it: for each whole step, at the rate of the mode the step
-        starts in, the waiting rate throughout (see
-        :meth:`MissionConfig.housekeeping_while_waiting`), as the
-        dispatcher can spend the time in any of the waiting modes. The slew
-        into the contact, which ACS flies in ``PASS`` mode, counts at the
-        ``PASS`` rate for the steps it is under way, as it would be flown
-        from the attitude given, where that rate is higher. What the
-        candidate's own slew and science generate beyond the waiting rate
-        the queue counts against the room, as it does the science.
+        The recorder is carried through the rest of the run: housekeeping
+        accrues for each whole step at the waiting rate (see
+        :meth:`MissionConfig.housekeeping_while_waiting`), the slew into
+        each contact, which ACS flies in ``PASS`` mode, at the ``PASS`` rate
+        for the steps it is under way where that rate is higher, and each
+        contact downlinks what its station's rate removes for its length,
+        never below empty. The room is the most that can be added now,
+        keeping the limit below rather than reached, with the volume under
+        the limit at every contact's start and at the run's end: a contact
+        too short or too slow to empty the recorder leaves what it does not
+        remove to the next, and the housekeeping after it has to fit too.
+        What the candidate's own slew and science generate beyond the
+        waiting rate the queue counts against the room, as it does the
+        science.
         """
         limit = self.config.recorder.planning_limit_gb
         # A test double's recorder has no number for a limit.
         if not isinstance(limit, (int, float)):
             return None
         step = float(self.step_size)
-        next_pass = min(
-            (p for p in self.acs.passrequests.passes or [] if float(p.begin) > utime),
-            key=lambda p: float(p.begin),
-            default=None,
-        )
-        until = self.uend
-        if next_pass is not None:
-            until = min(until, float(next_pass.begin))
-        span = whole_steps(until - utime, step)
-        housekeeping = self.config.housekeeping_while_waiting(span)
-        if next_pass is not None and float(next_pass.begin) < self.uend:
-            ingress = min(
-                span,
-                whole_steps(
-                    self._pass_ingress_seconds(next_pass, utime, ra, dec, roll), step
-                ),
-            )
-            # The ingress is an upper bound: a PASS rate below the waiting
-            # rate is not credited with a saving over it.
-            housekeeping += max(
-                0.0,
-                self.config.housekeeping_generated(ingress, mode=ACSMode.PASS)
-                - self.config.housekeeping_while_waiting(ingress),
-            )
+        config = self.config
         # A preview of admission at a later time starts from the volume
         # projected to then (see _preview_too_admission).
         projected = getattr(self, "_recorder_volume_projected_gb", None)
-        volume = (
+        volume_now = (
             float(projected)
             if isinstance(projected, (int, float))
             else float(self.recorder.current_volume_gb)
         )
-        return limit - RECORDER_ROOM_TOLERANCE_GB - volume - housekeeping
+        passes = sorted(
+            (
+                p
+                for p in self.acs.passrequests.passes or []
+                if utime < float(p.begin) < self.uend
+            ),
+            key=lambda p: float(p.begin),
+        )
+
+        def highest(extra: float) -> float:
+            """The most the recorder holds from now to the run's end with
+            ``extra`` Gb added now."""
+            volume = volume_now + extra
+            worst = volume
+            cursor = utime
+            for gspass in passes:
+                begin = float(gspass.begin)
+                end = min(begin + float(gspass.length), self.uend)
+                span = whole_steps(begin - cursor, step)
+                volume += config.housekeeping_while_waiting(span)
+                ingress = min(
+                    span,
+                    whole_steps(
+                        self._pass_ingress_seconds(gspass, cursor, ra, dec, roll), step
+                    ),
+                )
+                # The ingress is an upper bound: a PASS rate below the
+                # waiting rate is not credited with a saving over it.
+                volume += max(
+                    0.0,
+                    config.housekeeping_generated(ingress, mode=ACSMode.PASS)
+                    - config.housekeeping_while_waiting(ingress),
+                )
+                worst = max(worst, volume)
+                contact = whole_steps(end - begin, step)
+                volume += max(
+                    config.housekeeping_while_waiting(contact),
+                    config.housekeeping_generated(contact, mode=ACSMode.PASS),
+                )
+                volume = max(
+                    0.0,
+                    volume - contact_downlink_gb(config, gspass.station, end - begin),
+                )
+                cursor = end
+            volume += config.housekeeping_while_waiting(
+                whole_steps(self.uend - cursor, step)
+            )
+            return max(worst, volume)
+
+        headroom = limit - RECORDER_ROOM_TOLERANCE_GB
+        base = highest(0.0)
+        if base > headroom:
+            # Not even the housekeeping to come fits: no science does.
+            return headroom - base
+        # The most that fits is where the highest volume meets the headroom;
+        # the highest volume grows with what is added, so it is bisected.
+        low, high = 0.0, max(0.0, headroom - volume_now)
+        for _ in range(_ROOM_BISECTIONS):
+            middle = (low + high) / 2.0
+            if highest(middle) <= headroom:
+                low = middle
+            else:
+                high = middle
+        return low
 
     def _pass_ingress_seconds(
         self, gspass: Pass, utime: float, ra: float, dec: float, roll: float
