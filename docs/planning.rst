@@ -231,6 +231,32 @@ the next replan. A plan takes effect after the commit lead time, so it starts fr
 what the committed activities leave on the recorder by then: what they go on to
 generate, less what a committed contact downlinks.
 
+Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
+too. When it selects the next target it works out how much the recorder can take
+now: the most that keeps the volume under the planning limit at every contact's
+start and at the run's end, carrying the recorder through the rest of the run, with
+each contact removing what its station's rate downlinks for its length and never
+below empty, so that a contact too short or too slow to empty the recorder leaves
+the rest to the next and the housekeeping between has to fit as well. Housekeeping
+is counted as the simulation generates it, for each whole
+step at the rate of the mode the step starts in: at the waiting rate, the highest of
+the nominal, ``IDLE``, ``CHARGING`` and ``SAA`` rates, since the dispatcher can spend
+the time in any of those modes, and at the ``PASS`` rate for the slew into the
+contact, which ACS flies in ``PASS`` mode, bounded as admission bounds it, where that
+rate is higher. A candidate collects no more than that room holds of its science, at
+its own rates, and of the housekeeping its own slew, the attitude-aware slew it will
+fly, and science mode generate beyond the waiting rate; a mode that generates less
+is not credited with the saving, since the spans are upper bounds. One that cannot
+collect its minimum snapshot within it is passed over, and a snapshot shortened to
+fit stays shortened through admission, which asks the room again with the slew it
+flies. A Target of Opportunity admitted ahead of the observation under way, to start
+once that observation's cleanup is over, is admitted against the volume projected to
+then: the science the observation still collects and the housekeeping of the steps
+between. The log says how many were passed over and how much room there was. A contact during the snapshot is not counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
+points per gigabit of science data, so that high-data science gives way to low-data
+science before the recorder is full rather than only once it is (see
+:doc:`configuration`).
+
 Planning within the battery
 ---------------------------
 

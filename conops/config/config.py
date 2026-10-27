@@ -80,6 +80,28 @@ def _normalize_attitude_constraint_scopes(
     return scopes
 
 
+WAITING_MODES: tuple[ACSMode | None, ...] = (
+    None,
+    ACSMode.IDLE,
+    ACSMode.CHARGING,
+    ACSMode.SAA,
+)
+"""The modes the spacecraft waits in between observations, the nominal rate
+first: what a reserve of housekeeping over a wait has to cover."""
+
+
+def housekeeping_while_waiting(config: object, duration_seconds: float) -> float:
+    """The most housekeeping ``config`` generates over an interval spent
+    waiting between observations: in whichever of the nominal, ``IDLE``,
+    ``CHARGING`` and ``SAA`` rates is the highest, as dispatch can spend the
+    interval in any of those modes and a reserve made at a lower rate would
+    be overrun.
+    ``config`` is anything with ``housekeeping_generated(seconds, mode=)``,
+    a mission configuration or a test double's."""
+    generated = getattr(config, "housekeeping_generated")
+    return max(float(generated(duration_seconds, mode=mode)) for mode in WAITING_MODES)
+
+
 class MissionConfig(ConfigModel):
     """
     Configuration class for the spacecraft and its subsystems.
@@ -371,6 +393,19 @@ class MissionConfig(ConfigModel):
         return self.spacecraft_bus.data_generated(
             duration_seconds, mode=mode
         ) + self.payload.housekeeping_generated(duration_seconds, mode=mode)
+
+    def housekeeping_while_waiting(self, duration_seconds: float) -> float:
+        """The most housekeeping the bus and payload generate over an
+        interval the spacecraft spends waiting between observations (see
+        :func:`housekeeping_while_waiting`).
+
+        Args:
+            duration_seconds: Length of the interval in seconds.
+
+        Returns:
+            float: Data generated in Gigabits.
+        """
+        return housekeeping_while_waiting(self, duration_seconds)
 
     def science_generated(
         self,

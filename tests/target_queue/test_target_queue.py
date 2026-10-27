@@ -3,6 +3,7 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import pytest
 
+from conops.common import ACSMode
 from conops import AttitudeControlSystem, Queue, TargetSlewEstimate
 from conops.config import ObservationTiming
 
@@ -285,6 +286,131 @@ class TestSlewDistanceWeight:
 
 class TestCollectionTimeWeight:
     """Tests for collection time reward in target selection."""
+
+    def test_a_snapshot_the_recorder_cannot_hold_is_passed_over(self, queue_instance):
+        """With the recorder's free room given, the best target's snapshot,
+        120 s at 0.1 Gb/s, is shortened to the 100 s that 10 Gb of room
+        holds, and passed over for 5 Gb, which holds less than its 60 s
+        minimum, for the next target, which generates nothing; without the
+        room, or with room enough, it is selected whole."""
+        utime = 1762924800.0
+        queue_instance.config.science_generated = Mock(
+            side_effect=lambda seconds, science=None: (
+                0.1 * seconds if science is not None else 0.0
+            )
+        )
+        queue_instance.config.housekeeping_generated = Mock(return_value=0.0)
+        hungry, frugal = queue_instance.targets[0], queue_instance.targets[1]
+        hungry.science_data = {"camera": object()}
+        frugal.science_data = None
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == hungry
+            whole = hungry.end - hungry.begin
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=10.0)
+                == hungry
+            )
+            assert hungry.end - hungry.begin == pytest.approx(whole - 20.0)
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=5.0)
+                == frugal
+            )
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=12.5)
+                == hungry
+            )
+            assert hungry.end - hungry.begin == pytest.approx(whole)
+
+    def test_the_visit_housekeeping_counts_against_the_room(self, queue_instance):
+        """The housekeeping a visit generates beyond the nominal rate takes
+        from the room too: at 0.1 Gb/s of science and 0.01 Gb/s more of
+        housekeeping in SCIENCE mode, 10 Gb holds 90 whole seconds rather
+        than 100, and the shortened snapshot is set as the target's
+        collection limit for the dispatcher to keep to; with room enough,
+        there is none."""
+        utime = 1762924800.0
+        queue_instance.config.science_generated = Mock(
+            side_effect=lambda seconds, science=None: (
+                0.1 * seconds if science is not None else 0.0
+            )
+        )
+        queue_instance.config.housekeeping_generated = Mock(
+            side_effect=lambda seconds, mode=None: (
+                0.01 * seconds if mode == ACSMode.SCIENCE else 0.0
+            )
+        )
+        hungry = queue_instance.targets[0]
+        hungry.science_data = {"camera": object()}
+        for target in queue_instance.targets[1:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == hungry
+            assert hungry.collection_limit is None
+            whole = hungry.end - hungry.begin
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=10.0)
+                == hungry
+            )
+            assert hungry.collection_limit == 90.0
+            assert hungry.end - hungry.begin == pytest.approx(whole - 30.0)
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=20.0)
+                == hungry
+            )
+            assert hungry.collection_limit is None
+            assert hungry.end - hungry.begin == pytest.approx(whole)
+
+    def test_the_recorder_room_is_checked_when_candidates_are_scored(
+        self, queue_instance
+    ):
+        utime = 1762924800.0
+        queue_instance.slew_distance_weight = 0.1
+        queue_instance.config.science_generated = Mock(
+            side_effect=lambda seconds, science=None: (
+                0.1 * seconds if science is not None else 0.0
+            )
+        )
+        queue_instance.config.housekeeping_generated = Mock(return_value=0.0)
+        hungry, frugal = queue_instance.targets[0], queue_instance.targets[1]
+        hungry.science_data = {"camera": object()}
+        frugal.science_data = None
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            assert (
+                queue_instance.get(ra=0, dec=0, utime=utime, recorder_room_gb=5.0)
+                == frugal
+            )
+
+    def test_the_data_price_trades_against_merit(self, queue_instance):
+        """At 1 merit point per Gb, a 12 Gb snapshot costs 12 points: the
+        100-merit hungry target loses to the 90-merit frugal one, but keeps
+        its place at a tenth of the price."""
+        utime = 1762924800.0
+        queue_instance.config.science_generated = Mock(
+            side_effect=lambda seconds, science=None: (
+                0.1 * seconds if science is not None else 0.0
+            )
+        )
+        queue_instance.config.housekeeping_generated = Mock(return_value=0.0)
+        hungry, frugal = queue_instance.targets[0], queue_instance.targets[1]
+        hungry.science_data = {"camera": object()}
+        frugal.science_data = None
+        for target in queue_instance.targets[2:]:
+            target.visible.return_value = False
+
+        with patch.object(queue_instance, "meritsort"):
+            queue_instance.data_volume_weight = 1.0
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == frugal
+            assert frugal.merit_breakdown.data == 0.0
+            queue_instance.data_volume_weight = 0.1
+            assert queue_instance.get(ra=0, dec=0, utime=utime) == hungry
+            assert hungry.merit_breakdown.data == pytest.approx(-1.2)
 
     def test_positive_weight_prefers_longer_collection_window(self, queue_instance):
         """Collection time can choose a longer useful observation over a shorter slew."""

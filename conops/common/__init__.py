@@ -6,6 +6,7 @@ from .common import (
     normalize_acs_mode,
     unixtime2date,
     unixtime2yearday,
+    whole_steps,
 )
 from .enums import (
     ACSCommandType,
@@ -72,4 +73,5 @@ __all__ = [
     "separation",
     "unixtime2date",
     "unixtime2yearday",
+    "whole_steps",
 ]
