@@ -129,12 +129,12 @@ During each simulation step in science or idle modes:
    * the TOO may interrupt (``interrupt``) and the observation's category is ``interruptible``;
    * its deadline, if any, has not passed;
    * its target is visible now; and
-   * its value, evaluated now, beats the current observation's frozen value.
+   * its value, evaluated now, can beat the current observation's frozen value. With a long-range allocation, the value is taken with the most the allocation can add, since the bonus is for the collection admission settles on, which the recorder or a deadline may cut short of a snapshot.
 
 When a TOO interrupts:
 
-1. The current observation is **terminated** (preempted, not completed).
-2. The queue **selects again**, with the interrupted target held out of this one selection so it cannot simply resume. The highest-ranked target is chosen, normally the TOO.
+1. The queue **selects again** without commanding anything, with the interrupted target held out of this one selection so it cannot simply resume. The highest-ranked target is chosen, normally the TOO, and its value as admitted, over the collection admitted, must beat the observation's frozen value; otherwise the observation runs on and the TOO waits for the next selection.
+2. The current observation is **terminated** (preempted, not completed) and the replacement's slew is commanded.
 3. The TOO is marked **executed** if it was selected.
 4. The events and the TOO's merit breakdown are **logged**.
 

@@ -514,17 +514,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 visibility_window=visibility_window,
                 delivered_shares=delivered_shares,
             )
-            # With the allocation's bonus, as selection values it: the
-            # observation under way is valued with its own. The bonus is for
-            # the collection the ToO could make now, which its visibility
-            # may cut short of a full snapshot.
+            # With the most the allocation can add: the bonus is for the
+            # collection admission settles on, which the recorder or a
+            # deadline may cut short of a snapshot, and a shorter collection
+            # gets more of it. The admitted value is compared below.
             if isinstance(self.queue, Queue):
-                collection = self.queue.collection_seconds_now(
-                    target, visibility_window, utime
-                )
-                allocation = self.queue.allocation_term(target, value.value, collection)
-                if allocation:
-                    value = value.model_copy(update={"allocation": allocation})
+                bound = self.queue.allocation_bound(target, value.value)
+                if bound:
+                    value = value.model_copy(update={"allocation": bound})
             if value.value > current_value:
                 outranking.append((too, target, value))
         if not outranking:
@@ -553,7 +550,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 # that the cleanup is over by the dispatch time.
                 collection_stop=utime + dispatch_time - cleanup_end,
             )
-            if commitment is None:
+            if commitment is None or commitment.value.value <= current_value:
+                # Admitted, the snapshot is worth no more than the
+                # observation: it stays queued for the next selection.
                 return False
             if any(
                 command.execution_time <= commitment.slew.slewstart
@@ -583,23 +582,35 @@ class QueueDITL(DITLMixin, DITLStats):
             target.done = True
         self.ppt = None
         try:
-            self._fetch_new_ppt(utime, ra, dec)
+            # A just-issued charge/pass termination can replace tracking with
+            # a braking arc. Commit that command before predicting the slew.
+            pointing = self._process_due_acs_commands(utime)
+            if pointing is not None:
+                ra, dec = pointing[:2]
+            # Admitted without commanding its slew: the value admission
+            # settles on decides whether the observation is cut at all.
+            slew = self._fetch_new_ppt(utime, ra, dec, enqueue_slew=False)
             replacement = self.ppt
         finally:
             self.ppt = interrupted
             for target in held_out:
                 target.done = False
-        if replacement is None:
+        if replacement is None or slew is None:
             self._ppt_unavailable = ppt_unavailable
             return False
-
-        too, _, value = next(item for item in outranking if item[1] is replacement)
+        too, _, offered_at = next(item for item in outranking if item[1] is replacement)
+        # The value admission settled on, over the collection it admitted; a
+        # queue that leaves no breakdown admitted it at the value offered.
+        admitted = replacement.merit_breakdown or offered_at
+        if admitted.value <= current_value:
+            self._ppt_unavailable = ppt_unavailable
+            return False
         self.log.log_event(
             utime=utime,
             event_type="TOO",
             description=(
                 f"TOO interrupt: {too.name} (obsid={too.obsid}, "
-                f"{value.describe()}) preempting current observation "
+                f"{admitted.describe()}) preempting current observation "
                 f"(value={current_value:g})"
             ),
             obsid=too.obsid,
@@ -611,6 +622,7 @@ class QueueDITL(DITLMixin, DITLStats):
             mark_done=False,  # Don't mark as done, it was interrupted
         )
         self.ppt = replacement
+        self._command_ppt_slew(utime, slew)
         too.executed = True
         return True
 
@@ -711,8 +723,10 @@ class QueueDITL(DITLMixin, DITLStats):
         too, target, value = next(
             item for item in candidates if memo[id(item[1])] is preview.ppt
         )
+        # The value admission settled on, over the collection it admitted.
+        admitted = preview.ppt.merit_breakdown or value
         return _CommittedTOO(
-            too, target, preview.ppt, slew, self.ppt, value, dispatch_time
+            too, target, preview.ppt, slew, self.ppt, admitted, dispatch_time
         )
 
     def _dispatch_committed_too(self, utime: float) -> bool:
@@ -3181,6 +3195,25 @@ class QueueDITL(DITLMixin, DITLStats):
             due = float(earliest)
         return max(0.0, float(gspass.begin) - max(due, utime))
 
+    def _command_ppt_slew(self, utime: float, slew: Slew) -> None:
+        """Command the slew to the observation just admitted as ``ppt``."""
+        assert self.ppt is not None
+        self.acs.slew_dists.append(slew.slewdist)
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Fetched PPT: {self.ppt}",
+            obsid=self.ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=slew.slewstart,
+            slew=slew,
+        )
+        self.acs.enqueue_command(command)
+        self._ppt_unavailable = False
+
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
     ) -> Slew | None:
@@ -3501,25 +3534,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return None
             if not enqueue_slew:
                 return slew
-            self.acs.slew_dists.append(slew.slewdist)
-
-            self.log.log_event(
-                utime=utime,
-                event_type="QUEUE",
-                description=f"Fetched PPT: {self.ppt}",
-                obsid=self.ppt.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-
-            # Enqueue the slew command
-            command = ACSCommand(
-                command_type=ACSCommandType.SLEW_TO_TARGET,
-                execution_time=slew.slewstart,
-                slew=slew,
-            )
-            self.acs.enqueue_command(command)
-            self._ppt_unavailable = False
-
+            self._command_ppt_slew(utime, slew)
             return slew
         else:
             self.log.log_event(

@@ -6115,7 +6115,10 @@ class TestTOOFunctionality:
             reason="Preempted by TOO Successful TOO (obsid=1000001)",
             mark_done=False,
         )
-        mock_too_interrupt_success["fetch"].assert_called_once_with(1000.0, 180.0, 45.0)
+        mock_too_interrupt_success["fetch"].assert_called_once_with(
+            1000.0, 180.0, 45.0, enqueue_slew=False
+        )
+        mock_too_interrupt_success["command"].assert_called_once()
         assert queue_ditl.ppt is queued_targets[0]
 
     def test_check_too_interrupt_not_allowed_to_interrupt(
@@ -6220,8 +6223,8 @@ class TestTOOFunctionality:
         )
 
         offered: list[list[bool]] = []
-        mock_too_interrupt_success["fetch"].side_effect = lambda *_: offered.append(
-            [target.done for target in queued_targets]
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_, **__: (
+            offered.append([target.done for target in queued_targets])
         )
 
         queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
@@ -6259,7 +6262,7 @@ class TestTOOFunctionality:
         """The interrupted target is held out of the refetch, then restored."""
         self._submit(queue_ditl)
         done_during_fetch: list[bool] = []
-        mock_too_interrupt_success["fetch"].side_effect = lambda *_: (
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_, **__: (
             done_during_fetch.append(low_merit_current_ppt.done)
         )
 

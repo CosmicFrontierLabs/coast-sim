@@ -17,8 +17,11 @@ from conops.common import ObsType
 from conops.config import (
     AllocationSettings,
     MissionConfig,
+    ObservationTiming,
+    OnboardRecorder,
     SchedulerConfig,
     SchedulerMode,
+    ScienceData,
     TargetConfig,
 )
 from conops.config.observation_categories import ObservationCategory
@@ -1326,6 +1329,72 @@ class TestAllocatedTargetsOfOpportunity:
         assert toos, "the ToO did not interrupt the observation"
         assert isinstance(toos[0], Pointing) and toos[0].merit_breakdown is not None
         assert toos[0].merit_breakdown.value > 60.0
+
+    # The recorder admits only about 400 s of the ToO's 1200, so its allocated
+    # seconds cover most of what it collects: with 300 of them, merit 50 is
+    # worth about 69 and interrupts the observation worth 60, where over a
+    # full 1200-s snapshot it would be worth 56.25 and not. With 200 of them,
+    # merit 45 passes the bound of 67.5 but is worth about 56 as admitted,
+    # and the observation runs on. Both with the replacement admitted at
+    # once and with it admitted after a reserved cleanup.
+    @pytest.mark.parametrize("cleanup", [0.0, 60.0])
+    @pytest.mark.parametrize(
+        ("merit", "allocated", "interrupts"),
+        [(50.0, 300.0, True), (45.0, 200.0, False)],
+    )
+    def test_dispatch_compares_the_value_admission_settles_on(
+        self, cleanup: float, merit: float, allocated: float, interrupts: bool
+    ) -> None:
+        config = _config(2)
+        config.recorder = OnboardRecorder(
+            capacity_gb=20.0, current_volume_gb=13.9, planning_limit=0.9
+        )
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=0.0, cleanup_seconds=cleanup, handoff_seconds=0.0
+        )
+        allocation = Allocation(
+            bins=[(T0, T0 + 2 * HOUR)],
+            capacity=[2 * HOUR],
+            reserve=[0.0],
+            seconds={1: {0: 90 * MIN}, self.GRB["obsid"]: {0: allocated}},
+        )
+        ditl = QueueDITL(
+            config=config,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            allocator=_FixedAllocator(config, allocation),
+        )
+        observation = _target(
+            config, 1, 105.0, 10.0, merit=40, minutes=90, snapshot=90, ss_min=10
+        )
+        observation.science_data = {"Default Instrument": ScienceData(rate_gbps=0.0001)}
+        queue_targets(ditl, [observation])
+        ditl.submit_too(
+            **{  # type: ignore[arg-type]
+                **self.GRB,
+                "merit": merit,
+                "exptime": 1200,
+                "submit_time": T0 + 20 * MIN,
+                "deadline": T0 + 30 * MIN,
+                "science_data": {"Default Instrument": ScienceData(rate_gbps=0.01)},
+            }
+        )
+
+        ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert isinstance(first, Pointing) and first.merit_breakdown is not None
+        assert first.merit_breakdown.value == pytest.approx(60.0)
+        toos = [e for e in ditl.plan if int(e.obsid) == self.GRB["obsid"]]
+        assert bool(toos) == interrupts
+        if interrupts:
+            too = toos[0]
+            assert isinstance(too, Pointing) and too.merit_breakdown is not None
+            assert too.merit_breakdown.value > 60.0
+            assert too.collection_end is not None and too.collection_begin is not None
+            assert float(too.collection_end) - float(too.collection_begin) < 1200.0
+            assert T0 + 20 * MIN <= float(too.begin) <= T0 + 30 * MIN
+        assert max(ditl.recorder_volume_gb) <= 18.0 + 1e-6
 
     def test_dispatch_moves_on_once_the_allocated_seconds_are_collected(
         self,

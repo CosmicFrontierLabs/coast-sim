@@ -263,14 +263,11 @@ class TargetQueue:
             return min(window_seconds, max_snapshot)
         return min(window_seconds, float(remaining_exposure), max_snapshot)
 
-    def collection_seconds_now(
-        self, target: Pointing, visibility_window: list[float], utime: float
-    ) -> float:
-        """The most a snapshot of the target selected at ``utime`` could
-        collect: to the end of its ``visibility_window``, with no slew."""
-        return self._candidate_collection_seconds(
-            target, visibility_window, utime, slewtime=0.0
-        )
+    def allocation_bound(self, target: Pointing, value: float) -> float:
+        """The most the allocation can add to a candidate's ``value``: the
+        whole bonus, which a snapshot short enough for the allocated seconds
+        to cover gets (see :meth:`_bonus`)."""
+        return self._bonus(target) * value
 
     def _can_fit_min_snapshot_with_zero_slew(
         self,
