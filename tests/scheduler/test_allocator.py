@@ -1203,6 +1203,76 @@ class TestAllocatedTargetsOfOpportunity:
         assert float(first.merit) == pytest.approx(60.0)
         assert any(r.interrupted_obsid == 1 for r in ditl.replans) == interrupts
 
+    @pytest.mark.parametrize(
+        ("scheduler", "options"),
+        [(PriorityScheduler, {}), (LocalSearchScheduler, {"max_iterations": 0})],
+    )
+    @pytest.mark.parametrize(
+        ("seconds", "merit", "interrupts"),
+        [
+            (None, 50.0, True),
+            (600.0, 50.0, True),
+            (300.0, 50.0, True),
+            (299.0, 50.0, False),
+            (0.0, 50.0, False),
+            (600.0, 35.0, False),
+        ],
+    )
+    def test_rolling_compares_the_too_at_its_planned_allocation_value(
+        self,
+        scheduler: type[PriorityScheduler],
+        options: dict[str, object],
+        seconds: float | None,
+        merit: float,
+        interrupts: bool,
+    ) -> None:
+        """The interruption uses the planned snapshot's bonus, without a
+        second proration to the request's exposure. A known ToO needs enough
+        allocated time for a snapshot; an unknown one gets the full bonus.
+        Rejected attempts preserve the current observation and its log."""
+        config = _config(2)
+        allocated: dict[int, dict[int, float]] = {1: {0: 90 * MIN}}
+        if seconds is not None:
+            allocated[self.GRB["obsid"]] = {0: seconds}
+        allocation = Allocation(
+            bins=[(T0, T0 + 2 * HOUR)],
+            capacity=[2 * HOUR],
+            reserve=[0.0],
+            seconds=allocated,
+        )
+        ditl = RollingHorizonDITL(
+            config,
+            [_target(config, 1, 105.0, 10.0, merit=40, minutes=90, ss_min=10)],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            replan_interval=timedelta(hours=4),
+            allocation=allocation,
+            scheduler=scheduler,
+            scheduler_options=options,
+        )
+        ditl.step_size = 60
+        ditl.submit_too(**{**self.GRB, "merit": merit})  # type: ignore[arg-type]
+
+        assert ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert float(first.merit) == pytest.approx(60.0)
+        toos = [e for e in ditl.plan if int(e.obsid) == self.GRB["obsid"]]
+        assert bool(toos) is interrupts
+        assert any(r.interrupted_obsid == 1 for r in ditl.replans) is interrupts
+        assert ditl.validate_plan_matches_execution() == []
+        if interrupts:
+            assert float(toos[0].collection_begin) <= self.GRB["deadline"]
+            assert float(toos[0].merit) == pytest.approx(merit * 1.5)
+        else:
+            assert (
+                float(first.collection_end) - float(first.collection_begin) == 90 * MIN
+            )
+            assert not any(
+                e.event_type == "TOO" and "interrupts observation" in e.description
+                for e in ditl.log.events
+            )
+
     def test_dispatch_values_a_too_over_the_collection_it_could_make(self) -> None:
         """Allocated 300 s and submitted 10 minutes before the run ends, a
         merit-50 ToO asking for 1200 s can collect only those minutes, which

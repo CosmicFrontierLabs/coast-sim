@@ -549,9 +549,11 @@ rebuilds it as the simulation runs:
    replan the observation running at the commit cutoff, started or not, is cut short
    there when ``allow_interrupts`` is set, the ToO allows it (``interrupt``, an
    argument of ``submit_too``), the observation's category is ``interruptible``, and
-   the ToO's value, evaluated now, beats the value frozen onto that observation.
-   Both are valued with any `long-range allocation`_'s bonus, the ToO's for the
-   part of its exposure the allocation gives to now. Otherwise the ToO can start
+   the value frozen onto the ToO's first snapshot in the replacement plan beats
+   the value frozen onto that observation. Both include any `long-range allocation`_'s
+   bonus. The replacement plan accounts for the horizon's share of each bin and
+   the allocation already collected or committed before valuing the snapshot.
+   Otherwise the ToO can start
    only after the observation ends. Science it has already
    collected is kept, and its cleanup follows the cut. The cut is kept only if the new
    plan can collect the ToO. If several ToOs need a rapid replan at the same time, they
@@ -673,9 +675,9 @@ scheduling follows it:
   that is worth more than the allocated time it displaces;
 * local search and CP-SAT score allocated time the same way, so they improve a plan
   without trading away what the allocation put in a bin;
-* every scheduler freezes the value with the bonus onto the entry, and a ToO is
-  valued with the bonus for the part of its exposure the allocation gives to now,
-  so the two are compared on the same terms (see `Targets of Opportunity`_ above);
+* every scheduler freezes the value with the bonus onto the entry. Rolling
+  replanning compares the ToO's first planned snapshot with the observation it
+  would interrupt, using those frozen values (see `Targets of Opportunity`_ above);
 * dispatch adds the same bonus to the requests allocated to the current bin, for
   the seconds allocated there that the bin has not yet collected: a snapshot
   only partly covered gets that part of the bonus, and once a request has

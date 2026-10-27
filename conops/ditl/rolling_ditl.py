@@ -85,9 +85,9 @@ class RollingHorizonDITL(DITL):
     rapid replan at once, or an interrupt in a scheduled replan due then.
     The observation running at the commit cutoff is cut there if
     ``allow_interrupts`` is set, the ToO allows it (its ``interrupt`` flag),
-    the observation's category is ``interruptible``, the ToO's value,
-    evaluated now, beats the value frozen onto that observation, and the new
-    plan can collect the ToO. When several ToOs need a rapid replan at once, they are
+    the observation's category is ``interruptible``, and the value frozen
+    onto the ToO's first snapshot in the replacement plan beats the value
+    frozen onto that observation. When several ToOs need a rapid replan at once, they are
     tried highest-ranked first, and the first that qualifies and can be placed
     interrupts. A ToO that may not interrupt does not take the cut
     observation's place either: it is planned in after the interrupting ToO.
@@ -427,11 +427,19 @@ class RollingHorizonDITL(DITL):
                 continue
             planned = self._plan_interrupt(too, utime, cutoff, attempt)
             if planned is not None:
+                replacement = self._placed(planned[2], too.obsid)
+                assert replacement is not None
+                # The planned snapshot carries its actual allocation bonus,
+                # after the horizon's proration and collected/committed
+                # seconds have been accounted for by _plan_after().
+                if float(replacement.merit) <= float(cut[0].merit):
+                    planned = None
+            if planned is not None:
                 trigger, interrupted = too, int(cut[0].obsid)
                 self.log.add_events(attempt.events)
                 break
-            # This ToO cannot be placed after all, so the observation stays
-            # whole unless a lower-ranked one can replace it.
+            # This ToO cannot be placed at a higher value after all, so the
+            # observation stays whole unless another one can replace it.
             entry, original = cut
             entry.end, entry.collection_begin, entry.collection_end = original
         if planned is None:
@@ -603,26 +611,10 @@ class RollingHorizonDITL(DITL):
             len(scheduler.unplaced),
         )
 
-    def _too_allocation_bonus(self, target: Pointing, utime: float) -> float:
-        """The fraction of its value a Target of Opportunity gains from the
-        allocation at ``utime``: the bonus for the part of its exposure the
-        allocation gives to now, all of it for a request the allocation
-        never considered."""
-        if self.allocation is None or self.allocation_bonus <= 0.0:
-            return 0.0
-        exposure = float(
-            target.exptime if target.exptime is not None else target.ss_max
-        )
-        if exposure <= 0.0:
-            return 0.0
-        spans = self.allocation.allocated([int(target.obsid)], utime, utime + exposure)
-        seconds = sum(span.seconds for span in spans.get(int(target.obsid), []))
-        return self.allocation_bonus * min(1.0, seconds / exposure)
-
     def _interrupt_for(
         self, too: TOORequest, utime: float, cutoff: float, log: DITLLog
     ) -> tuple[PlanEntry, tuple[float, float | None, float | None]] | None:
-        """Cut the observation running at ``cutoff`` if the ToO outranks it.
+        """Tentatively cut the observation if the ToO could outrank it.
 
         That observation is committed but may not have started yet, when the
         commit lead time reaches into it. Collection stops no earlier than
@@ -650,9 +642,11 @@ class RollingHorizonDITL(DITL):
             utime,
             delivered_shares=self.merit_model.delivered_shares(self.targets),
         ).value
-        # With the allocation's bonus for the part of its exposure the
-        # allocation gives to now, as the plan's entries are valued.
-        too_value *= 1.0 + self._too_allocation_bonus(target, utime)
+        # An upper bound only: the candidate plan determines the bonus from
+        # the snapshot it can place and the allocation it can still use.
+        # _replan compares that entry's frozen value before keeping the cut.
+        if self.allocation is not None or self.allocator is not None:
+            too_value += max(too_value, 0.0) * max(self.allocation_bonus, 0.0)
         if too_value <= float(entry.merit):
             return None
         # A slew under way finishes first, so the cut is at the step after the
