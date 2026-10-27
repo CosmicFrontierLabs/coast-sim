@@ -18,6 +18,7 @@ from .fault_management import (
     FaultState,
     FaultThreshold,
 )
+from .frame import SpacecraftFrame
 from .geometry import PanelGeometry, compute_shadow_fraction
 from .groundstation import GroundStation, GroundStationRegistry
 from .instrument import (
@@ -132,6 +133,7 @@ __all__ = [
     "SolarArrayDriveState",
     "SingleAxisSolarArrayDrive",
     "SpacecraftBus",
+    "SpacecraftFrame",
     "AtmosphereConfig",
     "StoredMomentumConfig",
     "Surface",

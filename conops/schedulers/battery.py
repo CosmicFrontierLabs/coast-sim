@@ -495,6 +495,9 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                 track_ra, track_dec, track_roll = track(utime)
                 if track_ra is not None and track_dec is not None:
                     return (float(track_ra), float(track_dec), float(track_roll))
+            if mode is ACSMode.SCIENCE and getattr(entry, "moves", False) is True:
+                # A moving target: the attitude follows its track.
+                return entry.target_body_attitude(at=utime)
             return own
 
         # The instruments an observation, or an activity, uses while it

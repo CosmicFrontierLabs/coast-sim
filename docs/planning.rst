@@ -96,6 +96,29 @@ collected in, each visit credited to its entry's window, so a visit that runs pa
 the next window's start is still its own window's and windows need be spaced only
 so that each visit can begin within its own.
 
+A target that moves across the sky, a Solar System body, is a
+:class:`~conops.targets.MovingPointing`: a pointing whose ``track`` is its position
+at a series of times (:class:`~conops.targets.TrackPoint`, built with
+:func:`~conops.targets.track_from_table` from a table of times, right ascensions and
+declinations), interpolated between them, or whose ``body`` names a Solar System
+body by name or NAIF id: its track is then looked up over the ephemeris through
+rust_ephem, from JPL Horizons by default or from a SPICE kernel (``spice_kernel``,
+``use_horizons=False``), when its visibility is first computed, and the looked-up
+track travels with the pointing from then on. A program bound with
+``refresh_tracks`` looks each body's track up again and keeps the track given where
+the lookup fails, so a pasted track stands in when the service is down or refuses
+the body; the tracks looked up are saved with the program. Its visibility is
+computed along the track. Dispatch and the planners alike point it where the slew
+to it ends: the slew is timed to its position at the start and then to the position
+at that slew's end, and a planned entry carries that position, where the executor
+takes up the track.
+While it is observed the attitude follows the track at its rate, as a ground
+contact's profile is followed, and comes to rest when the observation ends; the ACS
+reports ``SCIENCE`` throughout, the plan validator expects the track's position at
+each sample, and the planners' battery ledger counts the attitude along the track.
+Plan entries record the position at the slew's end and the track itself, which a
+plan replay without the track observes as a fixed pointing.
+
 A window can give its visit a pointing and a roll request of its own: ``ra`` and
 ``dec`` where the visit points elsewhere than the target, as a moving target's
 visits do, and ``roll_deg`` or ``roll_offset_deg`` in place of the target's

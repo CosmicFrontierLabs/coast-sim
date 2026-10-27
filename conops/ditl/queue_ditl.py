@@ -32,7 +32,7 @@ from ..config import (
     MissionConfig,
     ScienceData,
 )
-from ..config.acs import scheduled_slew_time
+from ..config.acs import AttitudeControlSystem, scheduled_slew_time
 from ..config.constraint import (
     all_attitude_constraint_name,
     attitude_constraint_name_for_scopes,
@@ -1718,7 +1718,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     reason=f"Scheduled activity {activity.name} begins, ending observation",
                     interrupted=True,
                 )
-        self.acs.end_science_observation()
+        self.acs.end_science_observation(utime)
         if activity.desaturation:
             self.acs.begin_desaturation()
         self._add_activity_data(float(activity.data_gb), activity)
@@ -3759,7 +3759,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.ppt.done = True
 
         self.ppt = None
-        self.acs.end_science_observation()
+        self.acs.end_science_observation(utime)
         # Do NOT clear last_slew here. The spacecraft is physically still pointing
         # at the science target; clearing last_slew would cause pointing() to call
         # roll optimization and jump the roll on the next tick. Roll stays locked to
@@ -4110,6 +4110,13 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return when a new slew can execute, waiting for an in-progress slew to finish."""
         if self.acs.last_slew is not None and self.acs.last_slew.is_slewing(utime):
             return self.acs.last_slew.slewstart + self.acs.last_slew.slewtime
+        # A moving target being tracked is braked when its observation ends,
+        # so a slew away from it can start once that brake is over. A test
+        # double's ACS has only its motion's rest time.
+        ready = getattr(self.acs, "handoff_ready_time", None)
+        time = ready(utime) if callable(ready) else None
+        if isinstance(time, (int, float)) and not isinstance(time, bool):
+            return float(time)
         return self.acs.motion_ready_time(utime)
 
     @staticmethod
@@ -4156,6 +4163,13 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.slewstart = execution_time
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
+        )
+        self._point_moving_target(
+            target,
+            execution_time,
+            (slew.startra, slew.startdec, slew.startroll),
+            limits=slew.motion_limits,
+            instrument_roll=instrument_roll,
         )
         if instrument_roll is None:
             instrument_roll = self._ppt_optimum_roll(target, execution_time, optimum)
@@ -4258,6 +4272,9 @@ class QueueDITL(DITLMixin, DITLStats):
         startra, startdec, startroll = self._expected_slew_start_attitude(
             utime, execution_time
         )
+        self._point_moving_target(
+            target, execution_time, (startra, startdec, startroll)
+        )
         endroll = self._ppt_optimum_roll(target, execution_time)
         endra, enddec, body_roll = self._target_body_attitude(target, endroll)
         slewdist, rotation_axis_body = quaternion_attitude_delta(
@@ -4283,6 +4300,33 @@ class QueueDITL(DITLMixin, DITLStats):
             if mounted_telescope
             else None,
         )
+
+    def _point_moving_target(
+        self,
+        target: Pointing,
+        execution_time: float,
+        start: tuple[float, float, float],
+        *,
+        limits: AttitudeControlSystem | None = None,
+        instrument_roll: float | None = None,
+    ) -> None:
+        """Take a moving target's pointing where the slew to it ends: its
+        position at the end of the slew from ``start`` at ``execution_time``,
+        the slew timed to its position at the start and then once more to
+        the position that gives. Nothing for a fixed target."""
+        # A test double's target has no track to speak of.
+        if getattr(target, "moves", False) is not True:
+            return
+        attitude_control = limits or self.config.spacecraft_bus.attitude_control
+        arrival = execution_time
+        for _ in range(2):
+            target.point_at(arrival)
+            endra, enddec, endroll = self._target_body_attitude(target, instrument_roll)
+            distance, axis = quaternion_attitude_delta(*start, endra, enddec, endroll)
+            arrival = execution_time + scheduled_slew_time(
+                attitude_control.slew_time(distance, axis)
+            )
+        target.point_at(arrival)
 
     def _earliest_science_start(self, slew_end: float, ready_time: float) -> float:
         """Return when science collection can begin once the payload is ready.

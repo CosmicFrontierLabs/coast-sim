@@ -42,6 +42,7 @@ from ..config.constraint import (
 from ..config.data_storage import RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
+from .track import TrackPoint, position_along, rate_along, validate_track
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
@@ -193,6 +194,16 @@ class PlanEntry(BaseModel):
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
+    track: list[TrackPoint] = Field(
+        default_factory=list,
+        exclude_if=lambda v: not v,
+        description=(
+            "The target's sky position at a series of times, for a target "
+            "that moves across the sky: its pointing is taken from the track "
+            "at the end of the slew to it, and the attitude follows the track "
+            "while it is observed. Empty for a fixed target"
+        ),
+    )
     spacecraft_attitude: tuple[float, float, float] | None = None
     begin: float = 0  # start of window, not observation
     slewtime: int = 0
@@ -658,13 +669,47 @@ class PlanEntry(BaseModel):
         telescope = self.science_telescope()
         return bool(telescope is not None and not telescope.mounting.is_identity)
 
+    @field_validator("track")
+    @classmethod
+    def _track_in_time_order(cls, track: list[TrackPoint]) -> list[TrackPoint]:
+        return validate_track(track)
+
+    @property
+    def moves(self) -> bool:
+        """Whether the target moves across the sky: it has a track."""
+        return bool(self.track)
+
+    def position_at(self, utime: float) -> tuple[float, float]:
+        """The target's RA and Dec at ``utime``, in degrees: along its track
+        for a moving target, its own for a fixed one."""
+        if not self.track:
+            return float(self.ra), float(self.dec)
+        return position_along(self.track, utime)
+
+    def track_rate_deg_per_s(self, utime: float) -> float:
+        """How fast a moving target crosses the sky at ``utime``, in degrees
+        per second; zero for a fixed one."""
+        return rate_along(self.track, utime) if self.track else 0.0
+
+    def point_at(self, utime: float) -> None:
+        """Take the pointing a moving target has at ``utime``, where the slew
+        to it ends; nothing for a fixed target."""
+        if self.track:
+            self.ra, self.dec = position_along(self.track, utime)
+
     def target_body_attitude(
-        self, instrument_roll_deg: float | None = None
+        self, instrument_roll_deg: float | None = None, at: float | None = None
     ) -> tuple[float, float, float]:
-        """Return physical body +X RA/Dec/roll for this science target."""
+        """Return physical body +X RA/Dec/roll for this science target; for
+        a moving target with ``at`` given, at its position then."""
         roll = self.roll if instrument_roll_deg is None else instrument_roll_deg
         if roll == -1.0:
             roll = 0.0
+        ra, dec = (
+            self.position_at(at)
+            if at is not None and self.track
+            else (self.ra, self.dec)
+        )
         telescope = self.science_telescope()
         if telescope is None:
             if self.config is None and self._serialized_target_attitude is not None:
@@ -674,8 +719,8 @@ class PlanEntry(BaseModel):
                         dtype=np.float64,
                     )
                 )
-            return self.ra, self.dec, float(roll)
-        return telescope.target_body_attitude(self.ra, self.dec, float(roll))
+            return ra, dec, float(roll)
+        return telescope.target_body_attitude(ra, dec, float(roll))
 
     def attitude_constraint_names(
         self,
@@ -788,6 +833,26 @@ class PlanEntry(BaseModel):
                     float(self.ephem.begin.timestamp()),
                     float(self.ephem.end.timestamp()),
                 ]
+            ]
+            return 0
+
+        if self.track:
+            # A moving target: the constraint along its track, resampled on
+            # the ephemeris grid, which the moving-body evaluation wants.
+            times = list(self.ephem.timestamp)
+            positions = [
+                position_along(self.track, float(t.timestamp())) for t in times
+            ]
+            moving = combined_constraint.evaluate_moving_body(
+                self.ephem,
+                target_ras=[ra for ra, _ in positions],
+                target_decs=[dec for _, dec in positions],
+                times=times,
+                target_roll=effective_roll,
+            )
+            self.windows = [
+                [v.start_time.timestamp(), v.end_time.timestamp()]
+                for v in moving.visibility
             ]
             return 0
 

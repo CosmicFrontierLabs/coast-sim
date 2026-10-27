@@ -18,6 +18,7 @@ from ..common.vector import (
 )
 from ..config import (
     AttitudeConstraintScope,
+    AttitudeControlSystem,
     MissionConfig,
     SolarArrayDriveState,
     SolarPanelSet,
@@ -155,6 +156,8 @@ class ACS:
         self.solar_panel = config.solar_panel or SolarPanelSet()
         self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
+        self._tracked_slew: Slew | None = None
+        """The science slew whose moving target the executor is following."""
         self.saa = None
 
     def _attitude_component(self, index: int) -> float:
@@ -241,6 +244,23 @@ class ACS:
     def motion_ready_time(self, utime: float) -> float:
         """Next feasible rest-to-rest handoff, without changing executed state."""
         return self._executor.next_rest_time(utime) if self._executor else utime
+
+    def handoff_ready_time(self, utime: float) -> float:
+        """When a new slew could start if the current motion were stopped
+        now: a moving science target being tracked brakes from ``utime``,
+        as ending its observation brakes it; any other motion rests when it
+        rests. Nothing is changed."""
+        if (
+            self._tracked_slew is not None
+            and self._executor is not None
+            and self.science_observation_active
+        ):
+            state = self._executor.predict(utime)
+            trajectory = AttitudeTrajectory.braking(
+                state, self.config.spacecraft_bus.attitude_control
+            )
+            return float(trajectory.end) if trajectory is not None else utime
+        return self.motion_ready_time(utime)
 
     def predicted_attitude(self, utime: float) -> Attitude:
         """Evaluate installed physical motion without advancing execution."""
@@ -565,16 +585,23 @@ class ACS:
                     utime, "SLEW", "Delayed slew requires scheduler re-admission"
                 )
                 return None
-            executor.install(prepared, momentum_end=slew._momentum_hold_end)
+            trajectory = prepared
         else:
             slew.startra = self.ra
             slew.startdec = self.dec
             slew.startroll = self.roll
             slew.slewstart = utime
             slew.calc_slewtime()
-            executor.install(
-                AttitudeTrajectory.from_slew(slew, slew.motion_limits, executor.state)
+            trajectory = AttitudeTrajectory.from_slew(
+                slew, slew.motion_limits, executor.state
             )
+        tracking = self._tracking_after(slew, trajectory, slew.motion_limits)
+        if tracking is not None:
+            trajectory = AttitudeTrajectory(
+                (*trajectory.legs, *tracking.legs), tracking.end
+            )
+        executor.install(trajectory, momentum_end=slew._momentum_hold_end)
+        self._tracked_slew = slew if tracking is not None else None
 
         slewdist = slew.slewdist
         self._log_or_print(
@@ -596,13 +623,65 @@ class ACS:
             self.science_observation_active = False
         return slew
 
+    TRACK_SAMPLE_SECONDS = 60.0
+    """How often a moving target's track is sampled for the executor."""
+
+    def _tracking_after(
+        self, slew: Slew, trajectory: AttitudeTrajectory, limits: AttitudeControlSystem
+    ) -> AttitudeTrajectory | None:
+        """The motion that follows the slew to a moving science target: its
+        track, at the roll the slew ends at, from the slew's end to the
+        observation's end, as a ground contact's profile is followed, then a
+        stop. None for a fixed target, or one not observed past the slew."""
+        target = slew.at
+        # A test double's target has no track to speak of.
+        if (
+            not self._is_science_pointing(slew)
+            or getattr(target, "moves", False) is not True
+        ):
+            return None
+        assert target is not None
+        end = float(getattr(target, "end", 0.0) or 0.0)
+        begin = float(slew.slewend)
+        if end <= begin + self.TRACK_SAMPLE_SECONDS:
+            return None
+        instrument_roll = (
+            slew.instrument_roll if slew.instrument_roll is not None else slew.endroll
+        )
+        arrival = trajectory.state(begin)
+        samples: list[tuple[float, Attitude]] = [(begin, arrival.attitude)]
+        time = begin + self.TRACK_SAMPLE_SECONDS
+        while time < end:
+            samples.append(
+                (time, target.target_body_attitude(instrument_roll, at=time))
+            )
+            time += self.TRACK_SAMPLE_SECONDS
+        samples.append((end, target.target_body_attitude(instrument_roll, at=end)))
+        tracking = AttitudeTrajectory.tracking(samples, limits, initial_state=arrival)
+        self._log_or_print(
+            begin,
+            "SLEW",
+            f"{unixtime2date(begin)}: Tracking moving target {slew.obsid} at "
+            f"{target.track_rate_deg_per_s(begin) * 3600.0:.3f} deg/h until "
+            f"{unixtime2date(end)}",
+        )
+        return tracking
+
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
         return slew.obstype == ObsType.PPT and isinstance(slew, Slew)
 
-    def end_science_observation(self) -> None:
-        """Mark the current held attitude as no longer collecting science."""
+    def end_science_observation(self, utime: float | None = None) -> None:
+        """Mark the current held attitude as no longer collecting science. A
+        moving target being tracked is braked to rest from ``utime``, so the
+        next slew need not wait for the end of its track."""
         self.science_observation_active = False
+        if utime is None or self._tracked_slew is None or self._executor is None:
+            return
+        executor = self._advance_attitude(utime)
+        if executor.next_rest_time(utime) > utime:
+            executor.request_stop(utime, self.config.spacecraft_bus.attitude_control)
+        self._tracked_slew = None
 
     def begin_desaturation(self) -> None:
         """A thruster momentum dump begins: the attitude held is its, and the
@@ -945,6 +1024,14 @@ class ACS:
         # Check if in pass dwell phase (after slew, during communication)
         if self._is_in_pass_dwell(utime):
             return ACSMode.PASS
+
+        # A moving science target is followed at its rate while observed.
+        if (
+            self._tracked_slew is not None
+            and self._tracked_slew is self.last_slew
+            and self.science_observation_active
+        ):
+            return ACSMode.SCIENCE
 
         # Tracking can be braking after contact ends, independently of the
         # stale ingress-slew metadata. Do not report that moving tail as IDLE.
