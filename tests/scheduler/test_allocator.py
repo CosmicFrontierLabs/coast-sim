@@ -674,7 +674,9 @@ class TestDispatchPreference:
     def test_the_bonus_covers_a_shortened_snapshot(self) -> None:
         """Collection cut to 300 s by a deadline, 240 allocated seconds cover
         80 % of it: merit 40 is worth 56 and beats 50, where measured against
-        the full 20-minute snapshot it would be worth 44."""
+        the full 20-minute snapshot it would be worth 44. With no scoring
+        weights set, the candidates are still compared on that value rather
+        than taken in merit order."""
         config = _config(2)
         ditl = QueueDITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=2))
         queue_targets(
@@ -687,7 +689,6 @@ class TestDispatchPreference:
         queue = _queue(ditl)
         queue.prefer = lambda obsid: 240.0 if obsid == 1 else 0.0
         queue.allocation_bonus = 0.5
-        queue.slew_distance_weight = 1e-9
 
         target = queue.get(
             105.0,

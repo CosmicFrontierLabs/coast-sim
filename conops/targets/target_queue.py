@@ -432,6 +432,10 @@ class TargetQueue:
             # Selected now, it collects after now.
             and (t.earliest_start is None or utime >= t.earliest_start)
         ]
+        # Candidates are scored, rather than the first in merit order taken,
+        # when anything beyond base merit tells them apart. An allocation
+        # does: its bonus is for the collection a candidate would make now,
+        # which the merit order, from a full snapshot, cannot tell.
         score_candidates = (
             self.slew_distance_weight != 0.0
             or self.slew_time_weight != 0.0
@@ -440,6 +444,7 @@ class TargetQueue:
             or self.radiator_sun_exposure_weight != 0.0
             or self.radiator_earth_exposure_weight != 0.0
             or merit_model.is_dynamic
+            or (self.prefer is not None and self.allocation_bonus > 0.0)
         )
         overfill = 0
         """Candidates passed over because the recorder cannot hold their data."""
