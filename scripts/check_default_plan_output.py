@@ -14,7 +14,6 @@ import math
 import os
 import sys
 import tempfile
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +22,7 @@ from unittest.mock import patch
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict
 
 _MPLCONFIGDIR = Path(tempfile.gettempdir()) / "coast-sim-matplotlib"
 _MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
@@ -124,8 +124,9 @@ class DeterministicEphemeris:
 rust_ephem.Ephemeris.register(DeterministicEphemeris)
 
 
-@dataclass(frozen=True)
-class ScenarioTarget:
+class ScenarioTarget(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     obsid: int
     name: str
     ra: float
@@ -139,11 +140,31 @@ class ScenarioTarget:
 SCENARIO_BEGIN = datetime(2026, 1, 1, tzinfo=timezone.utc)
 SCENARIO_END = SCENARIO_BEGIN + timedelta(days=1)
 SCENARIO_TARGETS = (
-    ScenarioTarget(10000, "coast-default-0", 20.0, -10.0, 90.0, 900),
-    ScenarioTarget(10001, "coast-default-1", 75.0, 5.0, 92.0, 900),
-    ScenarioTarget(10002, "coast-default-2", 140.0, 20.0, 88.0, 1200),
-    ScenarioTarget(10003, "coast-default-3", 215.0, -25.0, 95.0, 600),
-    ScenarioTarget(10004, "coast-default-4", 300.0, 35.0, 85.0, 900),
+    ScenarioTarget(
+        obsid=10000, name="coast-default-0", ra=20.0, dec=-10.0, merit=90.0, exptime=900
+    ),
+    ScenarioTarget(
+        obsid=10001, name="coast-default-1", ra=75.0, dec=5.0, merit=92.0, exptime=900
+    ),
+    ScenarioTarget(
+        obsid=10002,
+        name="coast-default-2",
+        ra=140.0,
+        dec=20.0,
+        merit=88.0,
+        exptime=1200,
+    ),
+    ScenarioTarget(
+        obsid=10003,
+        name="coast-default-3",
+        ra=215.0,
+        dec=-25.0,
+        merit=95.0,
+        exptime=600,
+    ),
+    ScenarioTarget(
+        obsid=10004, name="coast-default-4", ra=300.0, dec=35.0, merit=85.0, exptime=900
+    ),
 )
 
 
@@ -217,7 +238,14 @@ def build_default_plan_payload() -> dict[str, Any]:
         "ut1": {"available": False},
         "polar_motion": {"available": False},
     }
-    with patch.object(rust_ephem, "get_eop_provenance", lambda: provenance_override):
+    # Finite-drive evaluation asks its own eclipse constraint. Keep that path
+    # under the synthetic scenario's no-eclipse assumption too: its adapter is
+    # intentionally not a native rust-ephem ephemeris.
+    with (
+        patch.object(rust_ephem, "get_eop_provenance", lambda: provenance_override),
+        patch("conops.config.solar_panel._get_eclipse_constraint") as panel_eclipse,
+    ):
+        panel_eclipse.return_value.in_constraint.return_value = False
         if not ditl.calc():
             raise RuntimeError("Default plan scenario failed to calculate")
 

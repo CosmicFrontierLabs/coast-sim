@@ -40,6 +40,7 @@ from .momentum import (
     wheel_array_capacity_n_m_s,
 )
 from .observation_categories import ObservationCategories, ObservationCategory
+from .observation_groups import ObservationGroup, ObservationGroups
 from .observation_timing import BudgetStep, ObservationTiming
 from .power import PowerDraw
 from .radiator import (
@@ -123,6 +124,8 @@ __all__ = [
     "TelescopeType",
     "ObservationCategories",
     "ObservationCategory",
+    "ObservationGroup",
+    "ObservationGroups",
     "BudgetStep",
     "ObservationTiming",
     "OnboardRecorder",

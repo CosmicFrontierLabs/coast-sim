@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ..common.enums import AntennaType, Polarization
+from ..common.numerics import UNIT_MAGNITUDE_TOLERANCE
 from ._base import ConfigModel
 
 
@@ -212,7 +213,7 @@ class AntennaPointing(ConfigModel):
         cls, v: tuple[float, float, float]
     ) -> tuple[float, float, float]:
         magnitude = sum(component * component for component in v) ** 0.5
-        if magnitude < 0.99 or magnitude > 1.01:
+        if abs(magnitude - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(
                 f"Fixed antenna boresight must be a unit vector. Got magnitude {magnitude}"
             )

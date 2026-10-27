@@ -1,5 +1,5 @@
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, NamedTuple, cast
 
@@ -18,6 +18,7 @@ from ..config import (
     FaultManagementRun,
     MissionConfig,
     OnboardRecorder,
+    ScienceData,
     SolarArrayDriveState,
 )
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
@@ -38,7 +39,9 @@ from ..simulation.passes import Pass, PassTimes
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
+from ..targets.too import TOORequest
 from .ditl_log import DITLLog
+from .plan_validator import PlanExecutionValidator
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
@@ -244,6 +247,8 @@ class DITLMixin:
     telemetry: Telemetry
     calculate_field_of_regard: bool
     _stored_momentum_tracker: StoredMomentumTracker | None
+    too_register: list[TOORequest]
+    _plan_validator: Callable[[], PlanExecutionValidator]
 
     def __init__(
         self,
@@ -341,6 +346,85 @@ class DITLMixin:
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
         self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+
+    def submit_too(
+        self,
+        obsid: int | TOORequest,
+        ra: float = 0.0,
+        dec: float = 0.0,
+        merit: float = 0.0,
+        exptime: int = 0,
+        name: str = "",
+        submit_time: float | datetime | None = None,
+        deadline: float | datetime | None = None,
+        science_data: Mapping[str, ScienceData] | None = None,
+        interrupt: bool = True,
+        instrument_modes: Mapping[str, str] | None = None,
+    ) -> TOORequest:
+        """Submit a Target of Opportunity (TOO) request: a
+        :class:`~conops.targets.TOORequest` holding any request, or the
+        fields of a plain pointing. It joins the target pool once its
+        ``submit_time`` is reached.
+
+        Args:
+            obsid: Unique observation identifier, or a ready TOORequest
+            ra: Right ascension in degrees
+            dec: Declination in degrees
+            merit: Base merit. A TOO interrupts only if its value exceeds the
+                current observation's.
+            exptime: Requested exposure time in seconds
+            name: Human-readable name for the TOO target
+            submit_time: When the TOO becomes active, as a Unix timestamp or a
+                datetime. None means active from the start of the simulation.
+            deadline: Latest time science collection may begin, as a Unix
+                timestamp or a datetime. None means no deadline.
+            science_data: Science data observing the TOO generates, keyed by
+                instrument name; other instruments generate their own.
+            interrupt: Whether the TOO may interrupt the observation in
+                progress; if False it is chosen when that observation ends.
+            instrument_modes: The instruments observing the TOO uses and the
+                mode each is in, by name; None: every instrument with modes,
+                in SCIENCE.
+
+        Returns:
+            The submitted TOORequest
+
+        Example:
+            >>> # TOO active immediately, to be observed within 4 hours
+            >>> ditl.submit_too(
+            ...     obsid=1000001,
+            ...     ra=180.0,
+            ...     dec=45.0,
+            ...     merit=10000.0,
+            ...     exptime=3600,
+            ...     name="GRB 250101A",
+            ...     deadline=ditl.ustart + 4 * 3600,
+            ... )
+        """
+        if isinstance(obsid, TOORequest):
+            too = obsid
+            self.config.payload.check_request(dict(too.instrument_modes))
+            self.too_register.append(too)
+            return too
+        self.config.payload.check_request(dict(instrument_modes or {}))
+        too = TOORequest.model_validate(
+            {
+                "config": self.config,
+                "obsid": obsid,
+                "ra": ra,
+                "dec": dec,
+                "merit": merit,
+                "exptime": exptime,
+                "name": name,
+                "submit_time": submit_time,
+                "deadline": deadline,
+                "science_data": dict(science_data or {}),
+                "interrupt": interrupt,
+                "instrument_modes": dict(instrument_modes or {}),
+            }
+        )
+        self.too_register.append(too)
+        return too
 
     @property
     def fault_management(self) -> FaultManagementRun:
@@ -710,7 +794,7 @@ class DITLMixin:
             forecast.start_from_eci(start_eci_n_m_s)
         else:
             forecast.start_from_eci((0.0, 0.0, 0.0))
-        samples = np.arange(begin, end, self.step_size)
+        samples: npt.NDArray[np.floating] = np.arange(begin, end, self.step_size)
         if len(samples) == 0 or samples[-1] < end:
             samples = np.append(samples, end)
         slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
