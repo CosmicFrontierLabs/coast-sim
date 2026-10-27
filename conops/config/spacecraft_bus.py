@@ -9,6 +9,7 @@ from .data_generator import HousekeepingData
 from .power import PowerDraw
 from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
+from .surfaces import SurfaceModel
 from .thermal import Heater
 
 # Allow roughly eight significant digits of input precision. This is a
@@ -54,6 +55,14 @@ class SpacecraftBus(ConfigModel):
     radiators: RadiatorConfiguration = Field(
         default_factory=DefaultRadiatorConfiguration,
         description="Body-mounted radiator configuration",
+    )
+    surfaces: SurfaceModel | None = Field(
+        default=None,
+        description=(
+            "The spacecraft's surfaces about its centre of mass, for the "
+            "torques of sunlight and drag; None builds a placeholder from the "
+            "bus, panels and telescopes when those torques are tracked"
+        ),
     )
 
     @field_validator("inertia_tensor_body_kg_m2", mode="before")

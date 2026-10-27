@@ -106,6 +106,40 @@ class ObservationSequence(BaseModel):
             handoff_seconds=base.handoff_seconds if last else 0.0,
         )
 
+    def step_starts(
+        self,
+        acs: AttitudeControlSystem,
+        timing: ObservationTiming,
+        ra: float,
+        dec: float,
+    ) -> list[float]:
+        """When each step begins, in seconds from the first step's start:
+        after the steps before it, the slews between steps that point
+        elsewhere or roll at the same pointing, and the setup of steps that
+        ask for it. A roll between steps at one pointing is a slew about the
+        boresight, timed as the ACS flies it."""
+        starts: list[float] = []
+        cursor = 0.0
+        previous = self.pointing_of(0, ra, dec)
+        previous_roll = self.steps[0].roll_offset_deg or 0.0
+        for index, step in enumerate(self.steps):
+            if index > 0:
+                current = self.pointing_of(index, ra, dec)
+                roll = step.roll_offset_deg or 0.0
+                if current != previous:
+                    cursor += float(acs.slew_time(_separation_deg(previous, current)))
+                    previous = current
+                else:
+                    cursor += float(
+                        acs.slew_time(_roll_delta_deg(previous_roll, roll), BORESIGHT)
+                    )
+                previous_roll = roll
+                if step.setup:
+                    cursor += timing.setup_seconds
+            starts.append(cursor)
+            cursor += step.duration_seconds
+        return starts
+
     def overhead_seconds(
         self,
         acs: AttitudeControlSystem,
@@ -114,28 +148,10 @@ class ObservationSequence(BaseModel):
         dec: float,
     ) -> float:
         """Seconds a visit takes beyond its science and the visit's own setup
-        and cleanup: calibration steps, the slews between steps that point
-        elsewhere or roll at the same pointing, and the setup of steps that
-        ask for it. A roll between steps at one pointing is a slew about the
-        boresight, timed as the ACS flies it."""
-        seconds = self.calibration_seconds
-        previous = self.pointing_of(0, ra, dec)
-        previous_roll = self.steps[0].roll_offset_deg or 0.0
-        for index, step in enumerate(self.steps):
-            if index > 0:
-                current = self.pointing_of(index, ra, dec)
-                roll = step.roll_offset_deg or 0.0
-                if current != previous:
-                    seconds += float(acs.slew_time(_separation_deg(previous, current)))
-                    previous = current
-                else:
-                    seconds += float(
-                        acs.slew_time(_roll_delta_deg(previous_roll, roll), BORESIGHT)
-                    )
-                previous_roll = roll
-                if step.setup:
-                    seconds += timing.setup_seconds
-        return seconds
+        and cleanup: calibration steps, the slews between steps and the setup
+        of steps that ask for it (see :meth:`step_starts`)."""
+        starts = self.step_starts(acs, timing, ra, dec)
+        return starts[-1] + self.steps[-1].duration_seconds - self.science_seconds
 
 
 def sequence_steps(sequence: ObservationSequence | None) -> Sequence[SequenceStep]:

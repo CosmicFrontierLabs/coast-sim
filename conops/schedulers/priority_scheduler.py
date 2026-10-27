@@ -9,7 +9,7 @@ block a better packing.
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
 from typing import NamedTuple
@@ -26,18 +26,30 @@ from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
+from ..targets import (
+    DESATURATION_OBSID,
+    Plan,
+    PlanEntry,
+    Pointing,
+    ScheduledActivity,
+    assign_obsids,
+)
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
+from .momentum import MomentumForecast, SpanCache
 from .recorder import RecorderAmount, RecorderLedgers, combine_amounts
 
 CHARGE_OBSID = 999000
 """Obsid of the first planned charge; the rest follow."""
 
 TrackingProfile = list[tuple[float, float, float]]
+
+
+_MAX_DUMPS = 50
+"""How many thruster dumps a plan reserves at most."""
 
 
 class _Verdict(Enum):
@@ -360,6 +372,9 @@ class PriorityScheduler:
         allocation_bonus: Fraction of a request's value its allocated time
             gains, so plans trade keeping to the allocation against merit.
             Zero ignores ``allocated`` altogether.
+        start_momentum_eci_n_m_s: The stored momentum in inertial coordinates
+            when the horizon starts, for the momentum forecast; the configured
+            initial momentum if None.
     """
 
     scheduler_name = "priority"
@@ -391,6 +406,7 @@ class PriorityScheduler:
         allocation_bonus: float = 0.5,
         coverage: StationCoverage | None = None,
         activities: Sequence[ScheduledActivity] = (),
+        start_momentum_eci_n_m_s: Sequence[float] | None = None,
     ) -> None:
         # Revalidate reused configurations before building an ephemeris.
         config.recorder_views(refresh=True)
@@ -400,6 +416,19 @@ class PriorityScheduler:
         """Fixed-time activities to reserve, in time order."""
         self._slidable: dict[int, ScheduledActivity] = {}
         """The activities reserved with a slide window, by their block."""
+        self.dumps: list[ScheduledActivity] = []
+        """The thruster dumps this scheduler has reserved where its momentum
+        forecast reached the level, in time order."""
+        self._momentum_rejected: set[int] = set()
+        """Targets whose visit stores more than the wheels' capacity from
+        empty: not planned."""
+        self.start_momentum_eci_n_m_s = (
+            tuple(float(v) for v in start_momentum_eci_n_m_s)
+            if start_momentum_eci_n_m_s is not None
+            else None
+        )
+        """The stored momentum in inertial coordinates when the horizon
+        starts; the configured initial momentum if None."""
         self.held = frozenset(int(obsid) for obsid in held)
         self.start_drive_state = start_drive_state
         """Where the solar-array drive is when the horizon starts; its
@@ -454,10 +483,245 @@ class PriorityScheduler:
     # ── Public API ────────────────────────────────────────────────────────
 
     def schedule(self) -> Plan:
-        """Build and return the plan."""
+        """Build and return the plan, within the wheels' momentum where the
+        configuration tracks it (see :meth:`_plan_within_momentum`)."""
+        self._momentum_cache: SpanCache = {}
+        """Spans of the timeline integrated for the momentum forecast, shared
+        by the passes of this plan: each pass changes the timeline only from
+        the dump it reserves onwards."""
+        return self._plan_within_momentum(self._plan_once)
+
+    def _plan_once(self) -> Plan:
+        """Build the plan with the activities and dumps reserved so far."""
         self._reserve_fixed()
         self._place_requests(self._with_allocated_time(self._requests()))
         return self._finish(self.timeline)
+
+    def _plan_within_momentum(self, build: Callable[[], Plan]) -> Plan:
+        """Build the plan, and where the forecast of the stored momentum
+        along it reaches the level a thruster dump is called for at, reserve
+        a dump there and build again, until no dump is called for.
+
+        Each pass plans from the start with the dumps so far as fixed
+        activities, so the plan before a dump is the plan that fills the
+        wheels to it; a dump found earlier than one already reserved
+        replaces that one and those after it, which the next pass finds
+        again if they are still needed. Without thrusters the forecast is
+        logged where it passes the capacity, and the plan stands.
+
+        A dump goes between observations (see :meth:`_dump_placement`): after
+        the one the forecast reaches the level inside, where the capacity is
+        not reached inside it too; before it, where it is but the observation
+        fits from empty wheels; a visit that does not fit from empty is not
+        planned, and a plain observation that does not is cut at the level.
+        """
+        plan = build()
+        forecast = self._momentum
+        if forecast is None:
+            return plan
+        level = forecast.level_n_m_s
+        capacity = forecast.capacity_n_m_s
+        if level is None:
+            if capacity is not None:
+                crossing = forecast.first_crossing(self.timeline, capacity)
+                if crossing is not None:
+                    self._log(
+                        crossing,
+                        f"The stored momentum reaches the {capacity} N m s "
+                        f"capacity at {unixtime2date(crossing)}; no thrusters to dump it",
+                    )
+            return plan
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
+        for _ in range(_MAX_DUMPS):
+            crossing = self._next_momentum_crossing(level, waiting=True)
+            if crossing is None:
+                self._log_forecast_past_capacity()
+                return plan
+            placement = self._dump_placement(crossing, capacity)
+            if placement is None:
+                plan = build()
+                continue
+            begin, where = placement
+            if begin + dump.duration_seconds > self.ctx.uend:
+                return plan
+            if any(abs(d.begin - begin) < 1e-6 for d in self.dumps):
+                # The same dump again: the crossing it answers stands with
+                # the wheels emptied there, so another pass would not change it.
+                self._log(
+                    crossing,
+                    f"Stored momentum reaches the planning level {level:.3f} N m s "
+                    f"at {unixtime2date(crossing)} with a dump already reserved "
+                    f"{where}; the plan stands",
+                )
+                self._log_forecast_past_capacity()
+                return plan
+            kept = [d for d in self.dumps if d.end <= begin]
+            reserved = ScheduledActivity(
+                name="Desaturation",
+                begin=begin,
+                duration_seconds=dump.duration_seconds,
+                desaturation=True,
+                obsid=DESATURATION_OBSID + len(kept),
+            )
+            self.dumps = [*kept, reserved]
+            self._log(
+                begin,
+                f"Stored momentum reaches the planning level {level:.3f} N m s at "
+                f"{unixtime2date(crossing)}: thruster dump reserved {where} at "
+                f"{unixtime2date(begin)}",
+                reserved.obsid,
+            )
+            plan = build()
+        self._log(
+            self.ctx.uend,
+            f"{_MAX_DUMPS} thruster dumps reserved; the plan may still fill the wheels",
+        )
+        return plan
+
+    def _log_forecast_past_capacity(self) -> None:
+        """Say where the plan's forecast reaches the capacity, if it does:
+        the dumps reserved could not keep it within."""
+        forecast = self._momentum
+        if forecast is None or forecast.capacity_n_m_s is None:
+            return
+        capacity = forecast.capacity_n_m_s
+        crossing = forecast.first_crossing(self.timeline, capacity)
+        if crossing is not None:
+            self._log(
+                crossing,
+                f"The plan's forecast reaches the {capacity} N m s capacity at "
+                f"{unixtime2date(crossing)} with the dumps reserved",
+            )
+
+    def _dump_placement(
+        self, crossing: float, capacity: float | None
+    ) -> tuple[float, str] | None:
+        """Where the dump called for by the forecast reaching the level at
+        ``crossing`` goes: when it begins and, for the log, where. Between
+        observations: at the crossing where no observation is under way
+        there; after the observation under way where the capacity is not
+        reached inside it; before it where the capacity is but the
+        observation fits from empty wheels; at the crossing where a plain
+        observation does not fit from empty, which cuts it there. None where
+        a visit does not fit from empty: it is left out of the plan and
+        nothing is reserved this pass."""
+        assert self._momentum is not None
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
+        block = next(
+            (
+                b
+                for b in self.timeline
+                if float(b.entry.begin) <= crossing < float(b.end)
+                and entry_obstype(b.entry) not in (ObsType.ACTIVITY, ObsType.GSP)
+            ),
+            None,
+        )
+        if block is None:
+            return self._dump_around_fixed(crossing, capacity, dump.duration_seconds)
+        obsid = int(block.entry.obsid)
+        at_capacity = (
+            self._next_momentum_crossing(capacity) if capacity is not None else None
+        )
+        # The wheels go on filling through the dump: it must end within the capacity.
+        after = self.ctx.ceil_step(float(block.end))
+        if at_capacity is None or at_capacity > after + dump.duration_seconds:
+            return after, f"after observation {obsid}"
+        assert capacity is not None
+        loading = self._momentum.loading(block)
+        if loading <= capacity:
+            return (
+                self.ctx.floor_step(float(block.entry.begin)),
+                f"before observation {obsid}, which would reach the capacity",
+            )
+        if block.steps:
+            self._momentum_rejected.add(obsid)
+            self._log(
+                float(block.entry.begin),
+                f"Visit of {obsid} not planned: its loading of {loading:.3f} N m s "
+                f"from empty wheels exceeds the {capacity} N m s capacity",
+                obsid,
+            )
+            return None
+        return (
+            self.ctx.ceil_step(crossing),
+            f"inside observation {obsid}, which stores more than the capacity",
+        )
+
+    def _dump_around_fixed(
+        self, crossing: float, capacity: float | None, duration: float
+    ) -> tuple[float, str]:
+        """Where a dump goes for a crossing that falls in no observation: at
+        the crossing, unless the crossing falls inside a scheduled activity
+        or a contact, which a dump cannot interrupt. Then after that block
+        where the capacity is not reached through the dump's own length,
+        else before it, so the crossing is addressed rather than a dump held
+        after the block for a crossing it leaves standing."""
+        inside = next(
+            (
+                b
+                for b in self.timeline
+                if float(b.entry.begin) <= crossing < float(b.end)
+                and entry_obstype(b.entry) in (ObsType.ACTIVITY, ObsType.GSP)
+                and not b.entry.desaturation
+            ),
+            None,
+        )
+        if inside is None:
+            return self.ctx.ceil_step(crossing), "between observations"
+        name = inside.entry.name or str(inside.entry.obsid)
+        what = "contact" if inside.is_pass else "activity"
+        after = self.ctx.ceil_step(float(inside.end))
+        at_capacity = (
+            self._next_momentum_crossing(capacity) if capacity is not None else None
+        )
+        if at_capacity is None or at_capacity > after + duration:
+            return after, f"after {what} {name}"
+        before = self.ctx.floor_step(float(inside.ready) - duration)
+        if before < self.ctx.ustart:
+            return after, f"after {what} {name}, which leaves no room before it"
+        return before, f"before {what} {name}, which would reach the capacity inside"
+
+    def _next_momentum_crossing(
+        self, level: float, *, waiting: bool = False
+    ) -> float | None:
+        """When the forecast first reaches ``level`` that the dumps already
+        reserved do not answer. A crossing inside a reserved dump is
+        answered: the wheels are empty when it ends. With ``waiting``, so is
+        a crossing a reserved dump follows, as long as the capacity is not
+        reached before that dump begins: the dump was reserved to follow the
+        observation the crossing falls in."""
+        assert self._momentum is not None
+        capacity = self._momentum.capacity_n_m_s
+        after: float | None = None
+        while True:
+            crossing = self._momentum.first_crossing(self.timeline, level, after=after)
+            if crossing is None:
+                return None
+            answered = next(
+                (
+                    d
+                    for d in self.dumps
+                    if d.begin - self.ctx.step_size <= crossing <= d.end
+                ),
+                None,
+            )
+            if answered is None and waiting:
+                following = next((d for d in self.dumps if d.begin > crossing), None)
+                if following is not None:
+                    at_capacity = (
+                        self._momentum.first_crossing(
+                            self.timeline, capacity, after=crossing
+                        )
+                        if capacity is not None
+                        else None
+                    )
+                    if at_capacity is None or at_capacity >= following.begin:
+                        answered = following
+            if answered is None:
+                return crossing
+            after = answered.end
 
     def _reserve_fixed(self) -> None:
         """Start a timeline holding the locked entries and reachable passes."""
@@ -476,6 +740,17 @@ class PriorityScheduler:
             if isinstance(own, ObservationTiming):
                 self.ctx.register_timing(int(target.obsid), own)
         self._battery = self._battery_ledger()
+        self._momentum: MomentumForecast | None = None
+        if self.config.spacecraft_bus.attitude_control.stored_momentum.enabled:
+            self._momentum = MomentumForecast(
+                self.config,
+                self.ctx,
+                start_momentum_eci_n_m_s=self.start_momentum_eci_n_m_s,
+                start_attitude=(
+                    self.start_state.attitude if self.start_state is not None else None
+                ),
+                cache=getattr(self, "_momentum_cache", None),
+            )
         self._gap_charges_cache: dict[
             tuple[object, ...], tuple[list[_Block], Slew | None]
         ] = {}
@@ -520,7 +795,7 @@ class PriorityScheduler:
             for gspass in self.ctx.predict_passes():
                 if gspass.requires_tracking:
                     self._place_pass(gspass)
-        for activity in self.activities:
+        for activity in sorted([*self.activities, *self.dumps], key=lambda a: a.begin):
             if self.ctx.ustart <= activity.begin < self.ctx.uend:
                 self._place_activity(activity)
         self._ledger = self._recorder_ledger()
@@ -983,6 +1258,7 @@ class PriorityScheduler:
             if (
                 target.done
                 or int(target.obsid) in self.held
+                or int(target.obsid) in self._momentum_rejected
                 or remaining < snapshot_min_seconds(target)
             ):
                 continue
@@ -1156,8 +1432,28 @@ class PriorityScheduler:
         block's. Returns None if no start from ``earliest`` reaches the block by
         its ready time with every check passing. A block that follows is
         reached by a slew of no length to the attitude it is at, which it
-        must then hold through its length.
+        must then hold through its length; where that attitude cannot be
+        held, through the block or on through the idle time to the block
+        after it, the block slews to the safe idle attitude of its start
+        instead, the one the simulation holds before its first command.
         """
+        slew = self._connect_to(pred, block, earliest, attitude_in)
+        if slew is None and block.follows and attitude_in is None:
+            slew = self._connect_to(
+                pred, block, earliest, self.ctx.initial_attitude(block.ready)
+            )
+        return slew
+
+    def _connect_to(
+        self,
+        pred: _Block | None,
+        block: _Block,
+        earliest: float,
+        attitude_in: Attitude | None,
+    ) -> Slew | None:
+        """Find the slew into ``block`` after ``pred`` to ``attitude_in``, or to
+        the block's own attitude, or, for a block that follows, the attitude
+        it is at."""
         if block.is_pass:
             obstype = ObsType.GSP
         elif block.is_charge:
@@ -1282,8 +1578,10 @@ class PriorityScheduler:
                 )
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
-        if block.follows or (succ is not None and succ.follows):
+        if block.follows:
             self._reconnect_following(index)
+        elif succ is not None and succ.follows:
+            self._reconnect_following(index + 1)
         self._energy = self._charged_energy(self.timeline)
 
     @staticmethod
@@ -1511,13 +1809,14 @@ class PriorityScheduler:
                 else self.ctx.initial_attitude(self.ctx.ustart)
             )
         )
+        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
         violation = self.ctx.first_hold_violation(
-            attitude, activity.begin, self.ctx.ceil_step(end), ACSMode.IDLE
+            attitude, activity.begin, self.ctx.ceil_step(end), mode
         )
         if violation is not None:
             self._log(
                 activity.begin,
-                f"Activity {activity.name} cannot hold its attitude in IDLE at "
+                f"Activity {activity.name} cannot hold its attitude in {mode.name} at "
                 f"{unixtime2date(violation)}; leaving it out",
                 activity.obsid,
             )
@@ -2186,10 +2485,12 @@ class PriorityScheduler:
 
             latest_end = min(window[1], horizon_end)
             succ_slewtime = 0.0
-            if succ is not None and not succ.follows:
-                succ_slewtime = self.ctx.slew(
-                    departure, succ.attitude_in, collection_begin
-                ).slewtime
+            if succ is not None:
+                if not succ.follows:
+                    # A following successor is reached by no slew.
+                    succ_slewtime = self.ctx.slew(
+                        departure, succ.attitude_in, collection_begin
+                    ).slewtime
                 # The successor's slew must start on a step after this ends.
                 latest_end = min(
                     latest_end, self.ctx.floor_step(succ.ready - succ_slewtime)

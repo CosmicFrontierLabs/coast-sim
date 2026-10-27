@@ -9,6 +9,7 @@ from conops.common import ObsType
 from conops.config import MissionConfig, ObservationTiming
 from conops.ditl import QueueDITL
 from conops.targets import ObservationSequence, Pointing, SequenceStep
+from conops.targets.sequence import _separation_deg as _separation
 
 from .planning_scenario import BEGIN, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -164,6 +165,29 @@ class TestModel:
         assert elsewhere.overhead_seconds(acs, TIMING, *TARGET) == pytest.approx(
             no_roll.overhead_seconds(acs, TIMING, *TARGET)
         )
+
+    def test_step_starts_place_each_step_after_the_slews_and_setups(self) -> None:
+        """Each step begins after the steps before it, the slews between
+        pointings and the setup of a step that asks for it; the overhead is
+        the visit's length beyond its science."""
+        config = _config(2)
+        acs = config.spacecraft_bus.attitude_control
+        starts = SEQUENCE.step_starts(acs, TIMING, *TARGET)
+        slew = acs.slew_time(_separation(REFERENCE, TARGET))
+        assert starts[0] == 0.0
+        assert starts[1] == pytest.approx(10 * MIN)
+        assert starts[2] == pytest.approx(15 * MIN + slew)
+        assert starts[3] == pytest.approx(35 * MIN + 2 * slew)
+        assert SEQUENCE.overhead_seconds(acs, TIMING, *TARGET) == pytest.approx(
+            starts[3] + 5 * MIN - SCIENCE
+        )
+        with_setup = ObservationSequence(
+            steps=[
+                SequenceStep(name="a", duration_seconds=60),
+                SequenceStep(name="b", duration_seconds=60, setup=True),
+            ]
+        )
+        assert with_setup.step_starts(acs, TIMING, *TARGET) == [0.0, 60.0 + 120.0]
 
     def test_step_pointings(self) -> None:
         config = _config(2)

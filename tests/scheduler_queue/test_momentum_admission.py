@@ -53,7 +53,7 @@ def scenario(monkeypatch):
                 slew_acceleration=1,
                 settle_time=90,
                 stored_momentum=StoredMomentumConfig(
-                    capacity_n_m_s=20, roll_step_deg=90
+                    capacity_n_m_s=20, roll_step_deg=90, enforce_capacity=True
                 ),
             ),
             star_trackers=StarTrackerConfiguration(

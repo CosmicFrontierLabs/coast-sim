@@ -121,6 +121,8 @@ class ACS:
         self.obstype = ObsType.PPT
         self.acsmode = ACSMode.IDLE
         self.science_observation_active = False
+        self.desaturation_active = False
+        """Whether the held attitude is a thruster momentum dump's."""
         self.in_eclipse = False  # Initialize eclipse state
         self.in_safe_mode = False  # Safe mode flag - once True, cannot be exited
 
@@ -239,6 +241,17 @@ class ACS:
             if self._executor
             else self._initial_attitude
         )
+
+    def executed_attitude(self, utime: float) -> Attitude:
+        """The attitude flown at ``utime``, a time up to the present, from
+        the motion that was flying then."""
+        if self._executor is None:
+            return (self.ra, self.dec, self.roll)
+        return self._executor.flown(utime).attitude
+
+    def attitude_moved(self, begin: float, end: float) -> bool:
+        """Whether the attitude moved at any time in ``(begin, end]``."""
+        return self._executor is not None and self._executor.moved_between(begin, end)
 
     def _log_or_print(
         self, utime: float, event_type: DITLEventType, description: str
@@ -573,6 +586,15 @@ class ACS:
         """Mark the current held attitude as no longer collecting science."""
         self.science_observation_active = False
 
+    def begin_desaturation(self) -> None:
+        """A thruster momentum dump begins: the attitude held is its, and the
+        mode is DESAT once any slew into it is over."""
+        self.desaturation_active = True
+
+    def end_desaturation(self) -> None:
+        """The thruster momentum dump ends."""
+        self.desaturation_active = False
+
     def cancel_pending_slews(self, obsid: int) -> None:
         """Drop queued target slews for ``obsid`` that have not started yet."""
         self.command_queue = [
@@ -832,6 +854,7 @@ class ACS:
         self.command_queue.clear()
         self.current_pass = None
         self.science_observation_active = False
+        self.desaturation_active = False
         self.current_slew = None
         executor = self._advance_attitude(utime)
         self.last_slew = Slew.idle_hold(self.config, *executor.state.attitude, utime)
@@ -909,6 +932,10 @@ class ACS:
         # stale ingress-slew metadata. Do not report that moving tail as IDLE.
         if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
             return ACSMode.SLEWING
+
+        # Holding for a thruster momentum dump
+        if self.desaturation_active:
+            return ACSMode.DESAT
 
         # Check if in SAA region
         if self.saa is not None and self.saa.insaa(utime):
@@ -1122,6 +1149,7 @@ class ACS:
         self.current_slew = None
         self.last_slew = hold
         self.science_observation_active = False
+        self.desaturation_active = False
 
     def _is_in_charging_mode(self, utime: float) -> bool:
         """Check if spacecraft is in charging mode (dwelling at charge pointing).

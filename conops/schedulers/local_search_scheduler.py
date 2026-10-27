@@ -181,7 +181,11 @@ class LocalSearchScheduler(PriorityScheduler):
         """Objective of the returned plan."""
 
     def schedule(self) -> Plan:
-        """Build the priority-first plan, then search for a better one."""
+        """Build the priority-first plan, then search for a better one, within
+        the wheels' momentum where the configuration tracks it."""
+        return self._plan_within_momentum(self._plan_once)
+
+    def _plan_once(self) -> Plan:
         start = self._start_from_priority_plan()
         best = self._best = self._search(start)
         return self._finish_best(best)
