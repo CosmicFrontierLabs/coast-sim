@@ -319,10 +319,85 @@ class TestLongRangeAllocator:
             config, BEGIN, BEGIN + timedelta(hours=2), solver="greedy"
         )
 
-        demand = allocator._demand(target, T0, {})
+        demand = allocator._demand(target, T0, {}, {})
 
         assert demand is not None
         assert demand.value == pytest.approx(30.0)
+
+    @pytest.mark.parametrize(
+        "solver", ["greedy", pytest.param("milp", marks=needs_ortools)]
+    )
+    def test_requests_are_valued_by_the_shares_delivered(self, solver: str) -> None:
+        """With program A holding all the science collected, its deficit takes
+        its merit 50 to 0 and B's raises merit 49 to 99: B gets the 600 s."""
+        config = _config(
+            1,
+            weights=TargetConfig(completion_deficit_weight=100.0),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=1, obsid_max=3, program="A", time_share=0.5
+                ),
+                ObservationCategory(
+                    name="B", obsid_min=3, obsid_max=4, program="B", time_share=0.5
+                ),
+            ],
+        )
+        collected = _target(config, 1, 105.0, 10.0, merit=50, minutes=10)
+        collected._collected_seconds = HOUR
+        collected.done = True
+        a = _target(config, 2, 105.0, 10.0, merit=50, minutes=10)
+        b = _target(config, 3, 110.0, 10.0, merit=49, minutes=10)
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(minutes=10),
+            bin_length=timedelta(minutes=10),
+            efficiency=1.0,
+            reserve=0.0,
+            solver=solver,  # type: ignore[arg-type]
+        )
+
+        allocation = allocator.allocate([collected, a, b], T0)
+
+        assert sum(allocation.seconds[3].values()) == pytest.approx(10 * MIN)
+        assert sum(allocation.seconds.get(2, {}).values()) == 0.0
+
+    @needs_ortools
+    def test_a_negative_merit_leaves_the_milp_bounded(self) -> None:
+        """A deficit that takes program A's merit 50 to -50 must not make the
+        load balancing a reward: the MILP still solves, and gives B the 600 s."""
+        config = _config(
+            1,
+            weights=TargetConfig(completion_deficit_weight=200.0),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=1, obsid_max=3, program="A", time_share=0.5
+                ),
+                ObservationCategory(
+                    name="B", obsid_min=3, obsid_max=4, program="B", time_share=0.5
+                ),
+            ],
+        )
+        collected = _target(config, 1, 105.0, 10.0, merit=50, minutes=10)
+        collected._collected_seconds = HOUR
+        collected.done = True
+        a = _target(config, 2, 105.0, 10.0, merit=50, minutes=10)
+        b = _target(config, 3, 110.0, 10.0, merit=49, minutes=10)
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(minutes=10),
+            bin_length=timedelta(minutes=10),
+            efficiency=1.0,
+            reserve=0.0,
+            solver="milp",
+        )
+
+        allocation = allocator.allocate([collected, a, b], T0)
+
+        assert allocator.solver_status == "OPTIMAL"
+        assert sum(allocation.seconds[3].values()) == pytest.approx(10 * MIN)
+        assert sum(allocation.seconds.get(2, {}).values()) == 0.0
 
     @pytest.mark.parametrize(
         "options",
@@ -938,6 +1013,237 @@ class TestAllocatedTime:
         assert len(_science(plan)) == 1
         assert scheduler.unplaced == []
 
+    def test_splitting_off_allocated_seconds_leaves_a_usable_rest(self) -> None:
+        """Twenty allocated minutes of a 25-minute request would leave five,
+        too few for a 20-minute snapshot: all 25 are planned, as they are
+        without the allocation."""
+        config = _config(3)
+        target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=30, ss_min=20)
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [AllocatedTime(T0, T0 + HOUR, 20 * MIN)]},
+        )
+        plan = scheduler.schedule()
+
+        (entry,) = (e for e in plan if e.obstype != ObsType.GSP)
+        assert entry.collection_seconds_between(entry.begin, entry.end) == 25 * MIN
+        assert scheduler.unplaced == []
+
+    def test_the_bonus_is_spread_over_seconds_taken_beyond_the_allocation(
+        self,
+    ) -> None:
+        """Taking all 25 minutes, 20 of them allocated, merit 40 with a bonus
+        of 0.5 is worth 40 * (1 + 0.5 * 20 / 25) = 56: behind merit 58."""
+        config = _config(3)
+        allocated = _target(
+            config, 1, 105.0, 10.0, merit=40, minutes=25, snapshot=30, ss_min=20
+        )
+        rival = _target(config, 2, 110.0, 10.0, merit=58)
+
+        plan = PriorityScheduler(
+            config,
+            [allocated, rival],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [AllocatedTime(T0, T0 + 2 * HOUR, 20 * MIN)], 2: []},
+            allocation_bonus=0.5,
+        ).schedule()
+
+        science = [e for e in plan if e.obstype != ObsType.GSP]
+        assert [int(e.obsid) for e in science] == [2, 1]
+        assert float(science[1].merit) == pytest.approx(56.0)
+
+    def test_allocated_seconds_split_off_for_the_rest_keep_their_bonus(
+        self,
+    ) -> None:
+        """Thirty-five allocated minutes of a 50-minute request would leave 15,
+        too few for a 20-minute snapshot: they are planned as 30 and 20, the
+        20 with the five allocated minutes left, worth 40 * (1 + 0.5 / 4)."""
+        config = _config(3)
+        target = _target(
+            config, 1, 105.0, 10.0, merit=40, minutes=50, snapshot=30, ss_min=20
+        )
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [AllocatedTime(T0, T0 + 2 * HOUR, 35 * MIN)]},
+            allocation_bonus=0.5,
+        )
+        plan = scheduler.schedule()
+
+        snapshots = sorted(
+            (
+                e.collection_seconds_between(e.begin, e.end),
+                float(e.merit),
+            )
+            for e in plan
+            if e.obstype != ObsType.GSP
+        )
+        assert snapshots == pytest.approx([(20 * MIN, 45.0), (30 * MIN, 60.0)])
+        assert scheduler.unplaced == []
+
+    def test_seconds_a_shortened_snapshot_leaves_join_a_later_one(self) -> None:
+        """Visibility cuts the first 30 allocated minutes of a 50-minute
+        request short. What it leaves is too few for a snapshot of its own,
+        so the 20 minutes still to place take it: all 50 are planned, as they
+        are without the allocation."""
+        hours = 6
+        config = _config(hours)
+        target = _target(
+            config, 1, *CONSTRAINED[1], merit=40, minutes=50, snapshot=30, ss_min=20
+        )
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            allocated={1: [AllocatedTime(T0 + 2 * HOUR, T0 + 4 * HOUR, 35 * MIN)]},
+            allocation_bonus=0.5,
+        )
+        plan = scheduler.schedule()
+
+        snapshots = [
+            e.collection_seconds_between(e.begin, e.end)
+            for e in plan
+            if e.obstype != ObsType.GSP
+        ]
+        assert min(snapshots) < 30 * MIN
+        assert sum(snapshots) == 50 * MIN
+        assert scheduler.unplaced == []
+
+    def test_seconds_joining_another_span_leave_their_bonus_behind(self) -> None:
+        """Visibility cuts the 30 minutes allocated in one hour short. What is
+        left joins the 20 allocated in the next hour, but without a bonus
+        there: 1429 s with 1200 of them allocated are worth
+        40 * (1 + 0.5 * 1200 / 1429), not 60."""
+        hours = 6
+        config = _config(hours)
+        target = _target(
+            config, 1, *CONSTRAINED[1], merit=40, minutes=50, snapshot=30, ss_min=20
+        )
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            allocated={
+                1: [
+                    AllocatedTime(T0 + HOUR, T0 + 2 * HOUR, 30 * MIN),
+                    AllocatedTime(T0 + 2 * HOUR, T0 + 3 * HOUR, 20 * MIN),
+                ]
+            },
+            allocation_bonus=0.5,
+        )
+        plan = scheduler.schedule()
+
+        first, second = sorted(
+            (e for e in plan if e.obstype != ObsType.GSP), key=lambda e: e.begin
+        )
+        assert float(first.merit) == pytest.approx(60.0)
+        seconds = second.collection_seconds_between(second.begin, second.end)
+        assert seconds > 20 * MIN
+        assert first.collection_seconds_between(first.begin, first.end) + seconds == (
+            50 * MIN
+        )
+        assert float(second.merit) == pytest.approx(40 * (1 + 0.5 * 20 * MIN / seconds))
+
+    def test_seconds_taken_beyond_the_allocation_are_placed_whole(self) -> None:
+        """A 24-minute span cannot hold all 25 minutes: rather than cut them
+        to the span, leaving too few for another snapshot, they are planned
+        as if unallocated."""
+        config = _config(3)
+        target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=30, ss_min=20)
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [AllocatedTime(T0 + HOUR, T0 + HOUR + 24 * MIN, 20 * MIN)]},
+        )
+        plan = scheduler.schedule()
+
+        collected = sum(
+            e.collection_seconds_between(e.begin, e.end)
+            for e in plan
+            if e.obstype != ObsType.GSP
+        )
+        assert collected == 25 * MIN
+        assert scheduler.unplaced == []
+
+    def test_a_late_allocated_visit_leaves_room_for_an_earlier_one(self) -> None:
+        """With one of two 20-minute visits allocated to the third hour, the
+        other is planned a cadence before it, not shut out after it."""
+        cadence = 30 * MIN
+        config = _config(
+            3,
+            weights=TargetConfig(cadence_weight=40.0),
+            categories=[
+                ObservationCategory(
+                    name="Monitor", obsid_min=1, obsid_max=2, cadence_seconds=cadence
+                )
+            ],
+        )
+        target = _target(config, 1, 105.0, 10.0, minutes=40, snapshot=20)
+
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=3),
+            allocated={1: [AllocatedTime(T0 + 2 * HOUR, T0 + 3 * HOUR, 20 * MIN)]},
+        )
+        plan = scheduler.schedule()
+
+        visits = sorted(
+            (e for e in plan if e.obstype != ObsType.GSP), key=lambda e: e.begin
+        )
+        assert len(visits) == 2
+        assert scheduler.unplaced == []
+        early, late = visits
+        assert late.collection_begin is not None
+        assert float(late.collection_begin) >= T0 + 2 * HOUR
+        assert early.collection_end is not None
+        assert float(early.collection_end) + cadence <= float(late.begin)
+
+    def test_the_bonus_covers_the_completion_deficit(self) -> None:
+        """Merit 40 and a deficit worth 50, with a bonus of 0.5, are worth
+        135: ahead of merit 120, which 40 * 1.5 + 50 = 110 would not be."""
+        config = _config(
+            2,
+            weights=TargetConfig(completion_deficit_weight=100.0),
+            categories=[
+                ObservationCategory(
+                    name="A", obsid_min=1, obsid_max=2, program="A", time_share=0.5
+                ),
+                ObservationCategory(name="B", obsid_min=2, obsid_max=3, program="B"),
+            ],
+        )
+        allocated = _target(config, 1, 105.0, 10.0, merit=40)
+        rival = _target(config, 2, 110.0, 10.0, merit=120)
+
+        plan = PriorityScheduler(
+            config,
+            [allocated, rival],
+            BEGIN,
+            BEGIN + timedelta(hours=2),
+            allocated={1: [AllocatedTime(T0, T0 + HOUR, 20 * MIN)], 2: []},
+            allocation_bonus=0.5,
+        ).schedule()
+
+        science = [e for e in plan if e.obstype != ObsType.GSP]
+        assert [int(e.obsid) for e in science] == [1, 2]
+        assert float(science[0].merit) == pytest.approx(135.0)
+
     @needs_ortools
     def test_cp_sat_hint_reproduces_the_plan_with_allocated_time(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1395,6 +1701,79 @@ class TestAllocatedTargetsOfOpportunity:
             assert float(too.collection_end) - float(too.collection_begin) < 1200.0
             assert T0 + 20 * MIN <= float(too.begin) <= T0 + 30 * MIN
         assert max(ditl.recorder_volume_gb) <= 18.0 + 1e-6
+
+    # Scored with the collection-time term, a merit-45 ToO with 200 allocated
+    # seconds and no science data snapshots its whole 1200 s: worth 48.75,
+    # it scores 88.75 and is selected ahead of the merit-50 ToO, worth about
+    # 69 over the 399 s the recorder admits but scoring about 82. Rejected
+    # for its value, it must not shut the merit-50 ToO out of admission.
+    # Both with the replacement admitted at once and after a reserved cleanup.
+    @pytest.mark.parametrize("lower_first", [True, False])
+    @pytest.mark.parametrize("cleanup", [0.0, 60.0])
+    def test_dispatch_admits_past_a_higher_scoring_lower_value_too(
+        self, cleanup: float, lower_first: bool
+    ) -> None:
+        config = _config(2)
+        config.targets.collection_time_weight = 2.0
+        config.recorder = OnboardRecorder(
+            capacity_gb=20.0, current_volume_gb=13.9, planning_limit=0.9
+        )
+        config.payload.observation_timing = ObservationTiming(
+            setup_seconds=0.0, cleanup_seconds=cleanup, handoff_seconds=0.0
+        )
+        lower_obsid = self.GRB["obsid"] + 1
+        allocation = Allocation(
+            bins=[(T0, T0 + 2 * HOUR)],
+            capacity=[2 * HOUR],
+            reserve=[0.0],
+            seconds={
+                1: {0: 90 * MIN},
+                self.GRB["obsid"]: {0: 300.0},
+                lower_obsid: {0: 200.0},
+            },
+        )
+        ditl = QueueDITL(
+            config=config,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            allocator=_FixedAllocator(config, allocation),
+        )
+        observation = _target(
+            config, 1, 105.0, 10.0, merit=40, minutes=90, snapshot=90, ss_min=10
+        )
+        observation.science_data = {"Default Instrument": ScienceData(rate_gbps=0.0001)}
+        queue_targets(ditl, [observation])
+        eligible = {
+            **self.GRB,
+            "merit": 50.0,
+            "exptime": 1200,
+            "science_data": {"Default Instrument": ScienceData(rate_gbps=0.01)},
+        }
+        lower = {
+            **self.GRB,
+            "obsid": lower_obsid,
+            "name": "Lower",
+            "dec": 12.0,
+            "merit": 45.0,
+            "exptime": 1200,
+            "science_data": {"Default Instrument": ScienceData(rate_gbps=0.0)},
+        }
+        for too in [lower, eligible] if lower_first else [eligible, lower]:
+            ditl.submit_too(**too)  # type: ignore[arg-type]
+
+        ditl.calc()
+
+        first = next(e for e in ditl.plan if int(e.obsid) == 1)
+        assert isinstance(first, Pointing) and first.merit_breakdown is not None
+        assert first.merit_breakdown.value == pytest.approx(60.0)
+        science = [int(e.obsid) for e in ditl.plan if e.obstype != ObsType.GSP]
+        assert science[:2] == [1, self.GRB["obsid"]]
+        too = next(e for e in ditl.plan if int(e.obsid) == self.GRB["obsid"])
+        assert isinstance(too, Pointing) and too.merit_breakdown is not None
+        assert too.merit_breakdown.value > 60.0
+        assert too.collection_begin is not None
+        assert T0 + 20 * MIN <= float(too.collection_begin) <= T0 + 30 * MIN
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_dispatch_moves_on_once_the_allocated_seconds_are_collected(
         self,

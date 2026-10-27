@@ -11,6 +11,7 @@ of the run, or due beyond its horizon, can miss their chance.
 
 import math
 import time
+from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Literal, NamedTuple
@@ -244,6 +245,20 @@ class LongRangeAllocator:
                 reserve.
         """
         reserved = reserved_seconds or {}
+        # Completion deficits count the science each program has collected
+        # or has scheduled, as the schedulers' do.
+        delivered: dict[str, float] = defaultdict(float)
+        for target in targets:
+            done = target.collected_seconds + reserved.get(int(target.obsid), 0.0)
+            if done > 0.0:
+                program = self.merit_model.category(target).program_name
+                delivered[program] += done
+        total = sum(delivered.values())
+        shares = (
+            {program: done / total for program, done in delivered.items()}
+            if total > 0.0
+            else {}
+        )
         capacity = [
             max(0.0, b1 - max(b0, start)) * self.efficiency for b0, b1 in self.bins
         ]
@@ -251,7 +266,7 @@ class LongRangeAllocator:
         demands = [
             demand
             for target in targets
-            if (demand := self._demand(target, start, reserved)) is not None
+            if (demand := self._demand(target, start, reserved, shares)) is not None
         ]
         unplanned_set = set(unplanned)
         empty: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
@@ -555,7 +570,12 @@ class LongRangeAllocator:
         planned_demand = sum(min(d.remaining, sum(d.visible.values())) for d in planned)
         rooms = sum(capacity[k] - held[k] for k in range(len(self.bins)))
         fill = min(1.0, planned_demand / max(rooms, 1.0))
-        least = min((t.coefficient for t in terms.get(False, [])), default=0.0)
+        # Of the merits that are worth allocating: one a completion deficit
+        # takes below zero would turn the penalty into a reward, unbounded.
+        least = min(
+            (t.coefficient for t in terms.get(False, []) if t.coefficient > 0.0),
+            default=0.0,
+        )
         for k, summed in planned_by_level.get(False, {}).items():
             goal = fill * (capacity[k] - held[k])
             deviation = model.add_variable(lb=0.0, name=f"dev{k}")
@@ -597,7 +617,11 @@ class LongRangeAllocator:
         return result, unsolved
 
     def _demand(
-        self, target: Pointing, start: float, reserved: Mapping[int, float]
+        self,
+        target: Pointing,
+        start: float,
+        reserved: Mapping[int, float],
+        shares: Mapping[str, float],
     ) -> _Demand | None:
         obsid = int(target.obsid)
         exptime = target.exptime if target.exptime is not None else target.ss_max
@@ -620,7 +644,7 @@ class LongRangeAllocator:
             if seen >= float(target.ss_min):
                 visible[k] = seen
         category = self.merit_model.category(target)
-        merit = self.merit_model.value_terms(target, start)
+        merit = self.merit_model.value_terms(target, start, delivered_shares=shares)
         return _Demand(
             obsid=obsid,
             value=merit.value,

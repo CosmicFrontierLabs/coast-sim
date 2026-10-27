@@ -542,18 +542,28 @@ class QueueDITL(DITLMixin, DITLStats):
                 for command in self.acs.command_queue
             ):
                 return False
-            commitment = self._preview_too_admission(
-                dispatch_time,
-                outranking,
-                now=utime,
-                # Where _reserve_too_cleanup will stop the collection: so
-                # that the cleanup is over by the dispatch time.
-                collection_stop=utime + dispatch_time - cleanup_end,
-            )
-            if commitment is None or commitment.value.value <= current_value:
+            candidates = outranking
+            while True:
+                if not candidates:
+                    return False
+                commitment = self._preview_too_admission(
+                    dispatch_time,
+                    candidates,
+                    now=utime,
+                    # Where _reserve_too_cleanup will stop the collection: so
+                    # that the cleanup is over by the dispatch time.
+                    collection_stop=utime + dispatch_time - cleanup_end,
+                )
+                if commitment is None:
+                    return False
+                if commitment.value.value > current_value:
+                    break
                 # Admitted, the snapshot is worth no more than the
-                # observation: it stays queued for the next selection.
-                return False
+                # observation: it stays queued for the next selection, and
+                # admission goes on over the other candidates.
+                candidates = [
+                    item for item in candidates if item[1] is not commitment.target
+                ]
             if any(
                 command.execution_time <= commitment.slew.slewstart
                 for command in self.acs.command_queue
@@ -572,39 +582,50 @@ class QueueDITL(DITLMixin, DITLStats):
         # interrupted observation, is held out of this selection.
         interrupted = self.ppt
         ppt_unavailable = self._ppt_unavailable
-        offered = {id(target) for _, target, _ in outranking}
-        held_out = [
-            target
-            for target in [*self.queue.targets, interrupted]
-            if not target.done and id(target) not in offered
-        ]
-        for target in held_out:
-            target.done = True
-        self.ppt = None
-        try:
-            # A just-issued charge/pass termination can replace tracking with
-            # a braking arc. Commit that command before predicting the slew.
-            pointing = self._process_due_acs_commands(utime)
-            if pointing is not None:
-                ra, dec = pointing[:2]
-            # Admitted without commanding its slew: the value admission
-            # settles on decides whether the observation is cut at all.
-            slew = self._fetch_new_ppt(utime, ra, dec, enqueue_slew=False)
-            replacement = self.ppt
-        finally:
-            self.ppt = interrupted
+        candidates = outranking
+        while True:
+            if not candidates:
+                return False
+            offered = {id(target) for _, target, _ in candidates}
+            held_out = [
+                target
+                for target in [*self.queue.targets, interrupted]
+                if not target.done and id(target) not in offered
+            ]
             for target in held_out:
-                target.done = False
-        if replacement is None or slew is None:
+                target.done = True
+            self.ppt = None
+            try:
+                # A just-issued charge/pass termination can replace tracking
+                # with a braking arc. Commit that command before predicting
+                # the slew; a later pass finds it already processed.
+                pointing = self._process_due_acs_commands(utime)
+                if pointing is not None:
+                    ra, dec = pointing[:2]
+                # Admitted without commanding its slew: the value admission
+                # settles on decides whether the observation is cut at all.
+                slew = self._fetch_new_ppt(utime, ra, dec, enqueue_slew=False)
+                replacement = self.ppt
+            finally:
+                self.ppt = interrupted
+                for target in held_out:
+                    target.done = False
+            if replacement is None or slew is None:
+                self._ppt_unavailable = ppt_unavailable
+                return False
+            too, _, offered_at = next(
+                item for item in candidates if item[1] is replacement
+            )
+            # The value admission settled on, over the collection it admitted;
+            # a queue that leaves no breakdown admitted it at the value offered.
+            admitted = replacement.merit_breakdown or offered_at
+            if admitted.value > current_value:
+                break
+            # Selection is by score, eligibility by value: a higher-scoring
+            # candidate worth no more than the observation must not shut out
+            # one that is worth more. Admission goes on without it.
             self._ppt_unavailable = ppt_unavailable
-            return False
-        too, _, offered_at = next(item for item in outranking if item[1] is replacement)
-        # The value admission settled on, over the collection it admitted; a
-        # queue that leaves no breakdown admitted it at the value offered.
-        admitted = replacement.merit_breakdown or offered_at
-        if admitted.value <= current_value:
-            self._ppt_unavailable = ppt_unavailable
-            return False
+            candidates = [item for item in candidates if item[1] is not replacement]
         self.log.log_event(
             utime=utime,
             event_type="TOO",
