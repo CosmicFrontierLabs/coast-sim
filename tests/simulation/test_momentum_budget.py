@@ -40,7 +40,9 @@ def setup_budget(
                 slew_acceleration=1.0,
                 settle_time=90,
                 stored_momentum=StoredMomentumConfig(
-                    capacity_n_m_s=capacity, gravity_gradient_enabled=gravity
+                    capacity_n_m_s=capacity,
+                    gravity_gradient_enabled=gravity,
+                    enforce_capacity=True,
                 ),
             ),
         )
@@ -338,7 +340,9 @@ def test_capacity_requires_inertia_even_without_external_torque():
     with pytest.raises(ValueError, match="inertia_tensor"):
         SpacecraftBus(
             attitude_control=AttitudeControlSystem(
-                stored_momentum=StoredMomentumConfig(capacity_n_m_s=5)
+                stored_momentum=StoredMomentumConfig(
+                    capacity_n_m_s=5, enforce_capacity=True
+                )
             )
         )
 

@@ -31,6 +31,37 @@ def _position_snapshot(
     return positions
 
 
+@lru_cache(maxsize=8)
+def _velocity_snapshot(
+    ephem: rust_ephem.Ephemeris, body: Literal["gcrs"]
+) -> npt.NDArray[np.float64]:
+    velocities = np.asarray(getattr(ephem, f"{body}_pv").velocity, dtype=np.float64)
+    velocities.setflags(write=False)
+    return velocities
+
+
+def velocity_vectors(
+    ephem: rust_ephem.Ephemeris, body: Literal["gcrs"] = "gcrs"
+) -> npt.NDArray[np.float64] | None:
+    """The velocity at each sample in km/s, as :func:`position_vectors`
+    gives positions; None for an ephemeris without velocities, such as a
+    test double."""
+    pv = getattr(ephem, f"{body}_pv", None)
+    velocity = getattr(pv, "velocity", None) if pv is not None else None
+    if velocity is None:
+        return None
+    if type(ephem) in _IMMUTABLE_EPHEMERIDES:
+        return _velocity_snapshot(ephem, body)
+    try:
+        velocities = np.asarray(velocity, dtype=np.float64)
+    except (TypeError, ValueError):
+        # A test double's ephemeris: no velocities to speak of.
+        return None
+    if velocities.ndim != 2 or velocities.shape[1] != 3:
+        return None
+    return cast(npt.NDArray[np.float64], velocities)
+
+
 def position_vectors(
     ephem: rust_ephem.Ephemeris, body: Literal["gcrs", "sun"]
 ) -> npt.NDArray[np.float64]:
