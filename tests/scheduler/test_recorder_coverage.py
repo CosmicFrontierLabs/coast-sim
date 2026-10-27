@@ -4,14 +4,16 @@ from unittest.mock import Mock
 
 import pytest
 
+from conops.common import ObsType
 from conops.config import HousekeepingData, MissionConfig, OnboardRecorder, ScienceData
+from conops.ditl import RollingHorizonDITL
 from conops.schedulers.recorder import RecorderLedger, amount_total
 from conops.simulation import ContactSpan, StationCoverage
 from conops.targets import PlanEntry
 
 
-def _ledger(begin, end, rate, *, start=0.0, horizon=600, contacts=None):
-    coverage = Mock(spec=StationCoverage)
+def _ledger(begin, end, rate, *, start=0.0, horizon=600, contacts=None, coverage=None):
+    coverage = coverage if coverage is not None else Mock(spec=StationCoverage)
     coverage.step_size = 60.0
 
     def spans(lo, hi):
@@ -221,3 +223,24 @@ def test_retry_bound_without_grid_uses_the_exact_production_duration():
         ledger.science_capacity_time(planned, 18.18, 0, 600, production_seconds=60)
         is None
     )
+
+
+@pytest.mark.parametrize("begin,expected", [(10, 0.54), (120, 2.54)])
+def test_activity_frames_use_only_downlink_after_the_activity_begins(begin, expected):
+    coverage = Mock(spec=StationCoverage)
+    ledger = _ledger(0, 60, 100, coverage=coverage)
+    activity = PlanEntry(
+        obstype=ObsType.ACTIVITY,
+        begin=begin,
+        end=begin + 60,
+        fixed_data_gb=2,
+    )
+    entries = [_science(0.001), activity]
+    assert ledger.levels(ledger.initial_volumes(entries))[-1] == pytest.approx(expected)
+
+    rolling = object.__new__(RollingHorizonDITL)
+    rolling.config = ledger.config
+    rolling.coverage = coverage
+    rolling.step_size = 60
+    rolling.ustart = 0
+    assert rolling._recorder_volume_at(0, 600, entries) == pytest.approx(expected)

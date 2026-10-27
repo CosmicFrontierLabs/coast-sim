@@ -192,8 +192,13 @@ class TestStepRolls:
         steps = [e for e in ditl.plan if e.obsid == 600][:3]
         assert [e.step for e in steps] == ["roll A", "roll B", "roll C"]
         rolls = [float(e.roll) for e in steps]
-        assert _delta(rolls[1], rolls[0] - 15.0) < 0.5
-        assert _delta(rolls[2], rolls[0] + 15.0) < 0.5
+        # The offsets are from the one power-optimal roll found at the first
+        # step, held through the visit, so the roll-only slews are exactly
+        # the offsets' differences.
+        assert _delta(rolls[1], rolls[0] - 15.0) < 1e-6
+        assert _delta(rolls[2], rolls[0] + 15.0) < 1e-6
+        assert steps[1].slewdist == pytest.approx(15.0)
+        assert steps[2].slewdist == pytest.approx(30.0)
         assert steps[1].slewtime == pytest.approx(
             acs.motion_time(15.0, X_AXIS) + acs.settle_time, abs=1.0
         )

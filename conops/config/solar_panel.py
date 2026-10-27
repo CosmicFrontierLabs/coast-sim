@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
@@ -287,6 +288,9 @@ class SolarPanel(ConfigModel):
 
     # Class-level eclipse constraint (stateless, shared across all instances)
     _eclipse_constraint = rust_ephem.EclipseConstraint()
+    _eclipse_source: Callable[[], Sequence[tuple[float, float]]] | None = PrivateAttr(
+        default=None
+    )
 
     name: str = Field(
         default="Panel", description="Name/identifier for the solar panel"
@@ -438,6 +442,11 @@ class SolarPanel(ConfigModel):
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, times=time
             )
             eclipse_flags = np.array(result.constraint_array, dtype=bool)
+        given = np.array(
+            [_in_given_eclipse(self._eclipse_source, t.timestamp()) for t in time],
+            dtype=bool,
+        )
+        eclipse_flags = np.asarray(eclipse_flags | given, dtype=bool)
         not_in_eclipse = ~eclipse_flags
 
         # Preserve the legacy ideal-gimbal shortcut, including support for
@@ -483,6 +492,19 @@ class SolarPanel(ConfigModel):
 
 # Cached SolarPanel instance for accessing eclipse constraint
 _ECLIPSE_PANEL_CACHE: SolarPanel | None = None
+
+
+def _in_given_eclipse(
+    source: Callable[[], Sequence[tuple[float, float]]] | None, utime: float
+) -> bool:
+    """Whether ``utime`` falls in an interval the source gives as eclipse."""
+    if source is None:
+        return False
+    intervals = source()
+    # A test double's constraint gives no list.
+    if not isinstance(intervals, (list, tuple)):
+        return False
+    return any(start <= utime < end for start, end in intervals)
 
 
 def _get_eclipse_constraint() -> rust_ephem.EclipseConstraint:
@@ -698,6 +720,9 @@ class SolarPanelSet(ConfigModel):
 
     # Cached panel geometry for vectorized calculations
     _geometry_cache: _PanelGeometry | None = PrivateAttr(default=None)
+    _eclipse_source: Callable[[], Sequence[tuple[float, float]]] | None = PrivateAttr(
+        default=None
+    )
     _geometry_cache_key: (
         tuple[tuple[bool, tuple[float, float, float], float, float], ...] | None
     ) = PrivateAttr(default=None)
@@ -948,6 +973,16 @@ class SolarPanelSet(ConfigModel):
         )
         return power
 
+    def take_eclipse_intervals_from(
+        self, source: Callable[[], Sequence[tuple[float, float]]]
+    ) -> None:
+        """Take the intervals given as eclipse from ``source``, read whenever
+        illumination is evaluated, so the constraint's list is seen as it
+        stands; each panel takes them too."""
+        self._eclipse_source = source
+        for panel in self.panels:
+            panel._eclipse_source = source
+
     def _sun_body_and_eclipse(
         self,
         time: datetime | float,
@@ -961,7 +996,7 @@ class SolarPanelSet(ConfigModel):
 
         dt = dtutcfromtimestamp(time) if isinstance(time, (int, float)) else time
         idx = ephem.index(dt)
-        in_eclipse = bool(
+        in_eclipse = _in_given_eclipse(self._eclipse_source, dt.timestamp()) or bool(
             _get_eclipse_constraint().in_constraint(
                 ephemeris=ephem, target_ra=0.0, target_dec=0.0, time=dt
             )
