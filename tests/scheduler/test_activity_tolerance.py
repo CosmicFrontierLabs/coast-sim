@@ -9,8 +9,8 @@ from pydantic import ValidationError
 from conops import DITL, QueueDITL, create_ditl
 from conops.common import ObsType
 from conops.config import Constraint, SolarPanel, SolarPanelSet
-from conops.schedulers import PriorityScheduler
-from conops.targets import Plan, Pointing, ScheduledActivity
+from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity
 from conops.targets.activity import periodic_activities
 from conops.visualization.mpl.ditl_timeline import _extract_eclipses
 
@@ -405,3 +405,57 @@ class TestEclipseIntervals:
             Constraint(eclipse_intervals=[(T0,)])  # type: ignore[list-item]
         given = Constraint(eclipse_intervals=[(BEGIN, BEGIN + timedelta(minutes=5))])
         assert given.eclipse_intervals == [(T0, T0 + 5 * MIN)]
+
+
+class TestHeldBlock:
+    def test_a_held_block_begins_after_what_is_fixed_before_it(self) -> None:
+        """A seeded planner holds a sliding activity where its start plan held
+        it. Where an entry fixed before the activity, such as one committed
+        to run, ends after that time, the activity begins when the entry
+        ends: it is not held over the entry's collection, which a run then
+        executed as idle where its plan said science."""
+        sliding = ScheduledActivity(
+            name="Cal",
+            begin=BLOCK_START,
+            duration_seconds=BLOCK,
+            slide_seconds=3 * HOUR,
+            obsid=998000,
+        )
+        config = _config(HOURS)
+        locked_end = BLOCK_START + 50 * MIN
+        locked = PlanEntry(
+            config=config,
+            name="locked",
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            roll=0.0,
+            obsid=1,
+            obstype=ObsType.AT,
+            begin=BLOCK_START - 10 * MIN,
+            end=locked_end,
+            collection_begin=BLOCK_START,
+            collection_end=locked_end,
+            ss_min=60,
+        )
+        held = sliding.plan_entry(config, (PATCH[0][0], PATCH[0][1], 0.0))
+        held.begin, held.end = BLOCK_START + 20 * MIN, BLOCK_START + 20 * MIN + BLOCK
+        scheduler = LocalSearchScheduler(
+            config,
+            _long_targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[sliding],
+            locked=[locked],
+            start_plan=Plan(entries=[held]),
+            time_limit=0.0,
+            seed=1,
+        )
+        plan = scheduler.schedule()
+        (entry,) = _activities(plan)
+        assert float(entry.begin) >= locked_end
+        assert float(entry.end) - float(entry.begin) == BLOCK
+        for e in _science(plan):
+            assert float(e.end) <= float(entry.begin) or float(e.begin) >= float(
+                entry.end
+            )

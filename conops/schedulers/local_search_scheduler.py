@@ -19,6 +19,7 @@ import random
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict
 
@@ -283,18 +284,29 @@ class LocalSearchScheduler(PriorityScheduler):
         """Hold each fixed block that may begin late where ``plan`` held its
         activity, within the block's reservation, and reserve it there: the
         plan's science around the activity then decodes at its own times,
-        before and after the block as the plan had it."""
+        before and after the block as the plan had it. The fixed blocks
+        around it stand: a block whose held time the one before it, such as
+        a locked entry or science kept from the pass before, runs past is
+        held when that ends, and one that would then run into the block
+        after it is left where it was reserved."""
         held = {
             int(entry.obsid): float(entry.begin)
             for entry in plan
             if entry_obstype(entry) == ObsType.ACTIVITY
         }
-        for block in self._fixed:
+        for index, block in enumerate(self._fixed):
             activity = block.activity
             if activity is None or activity.obsid is None:
                 continue
             begin = held.get(int(activity.obsid))
             if begin is None:
+                continue
+            if index > 0:
+                begin = max(begin, self._fixed[index - 1].end)
+            settled = self._copy_block(block)
+            self._settle_block(settled, begin)
+            following = self._fixed[index + 1] if index + 1 < len(self._fixed) else None
+            if following is not None and settled.end > following.ready:
                 continue
             self._settle_block(block, begin)
             block.latest_ready = block.ready
@@ -352,7 +364,8 @@ class LocalSearchScheduler(PriorityScheduler):
         # the request's minimum.
         kept: list[_Snapshot] = []
         states = [self._initial_state()]
-        for snapshot, following in zip(snapshots, [*snapshots[1:], None], strict=True):
+        for snapshot, following in pairwise([*snapshots, None]):
+            assert snapshot is not None
             state = self._step(states[-1], snapshot)
             if state.cursor == states[-1].cursor:
                 continue
