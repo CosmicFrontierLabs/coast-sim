@@ -173,6 +173,14 @@ class PlanEntry(BaseModel):
             "scheduled activity's frames, for instance"
         ),
     )
+    desaturation: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether this activity entry is a thruster momentum dump, after "
+            "which the wheels hold the dump's residual"
+        ),
+    )
     own_timing: ObservationTiming | None = Field(
         default=None,
         exclude_if=lambda v: v is None,

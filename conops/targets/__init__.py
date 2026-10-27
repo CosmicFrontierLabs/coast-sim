@@ -1,4 +1,9 @@
-from .activity import ACTIVITY_OBSID, ScheduledActivity, assign_obsids
+from .activity import (
+    ACTIVITY_OBSID,
+    DESATURATION_OBSID,
+    ScheduledActivity,
+    assign_obsids,
+)
 from .plan import (
     AttitudeSampleSchema,
     AttitudeTimeseriesSchema,
@@ -35,6 +40,7 @@ from .visits import VisitWindow, cadence_windows, visit_windows
 
 __all__ = [
     "ACTIVITY_OBSID",
+    "DESATURATION_OBSID",
     "ScheduledActivity",
     "assign_obsids",
     "ObservationSequence",
