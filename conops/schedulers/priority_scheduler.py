@@ -26,6 +26,7 @@ from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
 from .recorder import RecorderLedger
@@ -98,13 +99,23 @@ class _Request(BaseModel):
 
     target: Pointing
     merit: MeritBreakdown
-    """Merit at the start of the horizon; its tier and ranking."""
+    """Merit at the start of the horizon."""
     remaining: float
     windows: list[tuple[float, float]] = Field(default_factory=list)
     category: ObservationCategory
     steady_value: float = 0.0
     """Value of a snapshot apart from the completion deficit, which depends
-    on what the plan has collected before it."""
+    on what the plan has collected before it. For allocated time it includes
+    the allocation's factor."""
+    value_factor: float = 1.0
+    """Factor on the completion deficit's value: the allocation's, for
+    allocated time, as on the rest of its value."""
+    span: tuple[float, float] | None = None
+    """The span of allocated time the request is for, if it is for one."""
+    whole: bool = False
+    """Whether the exposure is placed as one snapshot or not at all: allocated
+    time that took the rest of the target's exposure, so that none of it is
+    left too short to plan."""
     cadence: float | None = None
     """Seconds a visit waits after the target's last one, when cadence counts."""
 
@@ -145,6 +156,11 @@ def _collection_seconds(block: _Block) -> float:
     return block.entry.collection_seconds_between(block.entry.begin, block.entry.end)
 
 
+def _usable(request: _Request, seconds: float) -> bool:
+    """Whether ``seconds`` of the request's exposure are none or a snapshot's worth."""
+    return seconds <= 0.0 or seconds >= float(request.target.ss_min)
+
+
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
     """Whether a snapshot collects something, and at least ``ss_min``."""
     return collection_seconds > 0 and collection_seconds >= ss_min
@@ -157,7 +173,7 @@ class PriorityScheduler:
 
     1. Locked entries keep their collection windows and are placed first.
     2. Ground passes the spacecraft can reach are reserved.
-    3. Requests are sorted by tier, then by merit value at the start of the
+    3. Requests are sorted by merit value at the start of the
        horizon (see :class:`~conops.targets.merit.MeritModel`). Each request is
        split into snapshots of up to ``ss_max`` seconds, never shorter than
        ``ss_min``, until its ``exptime`` is used or it no longer fits.
@@ -167,7 +183,8 @@ class PriorityScheduler:
        after every snapshot by the shares the plan delivers so far, counting
        science already collected. With a cadence weight, a target in a
        category with a cadence is visited no sooner than its cadence after
-       its last visit, planned or collected; each visit then has the full
+       its last collected visit, and kept a cadence clear of its other
+       planned visits, before or after; each visit then has the full
        cadence value.
     4. Each snapshot goes in the earliest slot where every check
        :class:`~conops.ditl.DITL` will apply passes: the slew starts on a step,
@@ -225,6 +242,16 @@ class PriorityScheduler:
             horizon starts; the configured battery's charge if None.
         start_drive_state: Where the solar-array drive is when the horizon
             starts; its configured initial state if None.
+        allocated: Time allocated to requests, by obsid, such as from
+            :meth:`~conops.schedulers.Allocation.allocated`. A request's
+            allocated seconds in each span are planned in that span, worth
+            ``allocation_bonus`` more; collection starting in the span counts.
+            The rest of its exposure, and any allocated seconds that do not fit
+            their span, are planned like an unallocated request, which may work
+            ahead. None (the default) treats all requests alike.
+        allocation_bonus: Fraction of a request's value its allocated time
+            gains, so plans trade keeping to the allocation against merit.
+            Zero ignores ``allocated`` altogether.
     """
 
     scheduler_name = "priority"
@@ -252,6 +279,8 @@ class PriorityScheduler:
         start_deficit_wh: float | None = None,
         start_drive_state: SolarArrayDriveState | None = None,
         passes: Sequence[Pass] | None = None,
+        allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
+        allocation_bonus: float = 0.5,
     ) -> None:
         self.config = config
         self.targets = list(targets)
@@ -281,16 +310,34 @@ class PriorityScheduler:
         self.start_deficit_wh = start_deficit_wh
         """How far below full the battery is when the horizon starts; the
         configured battery's charge if None."""
+        if allocation_bonus < 0.0:
+            raise ValueError("allocation_bonus must not be negative")
+        # A bonus of zero ignores when a request was allocated: its seconds
+        # are then not held to their spans either.
+        self.allocated = (
+            None
+            if allocated is None or allocation_bonus == 0.0
+            else {int(obsid): list(spans) for obsid, spans in allocated.items()}
+        )
+        self.allocation_bonus = allocation_bonus
         self.unplaced: list[Pointing] = []
         """Targets left with at least ``ss_min`` of exposure unplanned."""
         self.plan = Plan()
+        self._rest_of: dict[int, _Request] = {}
+        """For each request for allocated time, by id, the request for the
+        rest of its target's exposure."""
+        self._planned_visits: dict[int, list[_Block]] = defaultdict(list)
+        """Cadence visits placed so far, by obsid. Allocated time can place
+        a later visit first, so a visit is spaced from these on both sides."""
+        self._refitting: _Block | None = None
+        """A visit being placed again later, not spaced from itself."""
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def schedule(self) -> Plan:
         """Build and return the plan."""
         self._reserve_fixed()
-        self._place_requests(self._requests())
+        self._place_requests(self._with_allocated_time(self._requests()))
         return self._finish(self.timeline)
 
     def _reserve_fixed(self) -> None:
@@ -500,11 +547,13 @@ class PriorityScheduler:
     def _place_requests(self, requests: Sequence[_Request]) -> None:
         """Place snapshots of the highest-ranked request at their earliest fit.
 
-        Without a completion deficit the ranking never changes, so each
-        request is placed in full before the next.
+        Re-evaluate values after each snapshot: program shares can change,
+        and merging leftover allocated seconds can dilute a request's bonus.
         """
-        active = list(requests)
-        order = {id(request): k for k, request in enumerate(active)}
+        # The request for the rest of a target's exposure can start with none,
+        # all of it allocated, and take allocated seconds that do not fit.
+        active = [request for request in requests if request.wants_more]
+        order = {id(request): k for k, request in enumerate(requests)}
         placed = dict.fromkeys(order, 0)
         self._program_seconds = dict(self._delivered)
         """Science by program: collected, committed and planned so far."""
@@ -512,16 +561,15 @@ class PriorityScheduler:
         """Requests a move has cut short since the last placement."""
         while active:
             shares = program_shares(self._program_seconds)
-            request = active[0]
-            if self._balancing:
-                request = max(
-                    active,
-                    key=lambda r: (
-                        r.merit.tier,
-                        self._value(r, shares),
-                        -order[id(r)],
-                    ),
-                )
+            # The original order breaks ties only; a merge can change value
+            # even when completion-deficit balancing is disabled.
+            request = max(
+                active,
+                key=lambda r: (
+                    self._value(r, shares),
+                    -order[id(r)],
+                ),
+            )
             block = self._place_snapshot(request, self._cadence_release(request))
             self._reactivate_cut_short(active, order)
             if block is not None:
@@ -537,12 +585,19 @@ class PriorityScheduler:
                 self._record_visit(request, block)
                 if request.wants_more:
                     continue
-            active.remove(request)
+            # By identity: a request for allocated time can equal the request
+            # for the rest of its target's exposure field for field.
+            active[:] = [r for r in active if r is not request]
+            self._return_allocated_time(request, active, order)
 
         # Checked once all are placed: moving a snapshot later to make room
         # can cut short a request that was already finished.
         for request in requests:
-            if request.wants_more:
+            self._return_allocated_time(request, None, order)
+        # Subclasses place again from their own state, in time order.
+        self._planned_visits = defaultdict(list)
+        for request in requests:
+            if id(request) not in self._rest_of and request.wants_more:
                 self.unplaced.append(request.target)
                 self._log(
                     self.ctx.ustart,
@@ -557,7 +612,8 @@ class PriorityScheduler:
         """Put requests a move cut short back among those still to place.
 
         A finished request cut short by at least ``ss_min`` can be placed
-        again. ``active`` stays in planning order. This always ends: a cut is
+        again. ``active`` keeps the original tie order; selection uses each
+        request's current value. This always ends: a cut is
         only made when it raises the plan's value-weighted science.
         """
         waiting = {id(request) for request in active}
@@ -568,11 +624,69 @@ class PriorityScheduler:
         self._cut_short = []
         active.sort(key=lambda request: order[id(request)])
 
+    def _return_allocated_time(
+        self,
+        request: _Request,
+        active: list[_Request] | None,
+        order: Mapping[int, int],
+    ) -> None:
+        """Give allocated seconds that did not fit their span to the rest of
+        the target's exposure, and put that back among ``active`` if it can
+        now take another snapshot."""
+        rest = self._rest_of.get(id(request))
+        if rest is None or request.remaining <= 0.0:
+            return
+        sibling = None
+        if active is not None and not _usable(rest, rest.remaining + request.remaining):
+            # Too few for the rest to plan: a snapshot of the target's
+            # allocated time still to place takes them instead.
+            sibling = next(
+                (
+                    r
+                    for r in active
+                    if r is not request and self._rest_of.get(id(r)) is rest
+                ),
+                None,
+            )
+        if sibling is not None:
+            self._merge_allocated_time(sibling, request)
+            return
+        rest.remaining += request.remaining
+        request.remaining = 0.0
+        if (
+            active is not None
+            and all(r is not rest for r in active)
+            and rest.wants_more
+        ):
+            active.append(rest)
+            active.sort(key=lambda r: order[id(r)])
+
+    def _merge_allocated_time(self, into: _Request, request: _Request) -> None:
+        """Move ``request``'s remaining seconds to ``into``, a request for
+        allocated time of the same target, with the bonus each part of them
+        has in ``into``'s span: the factor becomes their seconds-weighted
+        mean. Seconds from another span have none of their bonus there.
+        ``into`` is placed whole while one snapshot holds it."""
+        seconds = into.remaining + request.remaining
+        moved = request.value_factor if request.span == into.span else 1.0
+        factor = (into.value_factor * into.remaining + moved * request.remaining) / (
+            seconds
+        )
+        into.steady_value = into.steady_value / into.value_factor * factor
+        unallocated = into.merit.value - into.merit.allocation
+        into.merit = into.merit.model_copy(
+            update={"allocation": (factor - 1.0) * unallocated}
+        )
+        into.value_factor = factor
+        into.remaining = seconds
+        into.whole = seconds <= float(into.target.ss_max)
+        request.remaining = 0.0
+
     def _value(self, request: _Request, shares: Mapping[str, float]) -> float:
         """Value of a snapshot of ``request`` when the plan delivers ``shares``."""
         if not self._deficit_weight:
             return request.steady_value
-        return request.steady_value + self._deficit_weight * (
+        return request.steady_value + request.value_factor * self._deficit_weight * (
             MeritModel.completion_deficit(request.category, shares)
         )
 
@@ -580,24 +694,36 @@ class PriorityScheduler:
         """Earliest slew start of the request's next visit, if cadence spaces them."""
         if request.cadence is None:
             return None
-        last = self._last_visit.get(int(request.target.obsid))
+        # Planned visits are spaced in _next_locked_visit, before or after.
+        last = self._visited_before.get(int(request.target.obsid))
         return None if last is None else last + request.cadence
 
     def _next_locked_visit(
         self, request: _Request, start: float
     ) -> tuple[float, float] | None:
-        """Return the first locked visit a cadence visit starting at ``start``
-        must end before.
+        """Return the first locked or planned visit a cadence visit starting
+        at ``start`` must end before.
 
         Visits are spaced by the cadence: a visit must start at least a
-        cadence after a locked visit's collection ends, or end at least a
-        cadence before its slew starts. Returns that locked visit's slew start
-        and collection end, or None if the request has no cadence or
-        ``start`` is clear of every locked visit.
+        cadence after another visit's collection ends, or end at least a
+        cadence before its slew starts. Returns that visit's slew start and
+        collection end, or None if the request has no cadence or ``start`` is
+        clear of every other visit.
         """
         if request.cadence is None:
             return None
-        visits = sorted(self._locked_visits.get(int(request.target.obsid), ()))
+        obsid = int(request.target.obsid)
+        visits = sorted(
+            [
+                *self._locked_visits.get(obsid, ()),
+                *(
+                    (float(block.entry.begin), float(block.entry.collection_end))
+                    for block in self._planned_visits.get(obsid, ())
+                    if block is not self._refitting
+                    and block.entry.collection_end is not None
+                ),
+            ]
+        )
         return next(
             (
                 (locked_start, locked_end)
@@ -616,12 +742,17 @@ class PriorityScheduler:
             self._program_seconds.get(program, 0.0) + seconds
         )
         if request.cadence is not None and entry.collection_end is not None:
-            self._last_visit[int(request.target.obsid)] = float(entry.collection_end)
+            obsid = int(request.target.obsid)
+            # Allocated time can place a target's later visit first.
+            self._last_visit[obsid] = max(
+                self._last_visit.get(obsid, float("-inf")), float(entry.collection_end)
+            )
+            self._planned_visits[obsid].append(block)
 
     # ── Requests ──────────────────────────────────────────────────────────
 
     def _requests(self) -> list[_Request]:
-        """Return the requests in planning order: tier, then value, then a stable tie-break."""
+        """Return the requests in planning order: value, then a stable tie-break."""
         merit_model = MeritModel(self.config)
         # Science committed outside this plan or locked into it will be
         # collected before what this plan places.
@@ -646,6 +777,10 @@ class PriorityScheduler:
             ]
             if visits:
                 self._last_visit[obsid] = max(visits)
+        self._visited_before = dict(self._last_visit)
+        """When each cadence target was last observed before this plan."""
+        self._planned_visits = defaultdict(list)
+        self._refitting = None
         shares = program_shares(self._delivered)
         cadence_weight = merit_model.cadence_weight
         requests = []
@@ -678,24 +813,98 @@ class PriorityScheduler:
                 )
             )
         self._deficit_weight = merit_model.completion_deficit_weight
-        self._balancing = self._deficit_weight > 0.0 and any(
-            r.category.time_share is not None for r in requests
-        )
-
-        def tie_break(request: _Request) -> int:
-            payload = f"{seed}:{request.target.obsid}".encode()
-            return int.from_bytes(
-                hashlib.blake2b(payload, digest_size=8).digest(), "big"
-            )
-
-        # Ranked by the value of a visit when it is placed, as selection uses:
-        # a cadence target's visits wait until they are due, so each has the
-        # full cadence value, not the part it has at the start of the horizon.
-        requests.sort(
-            key=lambda r: (r.merit.tier, self._value(r, shares), tie_break(r)),
-            reverse=True,
-        )
+        self._seed = seed
+        self._shares = shares
+        # Allocated time is worth its request's value plus the bonus.
+        self._allocated_factor = 1.0 + self.allocation_bonus
+        requests.sort(key=self._rank, reverse=True)
         return requests
+
+    def _rank(self, request: _Request) -> tuple[float, int]:
+        """Planning order: value, then a stable tie-break.
+
+        Ranked by the value of a visit when it is placed, as selection uses:
+        a cadence target's visits wait until they are due, so each has the
+        full cadence value, not the part it has at the start of the horizon.
+        """
+        payload = f"{self._seed}:{request.target.obsid}".encode()
+        tie_break = int.from_bytes(
+            hashlib.blake2b(payload, digest_size=8).digest(), "big"
+        )
+        return self._value(request, self._shares), tie_break
+
+    def _with_allocated_time(self, requests: Sequence[_Request]) -> list[_Request]:
+        """Requests to place: allocated time first, in its span, then the rest.
+
+        Each span of a request's allocated time becomes a request for those
+        seconds, limited to the span, its value raised by
+        ``_allocated_factor``. Seconds too few for a snapshot stay with the
+        rest of the target's exposure. Where the rest would otherwise be too
+        few for a snapshot, a span takes them too, in one more snapshot if
+        need be; that snapshot is placed whole or not at all, with the bonus
+        for its allocated seconds spread over it. Allocated
+        seconds that do not fit their span go back to the rest (see
+        :meth:`_place_requests`).
+        """
+        self._rest_of = {}
+        if self.allocated is None:
+            return list(requests)
+        placing = []
+        for request in requests:
+            rest = request.model_copy()
+            left = request.remaining
+            ss_min = float(request.target.ss_min)
+            ss_max = float(request.target.ss_max)
+            for span in self.allocated.get(int(request.target.obsid), []):
+                allocated = min(span.seconds, left)
+                if allocated <= 0.0 or allocated < ss_min:
+                    continue
+                # Pieces of the span's time: seconds, the allocated ones among
+                # them, and whether they are placed whole.
+                pieces = [(allocated, allocated, False)]
+                if 0.0 < left - allocated < ss_min:
+                    # What is left would be too short for a snapshot of its
+                    # own. Take it all, as one snapshot so that cutting it
+                    # short strands none, or, if that is longer than a
+                    # snapshot, split off a snapshot's worth to take it with.
+                    if left - ss_min >= ss_min:
+                        first = left - ss_min
+                        pieces = [
+                            (first, first, False),
+                            (ss_min, allocated - first, ss_min <= ss_max),
+                        ]
+                    else:
+                        pieces = [(left, allocated, left <= ss_max)]
+                for seconds, bonused, whole in pieces:
+                    # The bonus is for the allocated seconds, spread over all.
+                    factor = 1.0 + self.allocation_bonus * bonused / seconds
+                    part = request.model_copy(
+                        update={
+                            "remaining": seconds,
+                            "windows": [
+                                (max(w0, span.begin), min(w1, span.end))
+                                for w0, w1 in request.windows
+                                if w0 < span.end and span.begin < w1
+                            ],
+                            "merit": request.merit.model_copy(
+                                update={
+                                    "allocation": (factor - 1.0) * request.merit.value,
+                                }
+                            ),
+                            "steady_value": request.steady_value * factor,
+                            "value_factor": factor,
+                            "span": (span.begin, span.end),
+                            "whole": whole,
+                        }
+                    )
+                    self._rest_of[id(part)] = rest
+                    placing.append(part)
+                    left -= seconds
+            rest.remaining = left
+            placing.append(rest)
+        # Stable, so a request's spans keep their time order.
+        placing.sort(key=self._rank, reverse=True)
+        return placing
 
     def _reserved_collection(self) -> dict[int, float]:
         """Return the collection seconds accepted locks already hold per request."""
@@ -1255,8 +1464,7 @@ class PriorityScheduler:
 
         Moving a snapshot may cut it short, where its target's visibility ends
         sooner after the move. That is accepted only if the trade is worth it:
-        no snapshot cut short outranks the new one's tier, and the new
-        snapshot's value-weighted seconds exceed those lost. Returns the new
+        the new snapshot's value-weighted seconds exceed those lost. Returns the new
         snapshot's block, or None with the timeline unchanged.
         """
         pred = self._pred_at(index)
@@ -1285,17 +1493,21 @@ class PriorityScheduler:
             seconds = _collection_seconds(old_block)
             same_length = old_request.model_copy(update={"remaining": seconds})
             last = position == len(run) - 1
-            moved_fit = self._fit_in_gap(
-                same_length,
-                previous,
-                after if last else None,
-                # A cadence visit starts no earlier than it did, which kept
-                # it a cadence after the target's previous visit.
-                not_before=float(old_block.entry.begin)
-                if old_request.cadence is not None
-                else None,
-                until=None if last else until,
-            )
+            self._refitting = old_block
+            try:
+                moved_fit = self._fit_in_gap(
+                    same_length,
+                    previous,
+                    after if last else None,
+                    # A cadence visit starts no earlier than it did, which
+                    # kept it a cadence after the target's previous visit.
+                    not_before=float(old_block.entry.begin)
+                    if old_request.cadence is not None
+                    else None,
+                    until=None if last else until,
+                )
+            finally:
+                self._refitting = None
             if moved_fit is None:
                 return None
             moved_block, moved_slew, after_slew = moved_fit
@@ -1350,7 +1562,13 @@ class PriorityScheduler:
             if move.request.cadence is not None and moved_end is not None:
                 # Only a cadence target's latest visit moves (see
                 # _may_move): its next visit is spaced from the new end.
-                self._last_visit[int(move.request.target.obsid)] = float(moved_end)
+                obsid = int(move.request.target.obsid)
+                self._last_visit[obsid] = float(moved_end)
+                visits = self._planned_visits[obsid]
+                visits[:] = [
+                    move.new_block if block is move.old_block else block
+                    for block in visits
+                ]
             # Exposure cut short is left for the request to plan elsewhere,
             # and no longer counts towards its program's share.
             move.request.remaining += move.lost
@@ -1377,8 +1595,6 @@ class PriorityScheduler:
         cut = [move for move in moves if move.lost > 1e-6]
         if not cut:
             return True
-        if any(move.request.merit.tier > request.merit.tier for move in cut):
-            return False
         lost_value = sum(move.lost * move.request.steady_value for move in cut)
         return gained * request.steady_value > lost_value
 
@@ -1398,7 +1614,7 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
-        ss_min = float(target.ss_min)
+        ss_min = request.remaining if request.whole else float(target.ss_min)
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = succ.ready if succ is not None else horizon_end

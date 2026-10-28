@@ -8,7 +8,12 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, unixtime2date, whole_steps
-from ..config import AttitudeControlSystem, Constraint, MissionConfig, ScienceData
+from ..config import (
+    AttitudeControlSystem,
+    Constraint,
+    MissionConfig,
+    ScienceData,
+)
 from ..config.acs import scheduled_slew_time
 from ..config.config import housekeeping_while_waiting
 from ..ditl.ditl_log import DITLLog
@@ -39,6 +44,14 @@ class TargetQueue:
     acs_config: AttitudeControlSystem | None
     config: MissionConfig | None
     random_seed: int
+    prefer: Callable[[int], bool | float | None] | None
+    """Returns, for an obsid, whether to favour it, such as a target a
+    long-range allocation assigns to now: the seconds of its exposure still
+    allocated to now, or a bool, or None for a target favoured without limit,
+    such as one the allocation never considered. None for the attribute (the
+    default) treats all targets alike."""
+    allocation_bonus: float
+    """Fraction of its value a preferred target gains."""
 
     def __init__(
         self,
@@ -69,6 +82,58 @@ class TargetQueue:
         )
         self.random_seed = config.random_seed if config.random_seed is not None else 0
         self.merit_model = MeritModel(config)
+        self.prefer = None
+        self.allocation_bonus = 0.5
+
+    def _allocated_seconds(self, target: Pointing) -> float:
+        """Seconds of the target's exposure the allocation still gives to
+        now: none without a preference, unlimited where the preference does
+        not limit the target, as for a request the allocation never
+        considered."""
+        if self.prefer is None:
+            return 0.0
+        remaining = self.prefer(int(target.obsid))
+        if remaining is None or remaining is True:
+            return math.inf
+        if remaining is False:
+            return 0.0
+        return max(0.0, float(remaining))
+
+    def _bonus(
+        self, target: Pointing, collection_seconds: float | None = None
+    ) -> float:
+        """Fraction of its value a target gains for being preferred: the
+        allocation bonus for the part of a snapshot of ``collection_seconds``
+        the allocated seconds remaining cover, and all of it where the
+        snapshot's length is not known, as a bound. Exposure beyond the
+        allocation competes at its ordinary merit."""
+        remaining = self._allocated_seconds(target)
+        if remaining <= 0.0:
+            return 0.0
+        if collection_seconds is None or collection_seconds <= 0.0:
+            return self.allocation_bonus
+        return self.allocation_bonus * min(1.0, remaining / collection_seconds)
+
+    def allocation_term(
+        self, target: Pointing, value: float, collection_seconds: float | None = None
+    ) -> float:
+        """What the allocation adds to a candidate's ``value``, for the
+        ``collection_seconds`` it would collect now, or a full snapshot
+        where that is not known (see :meth:`_bonus`)."""
+        if collection_seconds is None:
+            exposure = target.exptime if target.exptime is not None else target.ss_max
+            collection_seconds = min(float(target.ss_max), float(exposure))
+        return self._bonus(target, collection_seconds) * value
+
+    def _with_allocation(
+        self, terms: MeritBreakdown, target: Pointing, collection_seconds: float
+    ) -> MeritBreakdown:
+        """``terms`` with the allocation's term for a snapshot collecting
+        ``collection_seconds``."""
+        allocation = self.allocation_term(target, terms.value, collection_seconds)
+        if not allocation:
+            return terms
+        return terms.model_copy(update={"allocation": allocation})
 
     def __getitem__(self, number: int) -> Pointing:
         return self.targets[number]
@@ -140,12 +205,13 @@ class TargetQueue:
         return pointing
 
     def meritsort(self) -> None:
-        """Sort target queue by tier and merit, ranking targets not visible
-        now below every visible target in their tier."""
+        """Sort target queue by merit, ranking targets not visible now below
+        every visible target."""
         self.targets.sort(
             key=lambda target: (
-                self.merit_model.tier(target),
-                target.merit if self._visible_now(target) else -900,
+                target.merit + self.allocation_term(target, target.merit)
+                if self._visible_now(target)
+                else -900,
                 self._target_tie_breaker(target),
             ),
             reverse=True,
@@ -196,6 +262,12 @@ class TargetQueue:
         if remaining_exposure is None:
             return min(window_seconds, max_snapshot)
         return min(window_seconds, float(remaining_exposure), max_snapshot)
+
+    def allocation_bound(self, target: Pointing, value: float) -> float:
+        """The most the allocation can add to a candidate's ``value``: the
+        whole bonus, which a snapshot short enough for the allocated seconds
+        to cover gets (see :meth:`_bonus`)."""
+        return self._bonus(target) * value
 
     def _can_fit_min_snapshot_with_zero_slew(
         self,
@@ -269,7 +341,9 @@ class TargetQueue:
         if not visibility_window:
             return -np.inf
 
-        upper_bound = float(target.merit) + self.merit_model.max_dynamic_value
+        upper_bound = (float(target.merit) + self.merit_model.max_dynamic_value) * (
+            1.0 + self._bonus(target)
+        )
         if self.collection_time_weight > 0.0:
             collection_seconds = self._candidate_collection_seconds(
                 target=target,
@@ -364,6 +438,10 @@ class TargetQueue:
             # Selected now, it collects after now.
             and (t.earliest_start is None or utime >= t.earliest_start)
         ]
+        # Candidates are scored, rather than the first in merit order taken,
+        # when anything beyond base merit tells them apart. An allocation
+        # does: its bonus is for the collection a candidate would make now,
+        # which the merit order, from a full snapshot, cannot tell.
         score_candidates = (
             self.slew_distance_weight != 0.0
             or self.slew_time_weight != 0.0
@@ -372,6 +450,7 @@ class TargetQueue:
             or self.radiator_sun_exposure_weight != 0.0
             or self.radiator_earth_exposure_weight != 0.0
             or merit_model.is_dynamic
+            or (self.prefer is not None and self.allocation_bonus > 0.0)
         )
         overfill = 0
         """Candidates passed over because the recorder cannot hold their data."""
@@ -396,7 +475,7 @@ class TargetQueue:
             print(msg)
         best_target = None
         best_breakdown: MeritBreakdown | None = None
-        best_rank: tuple[int, float] = (np.iinfo(np.int64).min, -np.inf)
+        best_score = -np.inf
         last_unix = self.ephem.timestamp[-1].timestamp()
         prune_by_score_bound = (
             score_candidates and self._score_upper_bound_pruning_is_safe()
@@ -416,7 +495,7 @@ class TargetQueue:
                     utime=utime,
                     last_unix=last_unix,
                 )
-                if (merit_model.tier(target), upper_bound) <= best_rank:
+                if upper_bound <= best_score:
                     continue
 
             if not self._can_fit_min_snapshot_with_zero_slew(
@@ -495,14 +574,15 @@ class TargetQueue:
                     + self.observation_timing.total_seconds,
                 )
                 target.set_collection_window(self.observation_timing)
-                value = merit_model.value_terms(
+                terms = merit_model.value_terms(
                     target,
                     utime,
                     visibility_window=visibility_window,
                     delivered_shares=delivered_shares,
                 )
+                value = self._with_allocation(terms, target, collection)
                 # If nothing beyond merit order matters, return the first
-                # visible target in tier and merit order (fast path)
+                # visible target in merit order (fast path)
                 if not score_candidates:
                     self._select(target, value)
                     return target
@@ -528,6 +608,8 @@ class TargetQueue:
                     target.ss_min
                 ):
                     continue
+                if collection_seconds != collection:
+                    value = self._with_allocation(terms, target, collection_seconds)
                 collection_minutes = collection_seconds / 60.0
                 data_gb = (
                     self._snapshot_science_gb(target, collection_seconds)
@@ -573,8 +655,8 @@ class TargetQueue:
                         "data": -(self.data_volume_weight * data_gb),
                     }
                 )
-                if breakdown.rank > best_rank:
-                    best_rank = breakdown.rank
+                if breakdown.score > best_score:
+                    best_score = breakdown.score
                     best_target = target
                     best_breakdown = breakdown
 

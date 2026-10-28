@@ -925,8 +925,8 @@ scale. For example, if normal target merits are around ``100``, then
 reward, while ``slew_time_weight = 1.0`` gives a ten-minute slew a ``10`` point
 penalty.
 
-Dynamic Merit: Tiers, Urgency, Cadence and Program Balance
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Dynamic Merit: Urgency, Cadence and Program Balance
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Beyond the cost weights above, a target's merit can change with time and with
 what has already been observed. :class:`~conops.targets.merit.MeritModel`
@@ -937,10 +937,11 @@ evaluates these terms at every selection:
    value = target.merit + urgency + cadence + completion_deficit
    score = value - slew and radiator costs + collection reward   (as above)
 
-Candidates are ranked by **tier first**, then by score. A target's tier comes
-from its observation category (see `observation_categories`_) and is absolute:
-a higher-tier target is always selected over a lower-tier one, whatever their
-merits. Within a tier the dynamic terms decide.
+Candidates are ranked by score. There are no absolute priority classes: all
+work is compared on this one figure of merit, so the dynamic terms can always
+change the order. Work that must happen should be given a deadline or a
+cadence, whose urgency and cadence terms raise its merit as it falls due, or a
+base merit high enough for its importance.
 
 * ``config.targets.urgency_weight`` - Merit added at full urgency. Urgency
   applies only to targets with a ``deadline`` (``queue.add(..., deadline=...)``
@@ -963,7 +964,7 @@ merits. Within a tier the dynamic terms decide.
 
 Each dynamic term is its weight times a factor bounded to ``[0, 1]`` (``[-1, 1]``
 for the deficit), so no term can exceed its weight. With every weight at
-``0.0`` and every category in tier ``0`` (the defaults), selection is unchanged.
+``0.0`` (the defaults), selection is by base merit and the cost terms.
 
 The schedulers apply the same terms. :class:`~conops.schedulers.PriorityScheduler`,
 :class:`~conops.schedulers.LocalSearchScheduler`, and
@@ -972,7 +973,7 @@ completion deficit against the plan as it is built as well as the science alread
 collected (see :doc:`planning`).
 
 When a target is selected, ``QueueDITL`` logs a ``QUEUE`` event with the full
-term breakdown (``Selected <obsid>: tier=... base=... urgency=... score=...``),
+term breakdown (``Selected <obsid>: base=... urgency=... score=...``),
 and the target's ``merit`` is frozen at its value. That frozen value is
 exported on the plan entry and is what a Target of Opportunity must beat to
 interrupt the observation (see :doc:`target_of_opportunity`).
@@ -1500,8 +1501,7 @@ observation_categories
 
 The :class:`~conops.config.ObservationCategories` defines how observations are categorized
 based on their target ID (obsid), for visualization and for the scheduling settings
-the dynamic merit model reads (see `Dynamic Merit: Tiers, Urgency, Cadence and Program
-Balance`_).
+the dynamic merit model reads (see `Dynamic Merit: Urgency, Cadence and Program Balance`_).
 
 **Attributes:**
 
@@ -1511,7 +1511,6 @@ Balance`_).
 
 Each :class:`~conops.config.ObservationCategory` also carries:
 
-* ``tier`` (int, default ``0``): Scheduling tier; higher tiers always win
 * ``program`` (str, optional): Program the targets count toward; defaults to the
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
@@ -1549,7 +1548,6 @@ Each :class:`~conops.config.ObservationCategory` also carries:
                name="TOO",
                obsid_min=30000,
                obsid_max=40000,
-               tier=1,  # always outranks tier-0 science
            ),
        ],
        default_name="Other",
@@ -1586,6 +1584,18 @@ dispatch, so configurations without this section behave as before.
   ``horizon_seconds`` (default one day), ``replan_interval_seconds`` (default 12
   hours), ``commit_lead_time_seconds`` (default 0), ``rapid_replans`` and
   ``allow_interrupts`` (both default true)
+* ``allocation`` (:class:`~conops.config.AllocationSettings`, unset by default): a
+  long-range allocator for ``dispatch`` and ``rolling`` modes, with ``bin_seconds``
+  (default one day), ``efficiency`` (default 0.75), ``reserve``, the fraction of
+  each day kept free for ToOs (default 0.1), ``solver`` (``milp``, the default,
+  which needs ``coast-sim[cpsat]``, or ``greedy``), ``time_limit_seconds`` for the
+  MILP solver, HiGHS (default 10), and ``bonus``; not allowed in ``planned`` mode.
+
+  ``bonus`` (default 0.5) is the fraction of a request's value its allocated time
+  gains, in the bin it is allocated to, shown as the ``allocation`` merit term. It is
+  how strongly scheduling follows the allocation: allocated time competes with all
+  other work on merit, so a larger bonus keeps closer to the allocation, and
+  ``bonus: 0`` ignores when a request was allocated.
 
 Scheduler settings left unset use the scheduler's defaults; setting one that does
 not apply to the chosen scheduler is an error. ``dispatch`` mode uses none of them.
@@ -1602,6 +1612,10 @@ See :doc:`planning` for what each mode and scheduler does.
        horizon_seconds: 43200
        replan_interval_seconds: 21600
        commit_lead_time_seconds: 1800
+     allocation:
+       bin_seconds: 86400
+       reserve: 0.1
+       bonus: 0.5
 
 .. code-block:: python
 

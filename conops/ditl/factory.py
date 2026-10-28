@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 import rust_ephem
 
 from ..config import MissionConfig
-from ..config.scheduler import SchedulerMode
+from ..config.scheduler import AllocationSettings, SchedulerMode
+from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.registry import scheduler_class
 from ..targets import Plan, Pointing, Queue
 from .ditl import DITL
@@ -29,6 +30,10 @@ def create_ditl(
     * ``rolling``: a :class:`~conops.ditl.RollingHorizonDITL` that builds and
       rebuilds its plan with the configured scheduler while it runs.
 
+    With ``scheduler.allocation`` set, dispatch and rolling simulations get a
+    :class:`~conops.schedulers.LongRangeAllocator` over the run, and follow
+    its allocation, with allocated time worth its ``bonus`` more.
+
     The simulation is ready for :meth:`calc`. Targets of Opportunity can be
     submitted to the dispatch and rolling simulations before running them.
 
@@ -50,9 +55,30 @@ def create_ditl(
     begin = begin or _as_utc(ephemeris.timestamp[0])
     end = end or _as_utc(ephemeris.timestamp[-1])
     settings = config.scheduler
+    allocation = settings.allocation
+    allocator = None
+    if allocation is not None:
+        allocator = LongRangeAllocator(
+            config,
+            begin,
+            end,
+            bin_length=timedelta(seconds=allocation.bin_seconds),
+            efficiency=allocation.efficiency,
+            reserve=allocation.reserve,
+            solver=allocation.solver,
+            time_limit=allocation.time_limit_seconds,
+        )
+    # How strongly scheduling follows the allocation, if there is one.
+    steering = allocation or AllocationSettings()
 
     if settings.mode is SchedulerMode.DISPATCH:
-        queue_ditl = QueueDITL(config=config, begin=begin, end=end)
+        queue_ditl = QueueDITL(
+            config=config,
+            begin=begin,
+            end=end,
+            allocator=allocator,
+            allocation_bonus=steering.bonus,
+        )
         queue_targets(queue_ditl, targets)
         return queue_ditl
 
@@ -89,6 +115,8 @@ def create_ditl(
         include_passes=settings.include_passes,
         scheduler=scheduler,
         scheduler_options=options,
+        allocator=allocator,
+        allocation_bonus=steering.bonus,
     )
     rolling.step_size = int(ephemeris.step_size)
     return rolling

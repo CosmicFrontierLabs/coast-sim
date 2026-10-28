@@ -21,6 +21,7 @@ from conops.config import (
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.schedulers.priority_scheduler import _Move
+from conops.simulation import Pass
 from conops.targets import Plan, PlanEntry, Pointing
 
 from .planning_scenario import (
@@ -127,18 +128,6 @@ class TestOrdering:
 
         assert [e.obsid for e in _science(plan)] == [2, 1]
         assert [e.merit for e in _science(plan)] == [90.0, 10.0]
-
-    def test_tier_outranks_merit(self) -> None:
-        categories = [ObservationCategory(name="Cal", obsid_min=1, obsid_max=2, tier=1)]
-        config = _config(2, categories=categories)
-        calibration = _target(config, 1, 105.0, 10.0, merit=1)
-        science = _target(config, 2, 110.0, 10.0, merit=90)
-
-        plan = PriorityScheduler(
-            config, [science, calibration], BEGIN, BEGIN + timedelta(hours=2)
-        ).schedule()
-
-        assert [e.obsid for e in _science(plan)] == [1, 2]
 
     def test_merit_orders_requests_without_the_legacy_alias(self) -> None:
         """Ordering follows the canonical merit field, not the legacy ``fom``."""
@@ -607,19 +596,24 @@ class TestGroundContacts:
         )
         plan = scheduler.schedule()
 
-        predicted = {
-            gspass.station: gspass for gspass in scheduler.ctx.predict_passes()
+        # A station can have several passes in the window, so a pass is
+        # known by its station and its end, which the contact keeps.
+        predicted: dict[tuple[str | None, float | None], Pass] = {
+            (gspass.station, gspass.end): gspass
+            for gspass in scheduler.ctx.predict_passes()
         }
         contacts = [entry for entry in plan if entry.obstype == ObsType.GSP]
-        assert {entry.station for entry in contacts} == set(predicted)
+        assert {(entry.station, entry.contact_end) for entry in contacts} == set(
+            predicted
+        )
         off_grid = [
             entry
             for entry in contacts
-            if (predicted[entry.station].begin - T0) % step  # type: ignore[index]
+            if (predicted[(entry.station, entry.contact_end)].begin - T0) % step
         ]
         assert off_grid
         for entry in contacts:
-            gspass = predicted[entry.station]  # type: ignore[index]
+            gspass = predicted[(entry.station, entry.contact_end)]
             acquire = scheduler.ctx.ceil_step(gspass.begin)
             assert entry.contact_begin == acquire
             assert entry.contact_end == gspass.end
@@ -715,14 +709,20 @@ class TestGroundContacts:
         )
         plan = scheduler.schedule()
 
+        # A station can have several passes in the window, so a pass is
+        # known by its station and its end, which the contact keeps.
         unreachable = {
-            gspass.station
+            (gspass.station, gspass.end)
             for gspass in scheduler.ctx.predict_passes()
             if scheduler.ctx.ceil_step(gspass.begin) >= gspass.utime[-1]
         }
         assert unreachable
-        stations = {entry.station for entry in plan if entry.obstype == ObsType.GSP}
-        assert stations and not stations & unreachable
+        reserved = {
+            (entry.station, entry.contact_end)
+            for entry in plan
+            if entry.obstype == ObsType.GSP
+        }
+        assert reserved and not reserved & unreachable
         ditl = _execute(config, plan, hours, step)
         assert ditl.validate_plan_matches_execution() == []
 
@@ -1045,29 +1045,21 @@ class TestWorthCutting:
     """When a move may cut a snapshot short to fit a new one before it."""
 
     @staticmethod
-    def _request(tier: int, value: float) -> Mock:
+    def _request(value: float) -> Mock:
         request = Mock()
-        request.merit.tier = tier
         request.steady_value = value
         return request
 
-    def _move(self, lost: float, tier: int = 0, value: float = 50.0) -> _Move:
-        return _Move(Mock(), self._request(tier, value), Mock(), Mock(), lost)
+    def _move(self, lost: float, value: float = 50.0) -> _Move:
+        return _Move(Mock(), self._request(value), Mock(), Mock(), lost)
 
     def test_moves_that_cut_nothing_are_always_worth_it(self) -> None:
-        new = self._request(0, 1.0)
+        new = self._request(1.0)
 
         assert PriorityScheduler._worth_cutting(new, 10.0, [self._move(0.0)])
 
     def test_worth_it_when_the_new_snapshot_is_worth_more(self) -> None:
-        new = self._request(0, 20.0)
+        new = self._request(20.0)
 
         assert PriorityScheduler._worth_cutting(new, 900.0, [self._move(300.0)])
         assert not PriorityScheduler._worth_cutting(new, 300.0, [self._move(300.0)])
-
-    def test_never_cuts_a_higher_tier(self) -> None:
-        new = self._request(0, 1000.0)
-
-        assert not PriorityScheduler._worth_cutting(
-            new, 900.0, [self._move(1.0, tier=1, value=1.0)]
-        )

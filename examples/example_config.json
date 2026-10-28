@@ -558,6 +558,7 @@
             "commit_lead_time_seconds": 0.0,
             "rapid_replans": true,
             "allow_interrupts": true
-        }
+        },
+        "allocation": null
     }
 }

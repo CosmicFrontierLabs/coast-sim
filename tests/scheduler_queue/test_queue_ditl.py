@@ -6115,7 +6115,10 @@ class TestTOOFunctionality:
             reason="Preempted by TOO Successful TOO (obsid=1000001)",
             mark_done=False,
         )
-        mock_too_interrupt_success["fetch"].assert_called_once_with(1000.0, 180.0, 45.0)
+        mock_too_interrupt_success["fetch"].assert_called_once_with(
+            1000.0, 180.0, 45.0, enqueue_slew=False
+        )
+        mock_too_interrupt_success["command"].assert_called_once()
         assert queue_ditl.ppt is queued_targets[0]
 
     def test_check_too_interrupt_not_allowed_to_interrupt(
@@ -6220,8 +6223,8 @@ class TestTOOFunctionality:
         )
 
         offered: list[list[bool]] = []
-        mock_too_interrupt_success["fetch"].side_effect = lambda *_: offered.append(
-            [target.done for target in queued_targets]
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_, **__: (
+            offered.append([target.done for target in queued_targets])
         )
 
         queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
@@ -6259,7 +6262,7 @@ class TestTOOFunctionality:
         """The interrupted target is held out of the refetch, then restored."""
         self._submit(queue_ditl)
         done_during_fetch: list[bool] = []
-        mock_too_interrupt_success["fetch"].side_effect = lambda *_: (
+        mock_too_interrupt_success["fetch"].side_effect = lambda *_, **__: (
             done_during_fetch.append(low_merit_current_ppt.done)
         )
 
@@ -6292,40 +6295,6 @@ class TestTOOFunctionality:
         queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
 
         assert too.executed is True
-
-    @pytest.mark.parametrize(
-        ("too_tier", "too_merit", "interrupts"),
-        [(1, 10.0, True), (0, 10000.0, True), (-1, 10000.0, False)],
-    )
-    def test_check_too_interrupt_compares_tier_before_value(
-        self,
-        mock_too_interrupt_success,
-        queue_ditl,
-        queued_targets,
-        low_merit_current_ppt,
-        too_tier,
-        too_merit,
-        interrupts,
-    ) -> None:
-        from conops.config.observation_categories import (
-            ObservationCategories,
-            ObservationCategory,
-        )
-        from conops.targets.merit import MeritModel
-
-        queue_ditl.config.observation_categories = ObservationCategories(
-            categories=[
-                ObservationCategory(
-                    name="TOO", obsid_min=1000000, obsid_max=2000000, tier=too_tier
-                )
-            ]
-        )
-        queue_ditl.merit_model = MeritModel(queue_ditl.config)
-        self._submit(queue_ditl, merit=too_merit)
-
-        result = queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
-
-        assert result is interrupts
 
     def test_too_request_pydantic_validation_valid(self) -> None:
         """Test TOORequest Pydantic validation - valid creation."""

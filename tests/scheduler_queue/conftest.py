@@ -17,6 +17,7 @@ from conops import (
     DumbQueueScheduler,
     MissionConfig,
     QueueDITL,
+    Slew,
     SolarArrayDriveState,
 )
 from conops.config import ObservationTiming, TargetConfig
@@ -645,7 +646,7 @@ def mock_too_interrupt_success(
     mock_pointing_visible: Mock,
     mock_terminate_ppt: Mock,
     mock_fetch_new_ppt: Mock,
-) -> dict[str, Mock]:
+) -> Generator[dict[str, Mock], None, None]:
     """Combined mock setup for successful TOO interrupt tests.
 
     The mocked fetch admits the first queue target that is not held out.
@@ -653,18 +654,23 @@ def mock_too_interrupt_success(
     mock_pointing_visibility.return_value = None  # visibility() just populates windows
     mock_pointing_visible.return_value = True  # Target is visible
 
-    def admit_first_offered(utime: float, ra: float, dec: float) -> None:
+    def admit_first_offered(
+        utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
+    ) -> Mock:
         queue_ditl.ppt = next(
             (target for target in queue_ditl.queue.targets if not target.done), None
         )
+        return Mock(spec=Slew)
 
     mock_fetch_new_ppt.side_effect = admit_first_offered
-    return {
-        "visibility": mock_pointing_visibility,
-        "visible": mock_pointing_visible,
-        "terminate": mock_terminate_ppt,
-        "fetch": mock_fetch_new_ppt,
-    }
+    with patch("conops.QueueDITL._command_ppt_slew") as mock_command:
+        yield {
+            "visibility": mock_pointing_visibility,
+            "visible": mock_pointing_visible,
+            "terminate": mock_terminate_ppt,
+            "fetch": mock_fetch_new_ppt,
+            "command": mock_command,
+        }
 
 
 @pytest.fixture

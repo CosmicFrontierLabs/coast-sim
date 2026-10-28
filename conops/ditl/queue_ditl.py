@@ -37,6 +37,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..schedulers import DispatchPolicy
+from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
@@ -175,12 +176,22 @@ class QueueDITL(DITLMixin, DITLStats):
         end: datetime | None = None,
         queue: DispatchPolicy | None = None,
         calculate_field_of_regard: bool = False,
+        allocator: LongRangeAllocator | None = None,
+        allocation_bonus: float = 0.5,
     ) -> None:
         """Initialize a queue-driven DITL simulation.
 
         Args:
             queue: Policy that selects each next target. Defaults to an empty
                 :class:`~conops.targets.TargetQueue`.
+            allocator: Long-range allocator over the whole run. If given, the
+                queue's remaining exposure is allocated again at the start of
+                each of its bins, and targets allocated to the current bin are
+                worth ``allocation_bonus`` more (see
+                :class:`~conops.schedulers.LongRangeAllocator`). Needs the
+                queue to be a :class:`~conops.targets.TargetQueue`.
+            allocation_bonus: Fraction of an allocated target's value it gains
+                while it has time allocated.
         """
         # Initialize mixin
         DITLMixin.__init__(
@@ -245,6 +256,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 log=self.log,
                 ephem=self.ephem,
             )
+
+        if allocator is not None:
+            if not isinstance(self.queue, Queue):
+                raise TypeError("an allocator needs the queue to be a TargetQueue")
+            self.queue.allocation_bonus = allocation_bonus
+        self.allocator = allocator
+        self.allocation: Allocation | None = None
+        """The allocation in force, if there is an allocator."""
+        self._next_allocation: float | None = None
 
         # Wire log into ACS so it can log events
         self.acs.log = self.log
@@ -311,17 +331,17 @@ class QueueDITL(DITLMixin, DITLStats):
         A TOO is an ordinary queue request with a short window. Once its
         ``submit_time`` is reached it joins the target queue with its own merit
         and deadline, and is selected whenever it ranks highest. It interrupts
-        the observation in progress only when it is visible, its tier and
-        value, evaluated now, beat the tier and value frozen onto the current
-        observation when it was selected, it is allowed to interrupt
-        (``interrupt``), and the observation's category is ``interruptible``.
+        the observation in progress only when it is visible, its value,
+        evaluated now, beats the value frozen onto the current observation when
+        it was selected, it is allowed to interrupt (``interrupt``), and the
+        observation's category is ``interruptible``.
 
         Args:
             obsid: Unique observation identifier for this TOO
             ra: Right ascension in degrees
             dec: Declination in degrees
-            merit: Base merit. Within a tier, a TOO interrupts only if its value
-                exceeds the current observation's.
+            merit: Base merit. A TOO interrupts only if its value exceeds the
+                current observation's.
             exptime: Requested exposure time in seconds
             name: Human-readable name for the TOO target
             submit_time: When the TOO becomes active, as a Unix timestamp or a
@@ -411,14 +431,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         return target
 
-    def _current_value_rank(self) -> tuple[int, float]:
-        """Return the tier and frozen value of the observation in progress."""
+    def _current_value(self) -> float:
+        """Return the frozen value of the observation in progress."""
         if self.ppt is None:
-            return np.iinfo(np.int64).min, -np.inf
+            return -np.inf
         breakdown = self.ppt.merit_breakdown
         if breakdown is not None:
-            return breakdown.value_rank
-        return self.merit_model.tier(self.ppt), float(self.ppt.merit)
+            return breakdown.value
+        return float(self.ppt.merit)
 
     def _check_too_interrupt(self, utime: float, ra: float, dec: float) -> bool:
         """Queue newly active TOOs and interrupt the current observation for one.
@@ -432,8 +452,7 @@ class QueueDITL(DITLMixin, DITLStats):
            category is ``interruptible``.
         3. Its deadline, if any, has not passed.
         4. Its target is visible now.
-        5. Its tier and value now beat the current observation's frozen tier
-           and value.
+        5. Its value now beats the current observation's frozen value.
 
         The best candidate must then pass normal dispatch admission (minimum
         exposure, slew timing, deadline and constraints) before the current
@@ -473,7 +492,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # the TOOs are already queued for the next selection.
             return False
 
-        current_rank = self._current_value_rank()
+        current_value = self._current_value()
         delivered_shares = (
             self.merit_model.delivered_shares(self.queue.targets)
             if self.merit_model.completion_deficit_weight > 0.0
@@ -495,7 +514,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 visibility_window=visibility_window,
                 delivered_shares=delivered_shares,
             )
-            if value.value_rank > current_rank:
+            # With the most the allocation can add: the bonus is for the
+            # collection admission settles on, which the recorder or a
+            # deadline may cut short of a snapshot, and a shorter collection
+            # gets more of it. The admitted value is compared below.
+            if isinstance(self.queue, Queue):
+                bound = self.queue.allocation_bound(target, value.value)
+                if bound:
+                    value = value.model_copy(update={"allocation": bound})
+            if value.value > current_value:
                 outranking.append((too, target, value))
         if not outranking:
             return False
@@ -515,16 +542,28 @@ class QueueDITL(DITLMixin, DITLStats):
                 for command in self.acs.command_queue
             ):
                 return False
-            commitment = self._preview_too_admission(
-                dispatch_time,
-                outranking,
-                now=utime,
-                # Where _reserve_too_cleanup will stop the collection: so
-                # that the cleanup is over by the dispatch time.
-                collection_stop=utime + dispatch_time - cleanup_end,
-            )
-            if commitment is None:
-                return False
+            candidates = outranking
+            while True:
+                if not candidates:
+                    return False
+                commitment = self._preview_too_admission(
+                    dispatch_time,
+                    candidates,
+                    now=utime,
+                    # Where _reserve_too_cleanup will stop the collection: so
+                    # that the cleanup is over by the dispatch time.
+                    collection_stop=utime + dispatch_time - cleanup_end,
+                )
+                if commitment is None:
+                    return False
+                if commitment.value.value > current_value:
+                    break
+                # Admitted, the snapshot is worth no more than the
+                # observation: it stays queued for the next selection, and
+                # admission goes on over the other candidates.
+                candidates = [
+                    item for item in candidates if item[1] is not commitment.target
+                ]
             if any(
                 command.execution_time <= commitment.slew.slewstart
                 for command in self.acs.command_queue
@@ -543,34 +582,57 @@ class QueueDITL(DITLMixin, DITLStats):
         # interrupted observation, is held out of this selection.
         interrupted = self.ppt
         ppt_unavailable = self._ppt_unavailable
-        offered = {id(target) for _, target, _ in outranking}
-        held_out = [
-            target
-            for target in [*self.queue.targets, interrupted]
-            if not target.done and id(target) not in offered
-        ]
-        for target in held_out:
-            target.done = True
-        self.ppt = None
-        try:
-            self._fetch_new_ppt(utime, ra, dec)
-            replacement = self.ppt
-        finally:
-            self.ppt = interrupted
+        candidates = outranking
+        while True:
+            if not candidates:
+                return False
+            offered = {id(target) for _, target, _ in candidates}
+            held_out = [
+                target
+                for target in [*self.queue.targets, interrupted]
+                if not target.done and id(target) not in offered
+            ]
             for target in held_out:
-                target.done = False
-        if replacement is None:
+                target.done = True
+            self.ppt = None
+            try:
+                # A just-issued charge/pass termination can replace tracking
+                # with a braking arc. Commit that command before predicting
+                # the slew; a later pass finds it already processed.
+                pointing = self._process_due_acs_commands(utime)
+                if pointing is not None:
+                    ra, dec = pointing[:2]
+                # Admitted without commanding its slew: the value admission
+                # settles on decides whether the observation is cut at all.
+                slew = self._fetch_new_ppt(utime, ra, dec, enqueue_slew=False)
+                replacement = self.ppt
+            finally:
+                self.ppt = interrupted
+                for target in held_out:
+                    target.done = False
+            if replacement is None or slew is None:
+                self._ppt_unavailable = ppt_unavailable
+                return False
+            too, _, offered_at = next(
+                item for item in candidates if item[1] is replacement
+            )
+            # The value admission settled on, over the collection it admitted;
+            # a queue that leaves no breakdown admitted it at the value offered.
+            admitted = replacement.merit_breakdown or offered_at
+            if admitted.value > current_value:
+                break
+            # Selection is by score, eligibility by value: a higher-scoring
+            # candidate worth no more than the observation must not shut out
+            # one that is worth more. Admission goes on without it.
             self._ppt_unavailable = ppt_unavailable
-            return False
-
-        too, _, value = next(item for item in outranking if item[1] is replacement)
+            candidates = [item for item in candidates if item[1] is not replacement]
         self.log.log_event(
             utime=utime,
             event_type="TOO",
             description=(
                 f"TOO interrupt: {too.name} (obsid={too.obsid}, "
-                f"{value.describe()}) preempting current observation "
-                f"(tier={current_rank[0]}, value={current_rank[1]:g})"
+                f"{admitted.describe()}) preempting current observation "
+                f"(value={current_value:g})"
             ),
             obsid=too.obsid,
             acs_mode=self.acs.acsmode,
@@ -581,6 +643,7 @@ class QueueDITL(DITLMixin, DITLStats):
             mark_done=False,  # Don't mark as done, it was interrupted
         )
         self.ppt = replacement
+        self._command_ppt_slew(utime, slew)
         too.executed = True
         return True
 
@@ -681,8 +744,10 @@ class QueueDITL(DITLMixin, DITLStats):
         too, target, value = next(
             item for item in candidates if memo[id(item[1])] is preview.ppt
         )
+        # The value admission settled on, over the collection it admitted.
+        admitted = preview.ppt.merit_breakdown or value
         return _CommittedTOO(
-            too, target, preview.ppt, slew, self.ppt, value, dispatch_time
+            too, target, preview.ppt, slew, self.ppt, admitted, dispatch_time
         )
 
     def _dispatch_committed_too(self, utime: float) -> bool:
@@ -840,10 +905,12 @@ class QueueDITL(DITLMixin, DITLStats):
         # Set up simulation length from begin/end datetimes
         simlen = int((self.end - self.begin).total_seconds() / self.step_size)
         self._dropped_science_windows.clear()
+        self._next_allocation = None
 
         # DITL loop
         for i in range(simlen):
             utime = self.ustart + i * self.step_size
+            self._allocate_if_due(utime)
 
             # Track PPT in timeline
             self._track_ppt_in_timeline()
@@ -1947,6 +2014,47 @@ class QueueDITL(DITLMixin, DITLStats):
             and gspass.end > entry.begin
             for entry in self.plan
         )
+
+    def _allocate_if_due(self, utime: float) -> None:
+        """Allocate the remaining exposure again when a new bin begins."""
+        if self.allocator is None or not isinstance(self.queue, Queue):
+            return
+        if self._next_allocation is not None and utime < self._next_allocation:
+            return
+        allocation = self.allocator.allocate(
+            self.queue.targets,
+            utime,
+            unplanned={int(t.obsid) for t in self._too_targets.values()},
+        )
+        bin_end = next(
+            (b1 for b0, b1 in allocation.bins if b0 <= utime < b1), self.uend
+        )
+        self.allocation = allocation
+        self._next_allocation = bin_end
+        # What each request has collected when the bin begins: the bonus is
+        # for the seconds the bin allocates beyond that, so once a request
+        # has collected its allocation the rest competes at its merit.
+        targets = {int(t.obsid): t for t in self.queue.targets}
+        collected_before = {
+            obsid: float(target.collected_seconds) for obsid, target in targets.items()
+        }
+        current = allocation.bins_overlapping(utime, bin_end)
+
+        def remaining(obsid: int) -> float | None:
+            per_bin = allocation.seconds.get(obsid)
+            if per_bin is None:
+                # Never considered, as a Target of Opportunity submitted
+                # since: allocated without limit.
+                return None
+            target = targets.get(obsid)
+            collected = (
+                float(target.collected_seconds) - collected_before.get(obsid, 0.0)
+                if target is not None
+                else 0.0
+            )
+            return sum(per_bin.get(k, 0.0) for k in current) - collected
+
+        self.queue.prefer = remaining
 
     def _gsp_activity_in_progress(self, utime: float) -> bool:
         """Return whether a ground station contact is still active at utime."""
@@ -3108,6 +3216,25 @@ class QueueDITL(DITLMixin, DITLStats):
             due = float(earliest)
         return max(0.0, float(gspass.begin) - max(due, utime))
 
+    def _command_ppt_slew(self, utime: float, slew: Slew) -> None:
+        """Command the slew to the observation just admitted as ``ppt``."""
+        assert self.ppt is not None
+        self.acs.slew_dists.append(slew.slewdist)
+        self.log.log_event(
+            utime=utime,
+            event_type="QUEUE",
+            description=f"Fetched PPT: {self.ppt}",
+            obsid=self.ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        command = ACSCommand(
+            command_type=ACSCommandType.SLEW_TO_TARGET,
+            execution_time=slew.slewstart,
+            slew=slew,
+        )
+        self.acs.enqueue_command(command)
+        self._ppt_unavailable = False
+
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
     ) -> Slew | None:
@@ -3428,25 +3555,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return None
             if not enqueue_slew:
                 return slew
-            self.acs.slew_dists.append(slew.slewdist)
-
-            self.log.log_event(
-                utime=utime,
-                event_type="QUEUE",
-                description=f"Fetched PPT: {self.ppt}",
-                obsid=self.ppt.obsid,
-                acs_mode=self.acs.acsmode,
-            )
-
-            # Enqueue the slew command
-            command = ACSCommand(
-                command_type=ACSCommandType.SLEW_TO_TARGET,
-                execution_time=slew.slewstart,
-                slew=slew,
-            )
-            self.acs.enqueue_command(command)
-            self._ppt_unavailable = False
-
+            self._command_ppt_slew(utime, slew)
             return slew
         else:
             self.log.log_event(

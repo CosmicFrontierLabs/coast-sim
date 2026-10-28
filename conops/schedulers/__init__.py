@@ -1,3 +1,4 @@
+from .allocator import AllocatedTime, Allocation, LongRangeAllocator
 from .battery import BatteryLedger
 from .consumable import ConsumableLedger
 from .context import SchedulingContext
@@ -13,6 +14,8 @@ from .sequential_scheduler import SequentialScheduler
 
 __all__ = [
     "SCHEDULERS",
+    "AllocatedTime",
+    "Allocation",
     "BatteryLedger",
     "ConsumableLedger",
     "CpSatScheduler",
@@ -20,6 +23,7 @@ __all__ = [
     "DumbQueueScheduler",
     "DumbScheduler",
     "LocalSearchScheduler",
+    "LongRangeAllocator",
     "PriorityScheduler",
     "QueueScheduler",
     "RecorderLedger",
