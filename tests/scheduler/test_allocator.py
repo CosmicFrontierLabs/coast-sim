@@ -1086,7 +1086,9 @@ class TestAllocatedTime:
             for e in plan
             if e.obstype != ObsType.GSP
         )
-        assert snapshots == pytest.approx([(20 * MIN, 45.0), (30 * MIN, 60.0)])
+        np.testing.assert_allclose(
+            snapshots, [(20 * MIN, 45.0), (30 * MIN, 60.0)], rtol=1e-6, atol=1e-12
+        )
         assert scheduler.unplaced == []
 
     def test_seconds_a_shortened_snapshot_leaves_join_a_later_one(self) -> None:
