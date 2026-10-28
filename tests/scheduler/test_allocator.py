@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from conops import QueueDITL, RollingHorizonDITL, create_ditl
+from conops import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from conops.common import ObsType
 from conops.config import (
     AllocationSettings,
@@ -1155,6 +1155,82 @@ class TestAllocatedTime:
             50 * MIN
         )
         assert float(second.merit) == pytest.approx(40 * (1 + 0.5 * 20 * MIN / seconds))
+
+    @pytest.mark.parametrize("completion_deficit_weight", [0.0, 1e-9])
+    @pytest.mark.parametrize("rival_snapshot", [10, 20])
+    def test_merged_allocation_competes_at_its_current_value(
+        self, completion_deficit_weight: float, rival_snapshot: int
+    ) -> None:
+        """A diluted allocation must yield to a higher-value deadline request,
+        including its subsequent snapshots, without relying on balancing."""
+        hours = 6
+        config = _config(
+            hours,
+            weights=TargetConfig(completion_deficit_weight=completion_deficit_weight),
+            categories=[
+                ObservationCategory(
+                    name="Science", obsid_min=1, obsid_max=3, time_share=1.0
+                )
+            ],
+        )
+        target = _target(
+            config, 1, *CONSTRAINED[1], merit=40, minutes=50, snapshot=30, ss_min=20
+        )
+        rival = _target(
+            config,
+            2,
+            *CONSTRAINED[1],
+            merit=58,
+            minutes=20,
+            snapshot=rival_snapshot,
+            earliest_start=T0 + 2 * HOUR,
+            deadline=T0 + 2 * HOUR + (15 if rival_snapshot == 10 else 10) * MIN,
+        )
+        scheduler = PriorityScheduler(
+            config,
+            [target, rival],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            allocated={
+                1: [
+                    AllocatedTime(T0 + HOUR, T0 + 2 * HOUR, 30 * MIN),
+                    AllocatedTime(T0 + 2 * HOUR, T0 + 3 * HOUR, 20 * MIN),
+                ]
+            },
+            allocation_bonus=0.5,
+        )
+
+        plan = scheduler.schedule()
+
+        science = [entry for entry in plan if entry.obstype != ObsType.GSP]
+        rival_entries = [entry for entry in science if entry.obsid == rival.obsid]
+        assert len(rival_entries) == 20 // rival_snapshot
+        assert all(
+            rival.earliest_start <= entry.collection_begin <= rival.deadline
+            for entry in rival_entries
+        )
+        assert scheduler.unplaced == []
+        for obsid, minutes in ((1, 50), (2, 20)):
+            assert sum(
+                entry.collection_seconds_between(entry.begin, entry.end)
+                for entry in science
+                if entry.obsid == obsid
+            ) == pytest.approx(minutes * MIN)
+        target_values = [float(entry.merit) for entry in science if entry.obsid == 1]
+        assert min(target_values) < 58.0 < max(target_values)
+        assert all(float(entry.merit) == pytest.approx(58.0) for entry in rival_entries)
+
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=hours),
+        )
+        ditl.step_size = scheduler.ctx.step_size
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
 
     def test_seconds_taken_beyond_the_allocation_are_placed_whole(self) -> None:
         """A 24-minute span cannot hold all 25 minutes: rather than cut them

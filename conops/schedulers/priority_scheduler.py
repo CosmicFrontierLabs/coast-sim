@@ -547,8 +547,8 @@ class PriorityScheduler:
     def _place_requests(self, requests: Sequence[_Request]) -> None:
         """Place snapshots of the highest-ranked request at their earliest fit.
 
-        Without a completion deficit the ranking never changes, so each
-        request is placed in full before the next.
+        Re-evaluate values after each snapshot: program shares can change,
+        and merging leftover allocated seconds can dilute a request's bonus.
         """
         # The request for the rest of a target's exposure can start with none,
         # all of it allocated, and take allocated seconds that do not fit.
@@ -561,15 +561,15 @@ class PriorityScheduler:
         """Requests a move has cut short since the last placement."""
         while active:
             shares = program_shares(self._program_seconds)
-            request = active[0]
-            if self._balancing:
-                request = max(
-                    active,
-                    key=lambda r: (
-                        self._value(r, shares),
-                        -order[id(r)],
-                    ),
-                )
+            # The original order breaks ties only; a merge can change value
+            # even when completion-deficit balancing is disabled.
+            request = max(
+                active,
+                key=lambda r: (
+                    self._value(r, shares),
+                    -order[id(r)],
+                ),
+            )
             block = self._place_snapshot(request, self._cadence_release(request))
             self._reactivate_cut_short(active, order)
             if block is not None:
@@ -612,7 +612,8 @@ class PriorityScheduler:
         """Put requests a move cut short back among those still to place.
 
         A finished request cut short by at least ``ss_min`` can be placed
-        again. ``active`` stays in planning order. This always ends: a cut is
+        again. ``active`` keeps the original tie order; selection uses each
+        request's current value. This always ends: a cut is
         only made when it raises the plan's value-weighted science.
         """
         waiting = {id(request) for request in active}
@@ -812,10 +813,6 @@ class PriorityScheduler:
                 )
             )
         self._deficit_weight = merit_model.completion_deficit_weight
-        self._balancing = self._deficit_weight > 0.0 and any(
-            r.category.time_share is not None for r in requests
-        )
-
         self._seed = seed
         self._shares = shares
         # Allocated time is worth its request's value plus the bonus.
