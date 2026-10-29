@@ -126,7 +126,9 @@ class TestPriorityScheduler:
             for step in visits[0].steps
             if not step.calibration
         )
-        assert scheduler._block_volume(visits[0]) == pytest.approx(expected)
+        assert sum(
+            volume for _, volume in scheduler._block_additions(visits[0])
+        ) == pytest.approx(expected)
         addition = scheduler._block_addition(visits[0])
         assert addition.begin == float(chains[0][0].begin)
         assert addition.end == float(chains[0][-1].end)
