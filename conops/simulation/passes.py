@@ -619,13 +619,52 @@ class PassTimes(ContactScheduler):
             return 0.0
         return 0.0 if rate is None else rate
 
-    def _pass_selection_key(self, gspass: Pass) -> tuple[float, float, float]:
+    def _routed_pass_volume_gb(self, gspass: Pass) -> float:
+        """Capacity reserved by stores on their configured band for this pass.
+
+        Non-tracking passes carry a physical link-volume estimate, which may
+        use another band or bandwidth no store has reserved. Integrate the
+        routed rate instead, including its variation with range.
+        """
         rate = self._station_downlink_rate_mbps(gspass)
-        volume = (
-            gspass.downlink_volume_gb * 1000.0
-            if gspass.downlink_volume_gb is not None
-            else rate * gspass.length
+        station = self.ground_stations.get(gspass.station)
+        communications = self.config.spacecraft_bus.communications
+        if (
+            gspass.requires_tracking
+            or rate <= 0.0
+            or not rate_varies_with_range(station, communications)
+        ):
+            return rate * gspass.length / 1000.0
+        storage = self.config.data_storage
+        assert storage is not None
+        times = np.array([t.timestamp() for t in self.ephem.timestamp])
+        first = max(0, int(np.searchsorted(times, gspass.begin, side="right")) - 1)
+        last = int(np.searchsorted(times, gspass.end, side="left"))
+        geometry = self.station_geometry(station, first, last)
+        seconds = np.maximum(
+            0.0,
+            np.minimum(times[first:last] + self.ephem.step_size, gspass.end)
+            - np.maximum(times[first:last], gspass.begin),
         )
+        return sum(
+            sum(
+                storage.downlink_rate(
+                    self.config, name, gspass.station, float(distance)
+                )
+                for name in storage.stores
+            )
+            * float(duration)
+            / 1000.0
+            for distance, duration in zip(geometry.range_km, seconds)
+        )
+
+    def _pass_selection_key(self, gspass: Pass) -> tuple[float, float, float]:
+        if self.config.data_storage is not None:
+            volume = self._routed_pass_volume_gb(gspass) * 1000.0
+        elif gspass.downlink_volume_gb is not None:
+            volume = gspass.downlink_volume_gb * 1000.0
+        else:
+            volume = self._station_downlink_rate_mbps(gspass) * gspass.length
         return (volume, gspass.length, -gspass.begin)
 
     def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 from pydantic import ValidationError
 
-from conops.common.enums import ACSMode
+from conops.common.enums import ACSMode, AntennaType
 from conops.config import (
     BandCapability,
     CommunicationsSystem,
@@ -339,7 +339,10 @@ def test_station_normalization_on_assignment_and_duplicate_routes():
         ("Ka", {"payload": 0.3, "bus": 0.3}, "FAST"),
     ],
 )
-def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
+@pytest.mark.parametrize("precomputed", [False, True])
+def test_pass_selection_uses_routed_downlink_volume(
+    band, shares, selected, precomputed
+):
     c = config()
     c.constraint.ephem = make_config(1).constraint.ephem
     c.spacecraft_bus.communications.band_capabilities.append(
@@ -366,9 +369,85 @@ def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
         )
     passes = PassTimes(config=c)
     passes.passes = [
-        Pass(station=station, begin=1000, length=600) for station in ("GS", "FAST")
+        Pass(
+            station=station,
+            begin=1000,
+            length=length,
+            requires_tracking=not precomputed,
+            downlink_volume_gb=length * 0.1 if precomputed else None,
+        )
+        for station, length in (("GS", 600), ("FAST", 720))
     ]
     passes._deconflict_overlapping_passes()
+    assert [p.station for p in passes.passes] == [selected]
+
+
+@pytest.mark.parametrize(
+    "ranged_rates, selected", [([10, 20], "GS"), ([80, 100], "FAST")]
+)
+@pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+@pytest.mark.parametrize("clip_seconds", [0, 30])
+def test_predicted_pass_selection_integrates_the_reserved_band(
+    ranged_rates, selected, antenna_type, clip_seconds
+):
+    import numpy as np
+
+    from conops.simulation.passes import StationGeometry
+
+    c = config()
+    c.constraint.ephem = make_config(1).constraint.ephem
+    c.spacecraft_bus.communications.antenna_pointing.antenna_type = antenna_type
+    c.spacecraft_bus.communications.band_capabilities.append(
+        BandCapability(band="S", downlink_rate_mbps=300)
+    )
+    c.ground_stations.add(
+        GroundStation(
+            code="FAST",
+            name="FAST",
+            latitude_deg=0,
+            longitude_deg=0,
+            bands=[
+                BandCapability(
+                    band="Ka",
+                    downlink_rate_mbps=300,
+                    downlink_rate_vs_range_km=[
+                        (1000, ranged_rates[0]),
+                        (2000, ranged_rates[1]),
+                    ],
+                ),
+                BandCapability(band="S", downlink_rate_mbps=500),
+            ],
+        )
+    )
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.25, "bus": 0.25}),
+        DownlinkRoute(station="FAST", band="Ka", shares={"payload": 1}),
+    ]
+    passes = PassTimes(c)
+    times = np.array([t.timestamp() for t in passes.ephem.timestamp])
+    directions = np.tile([1.0, 0.0, 0.0], (10, 1))
+    geometry = StationGeometry(
+        np.full(10, 90.0), np.repeat([1000.0, 2000.0], 5), directions
+    )
+    with patch.object(PassTimes, "station_geometry", return_value=geometry):
+        for station in c.ground_stations.stations:
+            contact, safe = passes._build_pass(station, 0, 0, 10, times, -directions)
+            assert safe
+            passes.passes.append(contact)
+        assert [p.downlink_volume_gb for p in passes.passes] == pytest.approx([60, 180])
+        for contact in passes.passes:
+            contact.begin += clip_seconds
+            contact.length -= 2 * clip_seconds
+        seconds_per_rate = (600 - 2 * clip_seconds) / 2
+        assert [
+            passes._pass_selection_key(p)[0] / 1000 for p in passes.passes
+        ] == pytest.approx(
+            [
+                50 * seconds_per_rate * 2 / 1000,
+                sum(ranged_rates) * seconds_per_rate / 1000,
+            ]
+        )
+        passes._deconflict_overlapping_passes()
     assert [p.station for p in passes.passes] == [selected]
 
 
