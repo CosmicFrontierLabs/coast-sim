@@ -1,18 +1,13 @@
-"""Ground-station contacts for antennas that need no spacecraft attitude.
+"""Usable link coverage during scheduled ground-station passes.
 
-A body-fixed antenna downlinks only during a ground-station pass, when the
-spacecraft points the antenna at the station (:class:`~conops.simulation.passes.PassTimes`).
-An omnidirectional or gimballed antenna downlinks whenever it has a link to a
-station, in whatever ACS mode the spacecraft is in, so its contacts are a
-matter of geometry and of the link: :class:`StationCoverage` finds, at every
-step of the ephemeris, which stations are above their elevation masks, and
-schedules the contacts from that. One station is tracked at a time: a contact
-stays with its station until it sets, then the link is handed over to the
-best station then in view. Every contact starts with the communications
+:class:`~conops.simulation.passes.PassTimes` predicts and books the passes.
+:class:`StationCoverage` models link rates, acquisitions and repoints for
+passes that require no spacecraft tracking, allowing downlink during science.
+Physical visibility alone does not provide a contact. One station is
+booked at a time. Every contact starts with the communications
 system's acquisition latency, and a handover adds its own, during which
-nothing is downlinked. Every station with a downlink
-carries data, whether or not it may be scheduled for spacecraft-tracking
-passes.
+nothing is downlinked. Stations with a compatible downlink may be booked even
+when they are excluded from spacecraft-tracking activities.
 """
 
 from __future__ import annotations
@@ -23,23 +18,24 @@ from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
-import rust_ephem
 
 from ..common import AntennaType, scbodyvector
 from ..config import CommunicationsSystem, MissionConfig
 from ..config.communications import interpolate_range_table
+from ..config.data_storage import RecorderView
 from ..config.groundstation import (
     GroundStation,
     effective_downlink_rate_mbps,
     rate_varies_with_range,
 )
+from .passes import PassTimes
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
 
 
 class ContactSpan(NamedTuple):
-    """A span of continuous contact with one station."""
+    """A usable link span within a scheduled ground-station pass."""
 
     begin: float
     """Start of the span, in Unix seconds."""
@@ -105,22 +101,25 @@ class Contact(NamedTuple):
 
 
 class StationCoverage:
-    """The contacts of an omni or gimballed antenna over the ephemeris.
+    """Link coverage for scheduled passes that require no spacecraft tracking.
 
     Args:
         config: Mission configuration: the stations, the communications
             system and the ephemeris on its constraint.
+        scheduled_passes: Existing bookings as (begin, end, station) tuples.
+            Reconstruct them without a new scheduling decision; an empty
+            sequence reserves no station time.
 
     At each step of the ephemeris a station is in view when its elevation is
-    above its mask. Contacts are scheduled from the views: the link stays
-    with its station until that station sets, so two stations in view at
-    once do not share the time; when it sets, or when no station was
-    tracked, the link goes to the station in view with the highest downlink
-    rate, and of those the one in view for longest. Every contact begins
-    the communications system's ``acquisition_seconds`` after its station
-    comes into view, and a switch straight from one station to another
+    above its mask. :class:`~conops.simulation.passes.PassTimes` accepts windows at least
+    eight minutes long, draws each station's scheduling probability once
+    per window, and selects whole non-overlapping passes by downlink volume,
+    duration and earlier start. The configured random seed reproduces the
+    bookings over the same ephemeris. Every contact begins
+    the communications system's ``acquisition_seconds`` after its station's
+    booked pass begins, and a switch straight from one station to another
     adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
-    station acquired after a gap with none in view pays no handover, since
+    station acquired after a gap with no booking pays no handover, since
     the antenna can be pointed at it in advance. A gimballed antenna also has to reach
     the station within its gimbal range from its boresight, which depends
     on the attitude flown and is checked at execution (:meth:`contact_at`);
@@ -139,12 +138,18 @@ class StationCoverage:
     nothing is downlinked; the contact is split around it.
     """
 
-    def __init__(self, config: MissionConfig) -> None:
+    def __init__(
+        self,
+        config: MissionConfig,
+        *,
+        scheduled_passes: Sequence[tuple[float, float, str]] | None = None,
+    ) -> None:
         ephem = config.constraint.ephem
         if ephem is None:
             raise ValueError("config.constraint.ephem must be set for coverage")
         self.config = config
         self.ephem = ephem
+        self.pass_times = PassTimes(config)
         self.times: npt.NDArray[np.float64] = np.array(
             [t.timestamp() for t in ephem.timestamp], dtype=float
         )
@@ -191,23 +196,10 @@ class StationCoverage:
         self._to_station = np.zeros((count, steps, 3))
         """Unit vectors from the spacecraft to each station, in GCRS."""
         for k, station in enumerate(self.stations):
-            ground = rust_ephem.GroundEphemeris(
-                latitude=station.latitude_deg,
-                longitude=station.longitude_deg,
-                height=station.elevation_m,
-                begin=ephem.timestamp[0],
-                end=ephem.timestamp[-1],
-                step_size=ephem.step_size,
-            )
-            station_pos = np.asarray(ground.gcrs_pv.position, dtype=float)
-            to_satellite = satellite - station_pos
-            distance = np.linalg.norm(to_satellite, axis=1)
-            to_satellite_unit = to_satellite / distance[:, None]
-            up = station_pos / np.linalg.norm(station_pos, axis=1)[:, None]
-            cosine = np.sum(up * to_satellite_unit, axis=1)
-            self.elevation_deg[k] = np.degrees(np.arcsin(np.clip(cosine, -1.0, 1.0)))
-            self.range_km[k] = distance
-            self._to_station[k] = -to_satellite_unit
+            geometry = self.pass_times.station_geometry(station, 0, steps)
+            self.elevation_deg[k] = geometry.elevation_deg
+            self.range_km[k] = geometry.range_km
+            self._to_station[k] = geometry.to_station
         masks = np.array([s.min_elevation_deg for s in self.stations], dtype=float)
         self.visible: npt.NDArray[np.bool_] = self.elevation_deg > masks[:, None]
         """Whether each station is above its mask at each step."""
@@ -219,15 +211,7 @@ class StationCoverage:
         ]
         """Whether each station's rate varies with range."""
         for k, station in enumerate(self.stations):
-            if not self._ranged[k]:
-                continue
-            for step in np.flatnonzero(self.visible[k]):
-                self.rate_steps[k, step] = float(
-                    effective_downlink_rate_mbps(
-                        station, communications, float(self.range_km[k, step])
-                    )
-                    or 0.0
-                )
+            self.rate_steps[k] = self.pass_times.downlink_rates(station, 0, steps)
         # Gb downlinked from each station by the start of each step, were it
         # in contact throughout: the rate is constant within a step.
         self._cumulative = np.zeros((count, steps + 1))
@@ -243,12 +227,18 @@ class StationCoverage:
         self.repoints: list[Repoint] = []
         """Every repoint of the antenna over the ephemeris, in time order."""
         self._last_pointing: np.ndarray | None = None
+        self._schedule_passes(scheduled_passes)
         self._schedule_contacts()
         self._begins = [span.begin for span in self.contacts]
 
     @classmethod
-    def for_config(cls, config: MissionConfig) -> StationCoverage | None:
-        """Coverage for a configuration whose antenna needs no attitude, else None.
+    def for_config(
+        cls,
+        config: MissionConfig,
+        *,
+        scheduled_passes: Sequence[tuple[float, float, str]] | None = None,
+    ) -> StationCoverage | None:
+        """Link coverage for passes without spacecraft tracking, else None.
 
         None for a body-fixed antenna, which downlinks during passes, for a
         configuration without a communications system, which keeps the
@@ -267,37 +257,57 @@ class StationCoverage:
             for station in config.ground_stations.stations
         ):
             return None
-        return cls(config)
+        return cls(config, scheduled_passes=scheduled_passes)
 
     # ── Scheduling ────────────────────────────────────────────────────────
 
+    def _schedule_passes(
+        self, scheduled_passes: Sequence[tuple[float, float, str]] | None
+    ) -> None:
+        """Consume the bookings predicted or restored by PassTimes.
+
+        These reservations require station time, but no spacecraft tracking
+        activity. Keep physical visibility separate from booked availability.
+        """
+        if scheduled_passes is None:
+            self.pass_times.predict()
+        else:
+            self.pass_times.restore_bookings(scheduled_passes)
+        self.scheduled_passes = [
+            self._span(self._station_index(p.station), p.begin, p.end)
+            for p in self.pass_times.passes
+        ]
+        """Booked station passes before acquisition and repoint outages."""
+        self.dropped_overlapping_passes = self.pass_times.dropped_overlapping_passes
+        self.scheduled = np.zeros_like(self.visible)
+        """Whether a station is booked at each ephemeris step."""
+        for span in self.scheduled_passes:
+            k = self._station_index(span.station)
+            start = int(np.searchsorted(self.times, span.begin))
+            end = int(np.searchsorted(self.times, span.end))
+            self.scheduled[k, start:end] = True
+        self.scheduled &= self.visible
+
     def _schedule_contacts(self) -> None:
-        """Walk the ephemeris tracking one station at a time (see the class)."""
-        count, steps = self.visible.shape
+        """Apply acquisitions, handovers and repoints to the booked passes."""
+        count, steps = self.scheduled.shape
         if count == 0 or steps == 0:
             return
-        # How many consecutive steps each station stays in view from each step.
-        remaining = np.zeros((count, steps), dtype=int)
-        for k in range(steps - 1, -1, -1):
-            later = remaining[:, k + 1] if k + 1 < steps else 0
-            remaining[:, k] = np.where(self.visible[:, k], later + 1, 0)
         current = -1
         begin = 0.0
         for k in range(steps):
             t = float(self.times[k])
-            if current >= 0 and self.visible[current, k]:
+            if current >= 0 and self.scheduled[current, k]:
                 continue
             if current >= 0:
-                # The tracked station has set.
+                # The booked pass has ended.
                 self._add_contact(current, begin, t)
-            in_view = np.flatnonzero(self.visible[:, k])
+            in_view = np.flatnonzero(self.scheduled[:, k])
             if in_view.size == 0:
                 current = -1
                 continue
-            chosen = max(
-                (int(j) for j in in_view),
-                key=lambda j: (self.rate_steps[j, k], remaining[j, k], -j),
-            )
+            # Overlap selection has already booked at most one station.
+            chosen = int(in_view[0])
             begin = t + self.acquisition_seconds
             if current >= 0:
                 begin += self.handover_seconds
@@ -532,6 +542,28 @@ class StationCoverage:
                     spans.append(self._span(self._station_index(span.station), lo, hi))
         return spans
 
+    def recorder_spans(
+        self, recorder: RecorderView, begin: float, end: float
+    ) -> list[ContactSpan]:
+        """Usable links at one store's reserved rate on its routed band."""
+        result = []
+        for span in self.spans(begin, end):
+            station = self._station_index(span.station)
+            cursor = span.begin
+            volume = 0.0
+            while cursor < span.end:
+                k = self.index(cursor)
+                stop = min(span.end, float(self.times[k]) + self.step_size)
+                rate = recorder.downlink_rate(
+                    span.station, float(self.range_km[station, k])
+                )
+                volume += rate * (stop - cursor) / 1000.0
+                cursor = stop
+            result.append(
+                span._replace(rate_mbps=volume * 1000.0 / (span.end - span.begin))
+            )
+        return result
+
     def downlink_gb(self, begin: float, end: float) -> float:
         """What the contacts in ``[begin, end)`` downlink, in Gb."""
         return sum(
@@ -540,7 +572,12 @@ class StationCoverage:
         )
 
     def contact_in(
-        self, begin: float, end: float, attitude: Attitude | None = None
+        self,
+        begin: float,
+        end: float,
+        attitude: Attitude | None = None,
+        *,
+        recorder: RecorderView | None = None,
     ) -> tuple[float, float, float]:
         """The contact in ``[begin, end)``: when it starts, when it stops and
         what it downlinks in Gb, ``(begin, begin, 0.0)`` without one.
@@ -552,7 +589,12 @@ class StationCoverage:
         """
         start = stop = begin
         downlinked = 0.0
-        for span in self.spans(begin, end):
+        spans = (
+            self.recorder_spans(recorder, begin, end)
+            if recorder is not None
+            else self.spans(begin, end)
+        )
+        for span in spans:
             if attitude is not None and self.contact_at(span.begin, attitude) is None:
                 continue
             if downlinked == 0.0:

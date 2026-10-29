@@ -72,7 +72,7 @@ class TargetQueue:
         self.acs_config = config.spacecraft_bus.attitude_control
         self.observation_timing = config.payload.observation_timing
         self.coverage: "StationCoverage | None" = None
-        """The run's station coverage, where its antenna needs no attitude:
+        """The run's link coverage for passes without spacecraft tracking:
         a candidate whose category forbids antenna repoints during an
         observation is kept between them."""
 

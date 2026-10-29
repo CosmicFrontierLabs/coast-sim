@@ -226,7 +226,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
 
         # Pointing history
-        self.plan = Plan()
+        self.plan = Plan(ground_contacts=self._booked_ground_contacts())
 
         # Power and battery history
         self.panel = list()
@@ -924,7 +924,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._active_gsp_end_time = None
         self._committed_too = None
         if self._run_started:
-            self.plan = Plan()
+            self.plan = Plan(ground_contacts=self._booked_ground_contacts())
             self.charging_ppt = None
             self.emergency_charging.current_charging_ppt = None
             self._planned_gsp_keys.clear()
@@ -2160,6 +2160,12 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _schedule_groundstation_passes(self) -> None:
         """Populate groundstation passes for the simulation window."""
+        if self.coverage is not None:
+            # PassTimes already booked these contacts before execution.
+            # ACS pass requests contain only spacecraft tracking activities.
+            self.passes = self.coverage.pass_times
+            return
+        self.passes = self.acs.passrequests
         if (
             self.acs.passrequests.passes is None
             or len(self.acs.passrequests.passes) == 0
@@ -2226,6 +2232,8 @@ class QueueDITL(DITLMixin, DITLStats):
             return
         if self._next_allocation is not None and utime < self._next_allocation:
             return
+        if self.coverage is not None:
+            self.allocator.ctx.coverage = self.coverage
         allocation = self.allocator.allocate(
             self.queue.targets,
             utime,
@@ -3408,7 +3416,11 @@ class QueueDITL(DITLMixin, DITLStats):
                     None,
                     span.rate_mbps * (span.end - span.begin) / 1000.0,
                 )
-                for span in self.coverage.spans(utime, self.uend)
+                for span in (
+                    self.coverage.recorder_spans(config, utime, self.uend)
+                    if isinstance(config, RecorderView)
+                    else self.coverage.spans(utime, self.uend)
+                )
             ]
         else:
             passes = sorted(
@@ -3489,7 +3501,6 @@ class QueueDITL(DITLMixin, DITLStats):
             else:
                 high = middle
         return low
-
 
     def _pass_ingress_seconds(
         self, gspass: Pass, utime: float, ra: float, dec: float, roll: float

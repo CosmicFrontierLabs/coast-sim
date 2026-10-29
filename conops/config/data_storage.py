@@ -178,7 +178,13 @@ class DataStorage(ConfigModel):
                 "Unresolved data storage configuration: " + ", ".join(missing)
             )
 
-    def downlink_rate(self, config: MissionConfig, store: str, station: str) -> float:
+    def downlink_rate(
+        self,
+        config: MissionConfig,
+        store: str,
+        station: str,
+        range_km: float | None = None,
+    ) -> float:
         for link in self.downlinks or []:
             if link.station == station:
                 ground = config.ground_stations.get(station)
@@ -186,8 +192,8 @@ class DataStorage(ConfigModel):
                 if comms is None:
                     return 0.0
                 rate = min(
-                    ground.get_downlink_rate(link.band) or 0.0,
-                    comms.get_downlink_rate(link.band),
+                    ground.get_downlink_rate(link.band, range_km) or 0.0,
+                    comms.get_downlink_rate(link.band, range_km),
                 )
                 return rate * link.shares.get(store, 0.0)
         return 0.0
@@ -253,10 +259,10 @@ class RecorderView:
             if storage.instrument_science.get(instrument.name) == self.name
         )
 
-    def downlink_rate(self, station: str) -> float:
+    def downlink_rate(self, station: str, range_km: float | None = None) -> float:
         storage = self.mission.data_storage
         assert storage is not None
-        return storage.downlink_rate(self.mission, self.name, station)
+        return storage.downlink_rate(self.mission, self.name, station, range_km)
 
 
 class RecorderSummary:

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
+from ..config.data_storage import RecorderView
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
@@ -438,7 +439,7 @@ class LongRangeAllocator:
         passes: The run's predicted ground passes, for the data budget, where
             the caller has them; predicted once otherwise, which takes a
             while for a long run.
-        coverage: Station coverage for an antenna that needs no attitude,
+        coverage: Link coverage for passes without spacecraft tracking,
             for the data budget, where the caller has it; built from the
             configuration otherwise.
 
@@ -1106,13 +1107,26 @@ class LongRangeAllocator:
             if not store.active:
                 continue
             view = views[name]
-            downlink = [
-                sum(
-                    contact_downlink_gb(view, station, seconds)
-                    for station, seconds in k
-                )
-                for k in contacts
-            ]
+            if coverage is not None:
+                downlink = [
+                    sum(
+                        span.rate_mbps * (span.end - span.begin) / 1000.0
+                        for span in (
+                            coverage.recorder_spans(view, max(b0, start), b1)
+                            if isinstance(view, RecorderView)
+                            else coverage.spans(max(b0, start), b1)
+                        )
+                    )
+                    for b0, b1 in self.bins
+                ]
+            else:
+                downlink = [
+                    sum(
+                        contact_downlink_gb(view, station, seconds)
+                        for station, seconds in k
+                    )
+                    for k in contacts
+                ]
             housekeeping = []
             for k, (b0, b1) in enumerate(self.bins):
                 seconds = max(0.0, b1 - max(b0, start))
