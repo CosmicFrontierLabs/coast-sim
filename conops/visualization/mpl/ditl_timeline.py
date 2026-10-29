@@ -318,7 +318,7 @@ def plot_ditl_timeline(
             label="Ground Contact",
         )
 
-    # Contacts of an antenna that needs no attitude, coloured by station. On
+    # Usable links during ground-station passes, coloured by station. On
     # a long run each bar is an hour, as dark as its fraction in contact.
     contacts = _extract_contacts(ditl, t_start, offset_hours)
     contact_handles: list[Patch] = []
@@ -597,9 +597,10 @@ def _extract_eclipses(
 def _extract_contacts(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[ContactBar]:
-    """The contacts of an antenna that needs no attitude, from the run's
-    station coverage; none for a body-fixed antenna, whose contacts are its
-    passes."""
+    """Usable link spans for passes without spacecraft tracking.
+
+    Tracking activities are plotted by ``_extract_ground_passes``.
+    """
     coverage = getattr(ditl, "coverage", None)
     if not isinstance(coverage, StationCoverage):
         return []
@@ -612,7 +613,7 @@ def _extract_contacts(
 def _extract_ground_passes(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
-    """Extract ground station pass times from ACS pass list."""
+    """Extract spacecraft tracking intervals from the ACS pass list."""
     if not hasattr(ditl, "acs") or ditl.acs is None:
         return []
 

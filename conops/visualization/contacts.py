@@ -1,9 +1,7 @@
-"""Contacts of an antenna that needs no attitude, for the timeline plots.
+"""Usable link spans during scheduled ground-station passes, for timeline plots.
 
-A body-fixed antenna's contacts are its passes, which the timeline shows as
-bars. An omni or gimballed antenna's contacts are the spans of station
-coverage (:class:`~conops.simulation.StationCoverage`). On a run of a day or
-two each span is a bar of its own, coloured by station; on a longer run a
+On a run of a day or two each span is a bar of its own, coloured by station;
+on a longer run a
 span of minutes is narrower than a pixel, so the row shows each hour's
 fraction in contact instead, coloured by the station with most of it and
 as dark as that fraction against the run's fullest hour.

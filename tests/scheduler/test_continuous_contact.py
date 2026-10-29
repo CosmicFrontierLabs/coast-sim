@@ -1,20 +1,23 @@
-"""Contacts without a pass: an omni or gimballed antenna downlinks whenever a
-station is in view, and the plans, the data budget and dispatch count on it."""
+"""Scheduled ground-station passes during science, with consistent recorder
+forecasts, allocation budgets and dispatch."""
 
 from datetime import timedelta
 
 import pytest
 
-from conops import DITL, create_ditl
-from conops.common import AntennaType, ObsType
+from conops import DITL, QueueDITL, create_ditl
+from conops.common import AntennaType, ObsType, whole_steps
 from conops.common.enums import ACSMode
 from conops.config import (
+    AllocationSettings,
     AntennaPointing,
     BandCapability,
     CommunicationsSystem,
     HousekeepingData,
     MissionConfig,
     OnboardRecorder,
+    SchedulerConfig,
+    SchedulerMode,
     ScienceData,
 )
 from conops.config.observation_categories import (
@@ -24,8 +27,8 @@ from conops.config.observation_categories import (
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LongRangeAllocator, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedger
-from conops.simulation import StationCoverage
-from conops.targets import Pointing
+from conops.simulation import PassTimes, StationCoverage
+from conops.targets import Plan, Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, T0
 from .planning_scenario import make_config as _config
@@ -96,6 +99,67 @@ def _planned_downlink(coverage: StationCoverage, begin: float, end: float) -> fl
 
 
 class TestExecution:
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_future_days_are_booked_before_execution(
+        self, antenna_type, monkeypatch
+    ) -> None:
+        config = _recorder_config(antenna_type, hours=48, gimbal_range_deg=180.0)
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.5
+        config.ground_stations.get("SGS").schedule_probability = 1.0
+        ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=48))
+        assert isinstance(ditl.passes, PassTimes)
+        assert ditl.coverage is not None
+        assert ditl.passes is ditl.coverage.pass_times
+        booked = [(p.begin, p.end, p.station) for p in ditl.passes.passes]
+        assert any(begin >= T0 + 24 * HOUR for begin, _, _ in booked)
+        assert all(not p.requires_tracking for p in ditl.passes.passes)
+
+        def unexpected_prediction(*args, **kwargs):
+            raise AssertionError("Passes must be booked before execution")
+
+        monkeypatch.setattr(PassTimes, "get", unexpected_prediction)
+        monkeypatch.setattr(PassTimes, "predict", unexpected_prediction)
+        assert ditl.calc()
+        assert [(p.begin, p.end, p.station) for p in ditl.passes.passes] == booked
+        assert ditl.plan.ground_contacts == booked
+        assert ACSMode.PASS not in set(ditl.mode)
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_no_station_bookings_means_no_forecast_or_executed_downlink(
+        self, antenna_type
+    ) -> None:
+        config = _recorder_config(antenna_type, gimbal_range_deg=180.0)
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.0
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.coverage is not None
+        assert ditl.coverage.visible.any()
+        assert ditl.coverage.contacts == []
+        assert ditl.data_downlinked_gb[-1] == 0.0
+        assert ACSMode.PASS not in set(ditl.mode)
+        ledger = RecorderLedger(
+            config,
+            T0,
+            T0 + HOURS * HOUR,
+            [],
+            start_volume_gb=0.0,
+            coverage=ditl.coverage,
+        )
+        assert sum(ledger.downlink_gb) == 0.0
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            coverage=ditl.coverage,
+            solver="greedy",
+        )
+        assert sum(allocator.allocate(_targets(config), T0).downlink) == 0.0
+
     def test_an_omni_antenna_downlinks_without_a_pass(self) -> None:
         """Dispatch with an omni antenna never enters PASS mode, yet downlinks
         in every span of coverage, at the station's rate, and keeps the
@@ -214,8 +278,8 @@ class TestExecution:
         assert ditl.coverage is not None
         t_start = float(ditl.plan[0].begin)
         spans = ditl.coverage.spans(T0, T0 + HOURS * HOUR)
-        assert len(spans) > 5
-        # No passes; one bar per span, by station, on a run this short.
+        assert len(spans) > 1
+        # No tracking activities; one bar per usable link span, by station.
         assert _extract_ground_passes(ditl, t_start, 0.0) == []
         bars = _extract_contacts(ditl, t_start, 0.0)
         assert _extract_contacts_plotly(ditl, t_start, 0.0) == bars
@@ -243,13 +307,15 @@ class TestExecution:
         assert ditl.calc()
         ditl.print_statistics()
         out = capsys.readouterr().out
-        assert "GROUND STATION COVERAGE" in out
+        assert "GROUND STATION PASS STATISTICS" in out
         assert "% of the run" in out
-        assert "GROUND STATION PASS STATISTICS" not in out
 
 
 class TestDispatchRoom:
     def test_the_room_runs_to_the_next_span_of_coverage(self) -> None:
+        """The contacts the room is carried through are the spans of
+        coverage: before the first, the housekeeping until it begins has to
+        fit; in contact, the room is what is free now."""
         config = _recorder_config()
         ditl = create_ditl(
             config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
@@ -259,16 +325,57 @@ class TestDispatchRoom:
         ditl.uend = T0 + HOURS * HOUR
         first = ditl.coverage.spans(T0, T0 + HOURS * HOUR)[0]
         free = LIMIT - config.recorder.current_volume_gb
-        before = ditl._recorder_room_gb(T0)
+        before = ditl._recorder_room_gb(T0, 0.0, 0.0, 0.0)
         assert before is not None
         assert before == pytest.approx(
-            free - config.housekeeping_generated(first.begin - T0)
+            free
+            - config.housekeeping_while_waiting(
+                whole_steps(first.begin - T0, ditl.step_size)
+            ),
+            rel=1e-6,
         )
         # In contact, nothing accrues before the next contact: it is now.
-        assert ditl._recorder_room_gb(first.begin + MIN) == pytest.approx(free)
+        assert ditl._recorder_room_gb(
+            first.begin + MIN, 0.0, 0.0, 0.0
+        ) == pytest.approx(free, rel=1e-6)
 
 
 class TestPlanning:
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    @pytest.mark.parametrize("probability", [0.0, 0.5])
+    def test_bookings_survive_saved_plan_replay_without_a_seed(
+        self, antenna_type, probability, tmp_path
+    ) -> None:
+        config = _recorder_config(antenna_type, gimbal_range_deg=180.0)
+        config.random_seed = None
+        for station in config.ground_stations.stations:
+            station.schedule_probability = probability
+        config.scheduler = SchedulerConfig(mode=SchedulerMode.PLANNED)
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        assert ditl.coverage is not None
+        booked = ditl.plan.ground_contacts
+        assert booked is not None
+        assert booked == [
+            (p.begin, p.end, p.station) for p in ditl.coverage.scheduled_passes
+        ]
+        loaded = Plan.load(ditl.plan.save(tmp_path / "plan.json"))
+        assert loaded.ground_contacts == booked
+
+        # Even if a later probability draw would reject every pass, replay
+        # must use the bookings saved with the plan. Assign after construction
+        # as well, which exercises the common Plan.load workflow.
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.0
+        replay = DITL(config=config, begin=BEGIN, end=BEGIN + timedelta(hours=HOURS))
+        replay.plan = loaded
+        assert replay.calc()
+        assert replay.coverage is not None
+        assert replay.coverage.contacts == ditl.coverage.contacts
+        assert replay.validate_plan_matches_execution() == []
+        assert ACSMode.PASS not in set(replay.mode)
+
     def _plan(self, antenna_type: AntennaType = AntennaType.OMNI):
         config = _recorder_config(antenna_type)
         hungry = _data_target(
@@ -310,7 +417,10 @@ class TestPlanning:
 
         assert scheduler.ctx.coverage is not None
         assert not any(entry.obstype == ObsType.GSP for entry in plan)
-        assert scheduler._ledger.segments > 5
+        assert (
+            scheduler._ledger.segments
+            == len(scheduler.ctx.coverage.spans(T0, T0 + HOURS * HOUR)) + 1
+        )
         assert all(
             peak <= LIMIT + 1e-6 for peak in scheduler._ledger.peaks(scheduler._volumes)
         )
@@ -379,6 +489,24 @@ class TestRollingHorizon:
 
 
 class TestAllocator:
+    def test_dispatch_shares_its_bookings_with_the_allocator(self) -> None:
+        config = _recorder_config()
+        config.random_seed = None
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.5
+        config.scheduler.allocation = AllocationSettings(solver="greedy")
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
+        )
+        assert isinstance(ditl, QueueDITL)
+        assert ditl.calc()
+        assert ditl.allocator is not None
+        assert ditl.allocator.ctx.coverage is ditl.coverage
+        assert ditl.coverage is not None
+        assert ditl.plan.ground_contacts == [
+            (p.begin, p.end, p.station) for p in ditl.coverage.scheduled_passes
+        ]
+
     def test_the_data_budget_downlinks_through_the_coverage(self) -> None:
         config = _recorder_config(hours=48)
         allocator = LongRangeAllocator(

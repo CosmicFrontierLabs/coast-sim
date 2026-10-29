@@ -35,7 +35,7 @@ class DispatchPolicy(Protocol):
     """Event log; QueueDITL attaches its own when this is None."""
 
     coverage: "StationCoverage | None"
-    """The run's station coverage, where its antenna needs no attitude;
+    """The run's link coverage for passes without spacecraft tracking;
     QueueDITL attaches its own."""
 
     def get(

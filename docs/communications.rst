@@ -89,34 +89,54 @@ Defines how the antenna is mounted and pointed.
 The three repoint fields apply to a ``GIMBALED`` antenna only: an omni antenna has no
 direction to re-point and a body-fixed one moves with the spacecraft.
 
-The antenna type decides how the spacecraft gets its contacts. A ``FIXED``
-antenna has to be pointed at the station, so it downlinks during ground-station
-passes: the schedulers reserve each pass on a tracking profile, ACS flies it in
-``PASS`` mode, and science stops for it (see :doc:`planning`). An ``OMNI`` or
-``GIMBALED`` antenna needs no spacecraft attitude, so no passes are predicted for
-it and the spacecraft downlinks whenever it has a link to a station, in whatever
-ACS mode it is in. :class:`~conops.simulation.StationCoverage` finds, at each
-step of the ephemeris, which stations are above their elevation masks and
-schedules the contacts from that. One station is tracked at a time: a contact
-stays with its station until it sets, so two stations in view at once do not
-share the time; when it sets, or when none was tracked, the link goes to the
-station in view with the highest downlink rate, and of those the one in view for
-longest. Every contact begins the communications system's ``acquisition_seconds``
-after its station comes into view, and a switch straight from one station to
+:class:`~conops.simulation.PassTimes` predicts and books ground-station passes
+using station elevation masks, a minimum pass duration of eight minutes,
+one ``schedule_probability`` draw per eligible station pass,
+and selection of whole non-overlapping passes. Overlaps favor the pass with
+the greatest downlink volume, then duration, then earlier start. For omni and
+gimballed antennas, ``PassTimes`` uses the effective link rate, including any
+range-dependent rate table, to estimate that volume. A probability of zero books
+no passes; one accepts every eligible pass before overlap selection.
+``random_seed`` makes bookings reproducible over
+the same ephemeris.
+
+Every booking is a :class:`~conops.simulation.Pass`. Its ``requires_tracking``
+flag is true for fixed antennas: ACS follows the pass's attitude profile in
+``PASS`` mode and science pauses. For omni and gimballed antennas it is false,
+so downlink can continue during science. :class:`~conops.simulation.StationCoverage`
+models usable link spans and outages within these passes, including acquisition
+delays, handovers and antenna repoints. It consumes the bookings from ``PassTimes``.
+
+Bookings are fixed before execution starts. For a daily run, the day's passes
+are therefore scheduled before the day begins; a multi-day run books the whole
+ephemeris upfront. Science dispatch and rolling replanning use these reservations
+without requesting new station time or repeating the scheduling-probability draw.
+
+Station visibility is not guaranteed station access: in LEO, contacts end at
+the station's elevation mask and there is no downlink between booked passes.
+Within link coverage, every contact begins ``acquisition_seconds`` after its
+booked pass begins, and a switch straight from one station to
 another adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
-station acquired after a gap with none in view pays no handover, since the
+station acquired after a gap with no booking pays no handover, since the
 antenna can be pointed at it in advance. Each contact downlinks at the effective rate through
 the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
 ``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
 the simulation checks at each step; planning takes the station as reachable.
-Every station with a downlink carries data this way, whether or not
-``schedule_for_tracking`` allows it to be scheduled for passes.
+Every station with a compatible downlink may be booked this way, whether or not
+``schedule_for_tracking`` allows spacecraft-tracking activities; its
+``schedule_probability`` still applies. Planning, the recorder budget and
+execution use these booked contacts, including acquisition and repoint outages.
+Plans preserve tracking activities as ``GSP`` entries and pass windows that need
+no tracking in ``ground_contacts``, including an empty list when no passes were
+booked. Replay keeps those bookings without another probability draw, even
+without a random seed. Older plans without ``ground_contacts`` predict those
+bookings from the configuration.
 
 **Antenna repoints.** A gimballed antenna is re-pointed at each acquisition and
 handover, and within a contact as the spacecraft moves along its orbit; an omni antenna
 is never re-pointed, so it has no repoint events. While an
 attitude is held the station's direction moves in the body frame exactly as it moves
-across the sky, so a tracking repoint needs no attitude and the chain is fixed by the
+across the sky. Tracking repoint times are therefore calculated from the station
 geometry from the contact's start. With ``repoint_threshold_deg`` set, the antenna
 leads the station: at each repoint it is pointed at the centre of the longest arc of
 the station's coming track that fits within a cap of that radius, so the station
@@ -170,10 +190,10 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
-* ``acquisition_seconds``: Seconds to acquire the link at the start of every contact,
-  for an omni or gimballed antenna, during which nothing is downlinked (default 0)
+* ``acquisition_seconds``: Seconds to acquire the link during passes without
+  spacecraft tracking; no data is downlinked during acquisition (default 0)
 * ``handover_seconds``: Seconds to switch the link straight from one ground station to
-  another, for an omni or gimballed antenna, on top of the acquisition, during which
+  another during passes without spacecraft tracking, on top of acquisition, during which
   nothing is downlinked (default 0)
 
 **Methods:**
@@ -378,8 +398,9 @@ Ground Station Pass (GSP) Plan Entries
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When :class:`~conops.ditl.queue_ditl.QueueDITL` executes a Day-In-The-Life simulation,
-commanded ground station passes are automatically exported as ``GSP`` plan entries in the
-observation plan. These entries capture:
+spacecraft tracking activities for ground-station passes are exported as ``GSP``
+entries in the observation plan. Pass bookings without tracking are stored in
+``ground_contacts``. GSP entries capture:
 
 * **Station identification**: Which ground station is used (``station`` field)
 * **Contact window**: Actual pass start/end times (``contact_begin``, ``contact_end``)

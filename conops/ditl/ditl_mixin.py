@@ -294,14 +294,29 @@ class DITLMixin:
             if isinstance(self.config.data_storage, DataStorage)
             else self.config.recorder
         )
-        self.coverage: StationCoverage | None = StationCoverage.for_config(self.config)
-        """Station coverage for an antenna that needs no attitude, which
-        downlinks whenever a station is in view; None for a body-fixed
-        antenna, which downlinks during ground passes."""
+        self.coverage: StationCoverage | None = StationCoverage.for_config(
+            self.config, scheduled_passes=self.plan.ground_contacts
+        )
+        """Usable links during passes without spacecraft tracking; None
+        when passes require tracking activities."""
+        if self.coverage is not None:
+            self.passes = self.coverage.pass_times
+        self.plan.ground_contacts = self._booked_ground_contacts()
         self.repoints_in_observations = []
         """Each antenna repoint that fell in an observation whose category
         reports or forbids them: when, the observation's obsid, and the
         category's setting."""
+
+    def _booked_ground_contacts(self) -> list[tuple[float, float, str]] | None:
+        """Station reservations to preserve in the executed plan."""
+        return (
+            [
+                (span.begin, span.end, span.station)
+                for span in self.coverage.scheduled_passes
+            ]
+            if self.coverage is not None
+            else None
+        )
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
         """The category setting for antenna repoints during ``target``."""
@@ -715,6 +730,10 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
+        if self.coverage is not None:
+            self._log_repoints(
+                utime, min(utime + step_size, self.uend), collection_seconds
+            )
         if isinstance(self.config.data_storage, DataStorage):
             observation, collected = self._data_observation, self._data_collected
             generated = downlinked = 0.0
@@ -787,8 +806,8 @@ class DITLMixin:
         contact_start = contact_stop = utime
         data_to_downlink = 0.0
         if self.coverage is not None:
-            # An antenna that needs no attitude downlinks whenever a station
-            # is in view, in whatever mode ACS is in. A gimballed antenna
+            # Passes without spacecraft tracking can downlink in any ACS
+            # mode. A gimballed antenna
             # reaches the station only within its range from the attitude
             # flown, taken as the attitude at the start of the step.
             attitude = (
@@ -796,10 +815,16 @@ class DITLMixin:
                 if self.coverage.gimballed
                 else None
             )
-            contact_start, contact_stop, data_to_downlink = self.coverage.contact_in(
-                utime, utime + interval, attitude
-            )
-            self._log_repoints(utime, utime + interval, collection_seconds)
+            if isinstance(config, RecorderView):
+                contact_start, contact_stop, data_to_downlink = (
+                    self.coverage.contact_in(
+                        utime, utime + interval, attitude, recorder=config
+                    )
+                )
+            else:
+                contact_start, contact_stop, data_to_downlink = (
+                    self.coverage.contact_in(utime, utime + interval, attitude)
+                )
         elif mode == ACSMode.PASS and current_pass is not None:
             # Downlink data during PASS mode, once ACS has acquired the
             # contact: the ingress slew also reports PASS, but carries no link.

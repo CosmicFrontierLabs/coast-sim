@@ -64,14 +64,14 @@ class RecorderLedger(ConsumableLedger[float, float]):
             starts in, so the ledger counts it the same way: a span counts
             for the steps that start in it. None counts spans exactly.
         origin: A time the step grid passes through; ``begin`` if None.
-        coverage: Station coverage for an antenna that needs no attitude.
+        coverage: Link coverage for passes without spacecraft tracking.
             Its spans of contact in the horizon downlink at their station's
             rate; the spacecraft stays in whatever mode it is in, so
-            housekeeping is at the nominal rate throughout. A plan for such
-            an antenna has no ground-contact entries.
+            housekeeping is at the nominal rate throughout. These passes
+            have no spacecraft tracking entries.
 
     Housekeeping is counted at the nominal rate throughout, and at the
-    ``PASS`` rate during contacts: the plan does not know when the spacecraft
+    ``PASS`` rate during spacecraft tracking: the plan does not know when the spacecraft
     will be in other modes. A horizon that ends between steps counts the
     last step whole, as a plan that hands over to another does; the
     simulation's last step, cut at its end, generates a little less. The slew into a contact, which ACS flies in
@@ -103,7 +103,12 @@ class RecorderLedger(ConsumableLedger[float, float]):
         ends in generates after the link, at the PASS rate, beyond the
         nominal rate the segment counts it at."""
         if coverage is not None:
-            for span in coverage.spans(begin, end):
+            spans = (
+                coverage.recorder_spans(config, begin, end)
+                if isinstance(config, RecorderView)
+                else coverage.spans(begin, end)
+            )
+            for span in spans:
                 seconds = span.end - span.begin
                 # The spacecraft stays in its mode, so the steps in contact
                 # generate at the nominal rate; the link's own length sets
@@ -317,8 +322,12 @@ class RecorderLedgers:
     def next_contact(self, time: float) -> float | None:
         """Next recorder segment boundary after the given time."""
         return min(
-            (bound for _, ledger, _ in self.members for bound in ledger.bounds[1:-1]
-             if bound > time),
+            (
+                bound
+                for _, ledger, _ in self.members
+                for bound in ledger.bounds[1:-1]
+                if bound > time
+            ),
             default=None,
         )
 
