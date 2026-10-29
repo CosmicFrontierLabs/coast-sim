@@ -29,6 +29,7 @@ from conops.ditl import QueueDITL, RollingHorizonDITL
 from conops.ditl.ditl_mixin import DITLMixin
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedgers, contact_downlink_gb
+from conops.simulation.passes import Pass, PassTimes
 from conops.targets import PlanEntry, Pointing, TargetQueue
 
 from .planning_scenario import BEGIN, make_config
@@ -327,6 +328,48 @@ def test_station_normalization_on_assignment_and_duplicate_routes():
             route,
             DownlinkRoute(station="gs", band="Ka", shares={"bus": 1}),
         ]
+
+
+@pytest.mark.parametrize(
+    "band, shares, selected",
+    [
+        (None, None, "GS"),
+        ("Ka", {"payload": 0.25}, "GS"),
+        ("S", {"payload": 1.0}, "GS"),
+        ("Ka", {"payload": 0.3, "bus": 0.3}, "FAST"),
+    ],
+)
+def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
+    c = config()
+    c.constraint.ephem = make_config(1).constraint.ephem
+    c.spacecraft_bus.communications.band_capabilities.append(
+        BandCapability(band="S", downlink_rate_mbps=10)
+    )
+    c.ground_stations.add(
+        GroundStation(
+            code="FAST",
+            name="FAST",
+            latitude_deg=0,
+            longitude_deg=0,
+            bands=[
+                BandCapability(band="Ka", downlink_rate_mbps=300),
+                BandCapability(band="S", downlink_rate_mbps=500),
+            ],
+        )
+    )
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.25, "bus": 0.25})
+    ]
+    if band is not None:
+        c.data_storage.downlinks.append(
+            DownlinkRoute(station="FAST", band=band, shares=shares)
+        )
+    passes = PassTimes(config=c)
+    passes.passes = [
+        Pass(station=station, begin=1000, length=600) for station in ("GS", "FAST")
+    ]
+    passes._deconflict_overlapping_passes()
+    assert [p.station for p in passes.passes] == [selected]
 
 
 def runtime(c):
