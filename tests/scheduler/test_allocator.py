@@ -16,6 +16,11 @@ from conops import DITL, QueueDITL, RollingHorizonDITL, create_ditl
 from conops.common import ObsType
 from conops.config import (
     AllocationSettings,
+    BandCapability,
+    CommunicationsSystem,
+    DataStorage,
+    DataStore,
+    DownlinkRoute,
     HousekeepingData,
     MissionConfig,
     ObservationTiming,
@@ -34,6 +39,7 @@ from conops.schedulers import (
     LocalSearchScheduler,
     LongRangeAllocator,
     PriorityScheduler,
+    RecorderBudget,
     SchedulingContext,
 )
 from conops.simulation.passes import Pass
@@ -66,6 +72,36 @@ class TestAllocation:
     def test_prefers_requests_it_never_considered(self) -> None:
         """Such as a ToO submitted after the allocation was made."""
         assert self.ALLOCATION.prefers(99, T0, T0 + HOUR)
+
+    def test_keeps_the_budget_of_an_allocation_in_its_earlier_form(self) -> None:
+        """An allocation built, or saved, with the one recorder's budget in
+        its own fields holds it as the default recorder's."""
+        legacy = dict(
+            bins=self.ALLOCATION.bins,
+            capacity=self.ALLOCATION.capacity,
+            reserve=self.ALLOCATION.reserve,
+            seconds=self.ALLOCATION.seconds,
+            downlink=[4.0, 4.0],
+            housekeeping=[1.0, 1.0],
+            science=[5.0, 2.0],
+            data_limit=28.8,
+            start_volume_gb=3.0,
+        )
+        for allocation in (Allocation(**legacy), Allocation.model_validate(legacy)):
+            assert set(allocation.recorders) == {"default"}
+            assert allocation.data_limit == 28.8
+            assert allocation.start_volume_gb == 3.0
+            assert allocation.downlink == [4.0, 4.0]
+            assert allocation.science == [5.0, 2.0]
+            assert allocation.recorder_volumes() == [5.0, 4.0]
+            # Saved again, it loads the same.
+            reloaded = Allocation.model_validate(allocation.model_dump())
+            assert reloaded == allocation
+        with pytest.raises(ValidationError, match="not both"):
+            Allocation(
+                **legacy,
+                recorders={"default": RecorderBudget(start_volume_gb=1.0)},
+            )
 
     def test_allocated_time_is_given_bin_by_bin(self) -> None:
         allocated = self.ALLOCATION.allocated([1, 2, 3], T0, T0 + 2 * HOUR)
@@ -268,6 +304,75 @@ def _data_week(
     return config, targets
 
 
+def _with_stores(
+    config: MissionConfig, *, share: float = 1.0, limit: float | None = 0.9
+) -> MissionConfig:
+    """Give the configuration named stores: science on a 32 Gb payload store
+    with ``limit`` of it for planning, housekeeping on a 1 Gb bus store, and
+    ``share`` of every station's S band link reserved for the payload store,
+    the rest for the bus."""
+    shares = (
+        {"payload": share} if share >= 1.0 else {"payload": share, "bus": 1 - share}
+    )
+    if config.ground_stations.stations:
+        config.spacecraft_bus.communications = CommunicationsSystem(
+            band_capabilities=[BandCapability(band="S", downlink_rate_mbps=10.0)]
+        )
+    config.data_storage = DataStorage(
+        stores={
+            "payload": DataStore(
+                owner="payload",
+                recorder=OnboardRecorder(
+                    capacity_gb=32.0, current_volume_gb=0.0, planning_limit=limit
+                ),
+            ),
+            "bus": DataStore(
+                owner="spacecraft_bus",
+                recorder=OnboardRecorder(capacity_gb=1.0, current_volume_gb=0.0),
+            ),
+        },
+        bus_housekeeping="bus",
+        instrument_science={"Default Instrument": "payload"},
+        instrument_housekeeping={"Default Instrument": "bus"},
+        downlinks=[
+            DownlinkRoute(station=station.code, band="S", shares=shares)
+            for station in config.ground_stations.stations
+        ],
+    )
+    return config
+
+
+def _data_stores_week(
+    share: float = 1.0, limit: float | None = 0.9
+) -> tuple[MissionConfig, list[Pointing]]:
+    """The data week with named stores (see :func:`_with_stores`): the same
+    science and housekeeping, on separate stores."""
+    config = _with_stores(
+        _config(
+            DAYS * 24,
+            stations=True,
+            categories=[
+                ObservationCategory(
+                    name="Early", obsid_min=40000, obsid_max=40000 + EDGE
+                ),
+                ObservationCategory(
+                    name="Late", obsid_min=50000, obsid_max=50000 + EDGE
+                ),
+            ],
+        ),
+        share=share,
+        limit=limit,
+    )
+    config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0001)
+    targets = _week_targets(config)
+    for target in targets:
+        high = int(target.obsid) in HIGH_OBSIDS
+        target.science_data = {
+            "Default Instrument": ScienceData(rate_gbps=HIGH_GBPS if high else LOW_GBPS)
+        }
+    return config, targets
+
+
 @pytest.fixture(scope="module")
 def data_passes() -> list[Pass]:
     """The data-budget run's passes, predicted once for the module."""
@@ -363,6 +468,109 @@ class TestDataBudget:
         assert allocation.data_limit is None
         assert allocation.downlink == [] and allocation.science == []
         assert allocation.recorder_volumes() == [0.0] * DAYS
+
+
+class TestDataBudgetByStore:
+    """A mission with named stores is budgeted store by store."""
+
+    @pytest.mark.parametrize("solver", ["milp", "greedy"])
+    def test_each_store_is_kept_within_its_own_limit(
+        self, solver: str, data_passes: list[Pass]
+    ) -> None:
+        if solver == "milp" and not HAS_ORTOOLS:
+            pytest.skip("needs OR-Tools")
+        config, targets = _data_stores_week()
+        allocation = _data_allocator(config, data_passes, solver=solver).allocate(
+            targets, T0
+        )
+
+        assert set(allocation.recorders) == {"payload", "bus"}
+        payload, bus = allocation.recorders["payload"], allocation.recorders["bus"]
+        # The science goes to the payload store, and its budget binds.
+        assert payload.data_limit == pytest.approx(28.8)
+        assert min(payload.downlink) > 40.0
+        assert payload.housekeeping == [0.0] * DATA_DAYS
+        assert all(s > 0.0 for s in payload.science)
+        assert all(carry <= 28.8 + 0.01 for carry in payload.volumes())
+        high = [t for t in targets if int(t.obsid) in HIGH_OBSIDS]
+        assert _seconds_of(allocation, HIGH_OBSIDS) < sum(t.exptime for t in high)
+        # Nothing allocated generates data on the bus store: no budget there.
+        assert bus.data_limit is None
+        assert bus.downlink == [] and bus.science == [] and bus.volumes() == []
+        # The totals are the payload store's alone.
+        assert allocation.data_limit == pytest.approx(28.8)
+        assert allocation.downlink == payload.downlink
+        assert allocation.science == payload.science
+        assert allocation.recorder_volumes() == payload.volumes()
+
+    def test_a_store_downlinks_only_its_reserved_share_of_the_link(
+        self, data_passes: list[Pass]
+    ) -> None:
+        """With the whole link, the payload store downlinks what the single
+        recorder does; with half of it reserved, half, and the high-data
+        targets get less."""
+        single_config, single_targets = _data_week()
+        whole_config, whole_targets = _data_stores_week(share=1.0)
+        half_config, half_targets = _data_stores_week(share=0.5)
+        single = _data_allocator(single_config, data_passes, solver="greedy")
+        whole = _data_allocator(whole_config, data_passes, solver="greedy")
+        half = _data_allocator(half_config, data_passes, solver="greedy")
+        single_allocation = single.allocate(single_targets, T0)
+        whole_allocation = whole.allocate(whole_targets, T0)
+        half_allocation = half.allocate(half_targets, T0)
+
+        assert whole_allocation.recorders["payload"].downlink == pytest.approx(
+            single_allocation.downlink
+        )
+        assert half_allocation.recorders["payload"].downlink == pytest.approx(
+            [0.5 * d for d in single_allocation.downlink]
+        )
+        assert _seconds_of(half_allocation, HIGH_OBSIDS) < _seconds_of(
+            whole_allocation, HIGH_OBSIDS
+        )
+
+    def test_start_volumes_are_by_store(self, data_passes: list[Pass]) -> None:
+        """Named stores start from the volume on each; one volume is
+        ambiguous, and every store must be named."""
+        config, targets = _data_stores_week()
+        allocator = _data_allocator(config, data_passes, solver="greedy")
+
+        with pytest.raises(ValueError, match="by store"):
+            allocator.allocate(targets, T0, start_volume_gb=28.8)
+        with pytest.raises(ValueError, match="every recorder"):
+            allocator.allocate(targets, T0, start_volume_gb={"payload": 28.8})
+        full = allocator.allocate(
+            targets, T0, start_volume_gb={"payload": 28.8, "bus": 0.5}
+        )
+        payload = full.recorders["payload"]
+        assert payload.start_volume_gb == 28.8
+        assert full.recorders["bus"].start_volume_gb == 0.5
+        assert full.start_volume_gb == pytest.approx(29.3)
+        assert (
+            payload.science[0] <= payload.downlink[0] - payload.housekeeping[0] + 0.01
+        )
+        assert all(carry <= 28.8 + 0.01 for carry in payload.volumes())
+
+    def test_a_store_without_a_limit_has_no_budget(
+        self, data_passes: list[Pass]
+    ) -> None:
+        """Nothing is counted on a store with no planning limit, so the
+        high-data targets are allocated as if there were no data."""
+        free_config, free_targets = _data_stores_week(limit=None)
+        config, targets = _data_stores_week()
+        free = _data_allocator(free_config, data_passes, solver="greedy").allocate(
+            free_targets, T0
+        )
+        budgeted = _data_allocator(config, data_passes, solver="greedy").allocate(
+            targets, T0
+        )
+
+        assert free.data_limit is None
+        assert all(
+            r.data_limit is None and r.downlink == [] for r in free.recorders.values()
+        )
+        assert free.recorder_volumes() == [0.0] * DATA_DAYS
+        assert _seconds_of(free, HIGH_OBSIDS) > _seconds_of(budgeted, HIGH_OBSIDS)
 
 
 class TestLongRangeAllocator:
@@ -1539,6 +1747,52 @@ class TestSimulations:
 
         assert ditl.allocation is not None
         assert ditl.validate_plan_matches_execution() == []
+
+    @pytest.mark.parametrize("mode", ["rolling", "dispatch"])
+    def test_simulations_allocate_from_the_volume_on_each_store(
+        self, mode: str
+    ) -> None:
+        """A mission with named stores hands the allocator each store's
+        volume by name, and the allocation budgets each store."""
+        config = _with_stores(_config(self.HOURS))
+        allocator = self._allocator(config)
+        starts: list[object] = []
+        allocate = allocator.allocate
+
+        def counted(*args: object, **kwargs: object) -> Allocation:
+            starts.append(kwargs.get("start_volume_gb"))
+            return allocate(*args, **kwargs)  # type: ignore[arg-type]
+
+        allocator.allocate = counted  # type: ignore[method-assign]
+        ditl: RollingHorizonDITL | QueueDITL
+        if mode == "rolling":
+            ditl = RollingHorizonDITL(
+                config,
+                _targets(config),
+                begin=BEGIN,
+                end=BEGIN + timedelta(hours=self.HOURS),
+                horizon=timedelta(hours=2),
+                replan_interval=timedelta(hours=1),
+                allocator=allocator,
+            )
+        else:
+            ditl = QueueDITL(
+                config=config,
+                begin=BEGIN,
+                end=BEGIN + timedelta(hours=self.HOURS),
+                allocator=allocator,
+            )
+            queue_targets(ditl, _targets(config))
+        ditl.step_size = 60
+
+        assert ditl.calc()
+
+        assert starts and all(
+            isinstance(start, dict) and set(start) == {"payload", "bus"}
+            for start in starts
+        )
+        assert ditl.allocation is not None
+        assert set(ditl.allocation.recorders) == {"payload", "bus"}
 
     def test_rolling_follows_a_fixed_allocation(self) -> None:
         """Each replan counts what the bin has collected against its seconds."""

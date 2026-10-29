@@ -1,4 +1,4 @@
-from .allocator import AllocatedTime, Allocation, LongRangeAllocator
+from .allocator import AllocatedTime, Allocation, LongRangeAllocator, RecorderBudget
 from .battery import BatteryLedger
 from .consumable import ConsumableLedger
 from .context import SchedulingContext
@@ -24,6 +24,7 @@ __all__ = [
     "DumbScheduler",
     "LocalSearchScheduler",
     "LongRangeAllocator",
+    "RecorderBudget",
     "PriorityScheduler",
     "QueueScheduler",
     "RecorderLedger",

@@ -12,12 +12,12 @@ of the run, or due beyond its horizon, can miss their chance.
 import math
 import time
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Literal, NamedTuple
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
@@ -39,6 +39,40 @@ class AllocatedTime(NamedTuple):
     """Exposure to collect in the span; collection starting in the span counts."""
 
 
+class RecorderBudget(BaseModel):
+    """One recorder's data budget, by bin, as an allocation counted it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    downlink: list[float] = []
+    """Gb each bin's ground contacts can take off the recorder."""
+    housekeeping: list[float] = []
+    """Gb each bin generates on the recorder on its own, at the housekeeping
+    rates."""
+    science: list[float] = []
+    """Gb the science allocated to each bin generates on the recorder."""
+    data_limit: float | None = None
+    """Gb the recorder is kept within from bin to bin, its planning limit;
+    None where it had no data budget."""
+    start_volume_gb: float = 0.0
+    """Gb on the recorder when the allocation starts."""
+
+    def volumes(self) -> list[float]:
+        """Gb carried on the recorder out of each bin: what the bin generates
+        on it, housekeeping and allocated science, less what its contacts
+        take off, and never below zero. Empty where it had no data budget,
+        since nothing was counted."""
+        if not self.downlink:
+            return []
+        return _carries(
+            self.start_volume_gb, self.housekeeping, self.science, self.downlink
+        )
+
+
+_BUDGET_FIELDS = frozenset(RecorderBudget.model_fields)
+"""The budget's fields as earlier allocations held them, for one recorder."""
+
+
 class Allocation(BaseModel):
     """Seconds of exposure allocated to each request in each bin."""
 
@@ -54,28 +88,72 @@ class Allocation(BaseModel):
     seconds: dict[int, dict[int, float]]
     """Allocated seconds by obsid, then by bin index. Every request the
     allocator considered has an entry, even if nothing was allocated to it."""
-    downlink: list[float] = []
-    """Gb each bin's ground contacts can take off the recorder."""
-    housekeeping: list[float] = []
-    """Gb each bin generates on its own, at the housekeeping rates."""
-    science: list[float] = []
-    """Gb the science allocated to each bin generates."""
-    data_limit: float | None = None
-    """Gb the recorder is kept within from bin to bin, the recorder's
-    planning limit; None where the allocation had no data budget."""
-    start_volume_gb: float = 0.0
-    """Gb on the recorder when the allocation starts."""
+    recorders: dict[str, RecorderBudget] = {}
+    """Each recorder's data budget, by store name: ``default`` for a mission
+    with one recorder, its stores' names for one with
+    :class:`~conops.config.DataStorage`. A recorder without a planning limit,
+    or that no request generates data on, has an empty budget."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_budget(cls, data: object) -> object:
+        """Take the one recorder's budget earlier allocations held in
+        ``downlink``, ``housekeeping``, ``science``, ``data_limit`` and
+        ``start_volume_gb`` as the ``default`` recorder's, so an allocation
+        built or saved with that form keeps its budget."""
+        if not isinstance(data, dict) or not _BUDGET_FIELDS & set(data):
+            return data
+        data = dict(data)
+        budget = {name: data.pop(name) for name in _BUDGET_FIELDS if name in data}
+        recorders = dict(data.get("recorders") or {})
+        if "default" in recorders:
+            raise ValueError(
+                "give the budget either as recorders['default'] or as the "
+                "downlink, housekeeping, science, data_limit and "
+                "start_volume_gb fields, not both"
+            )
+        recorders["default"] = RecorderBudget(**budget)
+        data["recorders"] = recorders
+        return data
+
+    @property
+    def downlink(self) -> list[float]:
+        """Gb each bin's ground contacts can take off the recorders, in all."""
+        return _summed(r.downlink for r in self.recorders.values())
+
+    @property
+    def housekeeping(self) -> list[float]:
+        """Gb each bin generates on its own, at the housekeeping rates, on
+        the recorders in all."""
+        return _summed(r.housekeeping for r in self.recorders.values())
+
+    @property
+    def science(self) -> list[float]:
+        """Gb the science allocated to each bin generates, on the recorders
+        in all."""
+        return _summed(r.science for r in self.recorders.values())
+
+    @property
+    def data_limit(self) -> float | None:
+        """Gb the recorders are kept within from bin to bin, their planning
+        limits in all; None where no recorder had a data budget. Each
+        recorder is kept within its own limit."""
+        limits = [r.data_limit for r in self.recorders.values()]
+        budgeted = [limit for limit in limits if limit is not None]
+        return sum(budgeted) if budgeted else None
+
+    @property
+    def start_volume_gb(self) -> float:
+        """Gb on the recorders, in all, when the allocation starts."""
+        return sum((r.start_volume_gb for r in self.recorders.values()), 0.0)
 
     def recorder_volumes(self) -> list[float]:
-        """Gb carried on the recorder out of each bin: what the bin generates,
-        housekeeping and allocated science, less what its contacts take off,
-        and never below zero. Nothing where the allocation had no data
-        budget, since nothing was counted."""
-        if not self.downlink:
-            return [0.0] * len(self.bins)
-        return _carries(
-            self.start_volume_gb, self.housekeeping, self.science, self.downlink
-        )
+        """Gb carried on the recorders, in all, out of each bin: what the bin
+        generates, housekeeping and allocated science, less what its contacts
+        take off, each recorder never below zero. Nothing where the allocation
+        had no data budget, since nothing was counted."""
+        volumes = _summed(r.volumes() for r in self.recorders.values())
+        return volumes or [0.0] * len(self.bins)
 
     def bins_overlapping(self, begin: float, end: float) -> list[int]:
         """Indices of the bins that overlap ``[begin, end)``."""
@@ -145,31 +223,30 @@ class _Demand(BaseModel):
     """Whether its exposure should be spread across bins, as for a cadence."""
     visible: dict[int, float]
     """Seconds it is visible in each bin where it can be observed."""
-    rate: float = 0.0
-    """Gb its target generates per second of collection."""
-    fixed: float = 0.0
-    """Gb its target generates per observation, whatever its length; counted
-    once in each bin it is allocated in."""
+    generated: dict[str, tuple[float, float]] = {}
+    """Gb its target generates on each recorder, by store name: per second
+    of collection, and per observation whatever its length, counted once in
+    each bin it is allocated in."""
 
 
-class _Budget(NamedTuple):
-    """The data a run can carry, by bin, as the allocator sees it."""
+class _StoreBudget(NamedTuple):
+    """The data one recorder can carry, by bin, as the allocator sees it."""
 
     limit: float | None
     """Gb the recorder is kept within from bin to bin; None for no budget."""
     start: float
     """Gb on the recorder when the allocation starts."""
     downlink: list[float]
-    """Gb each bin's contacts take off."""
+    """Gb each bin's contacts take off it."""
     housekeeping: list[float]
-    """Gb each bin generates on its own."""
+    """Gb each bin generates on it on its own."""
     rates: dict[int, tuple[float, float]]
-    """Each request's Gb per second of collection and per observation."""
+    """Each request's Gb per second of collection and per observation on it."""
 
     @property
     def active(self) -> bool:
         """Whether the budget limits what may be allocated: a limit, and a
-        request that generates data."""
+        request that generates data on the recorder."""
         return self.limit is not None and any(
             rate > 0.0 or fixed > 0.0 for rate, fixed in self.rates.values()
         )
@@ -193,6 +270,80 @@ class _Budget(NamedTuple):
         assert self.limit is not None
         carries = _carries(self.start, self.housekeeping, science, self.downlink)
         return min(self.limit - carry for carry in carries[k:])
+
+
+class _Budget(NamedTuple):
+    """The run's data budget: what each recorder can carry, by store name."""
+
+    stores: dict[str, _StoreBudget]
+
+    @property
+    def active(self) -> bool:
+        """Whether any recorder's budget limits what may be allocated."""
+        return any(store.active for store in self.stores.values())
+
+    def science(
+        self, seconds: Mapping[int, Mapping[int, float]]
+    ) -> dict[str, list[float]]:
+        """Gb the science in ``seconds`` (by obsid, then bin) generates in
+        each bin on each recorder with a budget."""
+        return {
+            name: store.science(seconds)
+            for name, store in self.stores.items()
+            if store.active
+        }
+
+    def data_seconds(
+        self,
+        demand: _Demand,
+        science: Mapping[str, Sequence[float]],
+        k: int,
+        first: bool,
+    ) -> float:
+        """Seconds the data room in bin ``k`` allows the request there, on
+        every recorder it generates data on, with ``science`` already
+        allocated by recorder and bin."""
+        most = math.inf
+        for name, store in self.stores.items():
+            if not store.active:
+                continue
+            rate, fixed = store.rates.get(demand.obsid, (0.0, 0.0))
+            if rate <= 0.0 and fixed <= 0.0:
+                continue
+            left = store.room(science[name], k) - (fixed if first else 0.0)
+            if left < 0.0:
+                return 0.0
+            if rate > 0.0:
+                most = min(most, left / rate)
+        return most
+
+    def add(
+        self,
+        science: Mapping[str, list[float]],
+        demand: _Demand,
+        k: int,
+        part: float,
+        first: bool,
+    ) -> None:
+        """Count ``part`` seconds of the request in bin ``k`` on each recorder."""
+        for name, store in self.stores.items():
+            if store.active:
+                rate, fixed = store.rates.get(demand.obsid, (0.0, 0.0))
+                science[name][k] += rate * part + (fixed if first else 0.0)
+
+
+def _summed(lists: Iterable[Sequence[float]]) -> list[float]:
+    """The lists summed element by element, skipping empty ones; empty if
+    all are."""
+    total: list[float] = []
+    for values in lists:
+        if not values:
+            continue
+        if not total:
+            total = list(values)
+        else:
+            total = [a + b for a, b in zip(total, values, strict=True)]
+    return total
 
 
 def _carries(
@@ -242,7 +393,10 @@ class LongRangeAllocator:
       amount per observation once per bin), its contacts take off what they
       can, and what they cannot is carried to the next bin and must stay
       within the recorder's planning limit. There is no budget without a
-      planning limit, or when no request generates data.
+      planning limit, or when no request generates data. A mission with
+      named stores (:class:`~conops.config.DataStorage`) is budgeted store
+      by store: each takes what is routed to it, its contacts take off its
+      reserved share of the link, and each stays within its own limit.
 
     Requests with a deadline are worth slightly more in earlier bins. Keeping
     seconds in the bin the previous allocation gave them is worth 1% more, so
@@ -301,6 +455,7 @@ class LongRangeAllocator:
             raise ValueError("time_limit must be positive")
         if solver == "milp":
             _require_ortools()
+        config.recorder_views(refresh=True)
         self.config = config
         self.begin = begin
         self.end = end
@@ -332,7 +487,7 @@ class LongRangeAllocator:
         start: float,
         reserved_seconds: Mapping[int, float] | None = None,
         unplanned: Collection[int] = (),
-        start_volume_gb: float | None = None,
+        start_volume_gb: float | Mapping[str, float] | None = None,
     ) -> Allocation:
         """Allocate the targets' remaining exposure from ``start`` to the end.
 
@@ -346,8 +501,13 @@ class LongRangeAllocator:
             unplanned: Obsids of requests that arrived unplanned, such as ToOs.
                 They are allocated before the others and may use each bin's
                 reserve.
-            start_volume_gb: Gb on the recorder at ``start``; the configured
-                recorder's volume if None.
+            start_volume_gb: Gb on the recorder at ``start``, or on each
+                store by name for a mission with named stores; the
+                configured recorders' volumes if None.
+
+        Raises:
+            ValueError: If ``start_volume_gb`` does not name every store of
+                a mission with named stores exactly once.
         """
         reserved = reserved_seconds or {}
         # Completion deficits count the science each program has collected
@@ -390,16 +550,22 @@ class LongRangeAllocator:
                 seconds = self._greedy(
                     unsolved, capacity, held, unplanned_set, seconds, budget
                 )
+        science = budget.science(seconds)
         allocation = Allocation(
             bins=list(self.bins),
             capacity=capacity,
             reserve=held,
             seconds=seconds,
-            downlink=budget.downlink,
-            housekeeping=budget.housekeeping,
-            science=budget.science(seconds),
-            data_limit=budget.limit if budget.active else None,
-            start_volume_gb=budget.start,
+            recorders={
+                name: RecorderBudget(
+                    downlink=store.downlink,
+                    housekeeping=store.housekeeping,
+                    science=science.get(name, []),
+                    data_limit=store.limit if store.active else None,
+                    start_volume_gb=store.start,
+                )
+                for name, store in budget.stores.items()
+            },
         )
         self._previous = allocation
         return allocation
@@ -443,19 +609,13 @@ class LongRangeAllocator:
 
         def data_seconds(demand: _Demand, k: int, first: bool) -> float:
             """Seconds the data room in bin ``k`` allows the request there."""
-            if not budget.active:
-                return math.inf
-            left = budget.room(science, k) - (demand.fixed if first else 0.0)
-            if left < 0.0:
-                return 0.0
-            return left / demand.rate if demand.rate > 0.0 else math.inf
+            return budget.data_seconds(demand, science, k, first)
 
         def give(demand: _Demand, k: int, part: float) -> None:
             first = given.get(k, 0.0) <= 0.0
             given[k] = given.get(k, 0.0) + part
             load[k] += part
-            if budget.active:
-                science[k] += demand.rate * part + (demand.fixed if first else 0.0)
+            budget.add(science, demand, k, part, first)
 
         order = sorted(
             demands,
@@ -610,39 +770,43 @@ class LongRangeAllocator:
         # Housekeeping alone can exceed the limit; a bin's bound is then
         # what it carries with no science, so the model stays feasible and
         # the science that fits elsewhere is still allocated.
-        carries: list[variables.Variable] = []
-        if budget.active:
-            assert budget.limit is not None
+        # Each recorder with a budget has its own chain.
+        carries: dict[str, list[variables.Variable]] = {}
+        for name, store in budget.stores.items():
+            if not store.active:
+                continue
+            assert store.limit is not None
             unavoidable = _carries(
-                budget.start,
-                budget.housekeeping,
+                store.start,
+                store.housekeeping,
                 [0.0] * len(self.bins),
-                budget.downlink,
+                store.downlink,
             )
             generated_in: dict[int, list[variables.LinearTerm]] = {}
             for (obsid, k), x in seconds.items():
-                rate, fixed = budget.rates.get(obsid, (0.0, 0.0))
+                rate, fixed = store.rates.get(obsid, (0.0, 0.0))
                 if rate > 0.0:
                     generated_in.setdefault(k, []).append(variables.LinearTerm(x, rate))
                 if fixed > 0.0:
                     generated_in.setdefault(k, []).append(
                         variables.LinearTerm(used_of[(obsid, k)], fixed)
                     )
-            previous_carry: variables.Variable | float = budget.start
+            previous_carry: variables.Variable | float = store.start
+            chain = carries[name] = []
             for k in range(len(self.bins)):
                 carry = model.add_variable(
                     lb=0.0,
-                    ub=max(budget.limit, unavoidable[k]),
-                    name=f"v{k}",
+                    ub=max(store.limit, unavoidable[k]),
+                    name=f"v{name}_{k}",
                 )
                 model.add_linear_constraint(
                     carry
                     >= previous_carry
-                    + budget.housekeeping[k]
-                    - budget.downlink[k]
+                    + store.housekeeping[k]
+                    - store.downlink[k]
                     + expressions.fast_sum(generated_in.get(k, []))
                 )
-                carries.append(carry)
+                chain.append(carry)
                 previous_carry = carry
 
         levels = sorted(terms, reverse=True)
@@ -705,14 +869,16 @@ class LongRangeAllocator:
                 for (obsid, k), x in seconds.items():
                     if values[x] > 0.0:
                         started.setdefault(obsid, {})[k] = values[x]
-                chain = _carries(
-                    budget.start,
-                    budget.housekeeping,
-                    budget.science(started),
-                    budget.downlink,
-                )
-                for carry, value in zip(carries, chain, strict=True):
-                    values[carry] = min(value, carry.upper_bound)
+                for name, chain in carries.items():
+                    store = budget.stores[name]
+                    volumes = _carries(
+                        store.start,
+                        store.housekeeping,
+                        store.science(started),
+                        store.downlink,
+                    )
+                    for carry, value in zip(chain, volumes, strict=True):
+                        values[carry] = min(value, carry.upper_bound)
             return values
 
         def run(
@@ -843,8 +1009,11 @@ class LongRangeAllocator:
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start, delivered_shares=shares)
-        fixed = self.config.science_generated(0.0, target.science_data)
-        rate = self.config.science_generated(1.0, target.science_data) - fixed
+        generated: dict[str, tuple[float, float]] = {}
+        for name, view in self.config.recorder_views().items():
+            fixed = view.science_generated(0.0, target.science_data)
+            rate = view.science_generated(1.0, target.science_data) - fixed
+            generated[name] = (max(0.0, rate), max(0.0, fixed))
         return _Demand(
             obsid=obsid,
             value=merit.value,
@@ -854,56 +1023,81 @@ class LongRangeAllocator:
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
             visible=visible,
-            rate=max(0.0, rate),
-            fixed=max(0.0, fixed),
+            generated=generated,
         )
 
     def _budget(
-        self, start: float, demands: Sequence[_Demand], start_volume_gb: float | None
+        self,
+        start: float,
+        demands: Sequence[_Demand],
+        start_volume_gb: float | Mapping[str, float] | None,
     ) -> _Budget:
-        """The run's data budget from ``start``: what each bin's contacts
-        downlink and what it generates on its own, from the same pass
-        prediction and rates the schedulers use. A contact straddling a bin
-        boundary counts in each bin for the part inside it."""
-        recorder = self.config.recorder
-        rates = {d.obsid: (d.rate, d.fixed) for d in demands}
-        start_volume = float(
-            recorder.current_volume_gb if start_volume_gb is None else start_volume_gb
-        )
-        if recorder.planning_limit_gb is None or not any(
-            rate > 0.0 or fixed > 0.0 for rate, fixed in rates.values()
+        """The run's data budget from ``start``, recorder by recorder: what
+        each bin's contacts downlink from it and what it generates on its
+        own, from the same pass prediction and rates the schedulers use. A
+        contact straddling a bin boundary counts in each bin for the part
+        inside it. A mission with named stores budgets each within its own
+        limit and its own reserved share of the contacts."""
+        views = self.config.recorder_views()
+        if isinstance(start_volume_gb, Mapping) and set(start_volume_gb) != set(views):
+            raise ValueError("start volumes must name every recorder exactly once")
+        if (
+            isinstance(start_volume_gb, (int, float))
+            and self.config.data_storage is not None
         ):
+            raise ValueError("named recorders need start volumes by store")
+        stores: dict[str, _StoreBudget] = {}
+        for name, view in views.items():
+            volume = (
+                start_volume_gb[name]
+                if isinstance(start_volume_gb, Mapping)
+                else start_volume_gb
+                if start_volume_gb is not None
+                else view.recorder.current_volume_gb
+            )
+            stores[name] = _StoreBudget(
+                limit=view.recorder.planning_limit_gb,
+                start=float(volume),
+                downlink=[],
+                housekeeping=[],
+                rates={d.obsid: d.generated.get(name, (0.0, 0.0)) for d in demands},
+            )
+        if not any(store.active for store in stores.values()):
             # No budget: nothing is predicted or counted, as predicting a
             # run's passes is slow.
-            return _Budget(None, start_volume, [], [], rates)
+            return _Budget(stores)
         if self._passes is None:
             self._passes = list(self.ctx.predict_passes())
-        downlink = [0.0] * len(self.bins)
+        # Each bin's contacts, by station and seconds: the time in contact
+        # is the same for every recorder, what it downlinks from each is not.
+        contacts: list[list[tuple[str, float]]] = [[] for _ in self.bins]
         contact_seconds = [0.0] * len(self.bins)
         for gspass in self._passes:
             for k, (b0, b1) in enumerate(self.bins):
                 lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
                 if hi > lo:
-                    downlink[k] += contact_downlink_gb(
-                        self.config, gspass.station, hi - lo
-                    )
+                    contacts[k].append((gspass.station, hi - lo))
                     contact_seconds[k] += hi - lo
-        housekeeping = []
-        for k, (b0, b1) in enumerate(self.bins):
-            seconds = max(0.0, b1 - max(b0, start))
-            housekeeping.append(
-                self.config.housekeeping_generated(seconds - contact_seconds[k])
-                + self.config.housekeeping_generated(
-                    contact_seconds[k], mode=ACSMode.PASS
+        for name, store in stores.items():
+            if not store.active:
+                continue
+            view = views[name]
+            downlink = [
+                sum(
+                    contact_downlink_gb(view, station, seconds)
+                    for station, seconds in k
                 )
-            )
-        return _Budget(
-            limit=recorder.planning_limit_gb,
-            start=start_volume,
-            downlink=downlink,
-            housekeeping=housekeeping,
-            rates=rates,
-        )
+                for k in contacts
+            ]
+            housekeeping = []
+            for k, (b0, b1) in enumerate(self.bins):
+                seconds = max(0.0, b1 - max(b0, start))
+                housekeeping.append(
+                    view.housekeeping_generated(seconds - contact_seconds[k])
+                    + view.housekeeping_generated(contact_seconds[k], mode=ACSMode.PASS)
+                )
+            stores[name] = store._replace(downlink=downlink, housekeeping=housekeeping)
+        return _Budget(stores)
 
     @staticmethod
     def _shares(demand: _Demand) -> dict[int, float]:

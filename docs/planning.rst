@@ -664,7 +664,14 @@ each request's remaining exposure to collect in which bin:
   being allocated and refused day by day. There is no budget without a planning
   limit, or when no request generates data, and nothing is predicted for it then;
   :attr:`~conops.schedulers.Allocation.downlink`, ``housekeeping`` and ``science``
-  by bin and :meth:`~conops.schedulers.Allocation.recorder_volumes` report it;
+  by bin and :meth:`~conops.schedulers.Allocation.recorder_volumes` report it. A
+  mission with named stores (see :doc:`data_management`) is budgeted store by
+  store: each bin generates on each store what is routed to it, each store's
+  contacts take off only its reserved share of the link, and each store stays
+  within its own planning limit, so a request is allocated no more than every
+  store it generates data on can take.
+  :attr:`~conops.schedulers.Allocation.recorders` reports each store's budget by
+  name, and the totals above sum them;
 * ``solver="greedy"`` instead takes requests in order of merit, each into
   the bins with the least competing demand, under the same bounds: nothing in a
   bin or at least a snapshot, and no more than an even share of a cadence
