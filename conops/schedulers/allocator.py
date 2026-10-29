@@ -1088,13 +1088,7 @@ class LongRangeAllocator:
         contacts: list[list[tuple[str, float]]] = [[] for _ in self.bins]
         contact_seconds = [0.0] * len(self.bins)
         coverage = self.ctx.coverage
-        if coverage is not None:
-            for span in coverage.spans(start, self.bins[-1][1]):
-                for k, (b0, b1) in enumerate(self.bins):
-                    lo, hi = max(b0, span.begin), min(b1, span.end)
-                    if hi > lo:
-                        contacts[k].append((span.station, hi - lo))
-        else:
+        if coverage is None:
             if self.passes is None:
                 self.passes = list(self.ctx.predict_passes())
             for gspass in self.passes:

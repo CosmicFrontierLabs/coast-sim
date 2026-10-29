@@ -30,7 +30,7 @@ from conops.ditl.ditl_mixin import DITLMixin
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedgers, contact_downlink_gb
 from conops.simulation.passes import Pass, PassTimes
-from conops.targets import PlanEntry, Pointing, TargetQueue
+from conops.targets import Plan, PlanEntry, Pointing, TargetQueue
 
 from .planning_scenario import BEGIN, make_config
 from .test_recorder_constraint import (
@@ -375,6 +375,7 @@ def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
 def runtime(c):
     d = object.__new__(QueueDITL)
     d.config = c
+    d.plan = Plan()
     d.uend = 1000
     d.ustart = 0
     d.step_size = 10
@@ -429,6 +430,7 @@ def test_dispatch_room_and_rolling_state_remain_separate():
     assert projected["bus"] == pytest.approx(7.11)
     rolling = object.__new__(RollingHorizonDITL)
     rolling.config = c
+    rolling.coverage = None
     rolling.step_size = 10
     rolling.ustart = 0
     projected = rolling._recorder_volume_at(0, 10, [])
@@ -643,3 +645,61 @@ def test_nested_config_also_rejects_ambiguous_storage():
 
     with pytest.raises(ValueError, match="either recorder or data_storage"):
         Wrapped.model_validate({"config": {"recorder": {}, "data_storage": storage()}})
+
+
+def test_coverage_respects_store_shares_and_range_dependent_routed_band():
+    import numpy as np
+
+    from conops.simulation.coverage import ContactSpan, StationCoverage
+
+    c = config()
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.75, "bus": 0.25})
+    ]
+    c.spacecraft_bus.communications.band_capabilities[0].downlink_rate_vs_range_km = [
+        (1000, 100),
+        (2000, 40),
+    ]
+    coverage = object.__new__(StationCoverage)
+    coverage.config = c
+    coverage.times = np.array([0.0, 10.0, 20.0])
+    coverage.step_size = 10.0
+    coverage.stations = c.ground_stations.stations
+    coverage.rates = np.array([100.0])
+    coverage._ranged = [False]
+    coverage.range_km = np.array([[1000.0, 2000.0, 2000.0]])
+    coverage.contacts = [ContactSpan(0, 20, "GS", 100)]
+    coverage._begins = [0.0]
+    ledgers = RecorderLedgers(c, 0, 20, [], coverage=coverage)
+    expected = {"payload": 1.05, "bus": 0.35}
+    for name, ledger, _ in ledgers.members:
+        assert sum(ledger.downlink_gb) == pytest.approx(expected[name])
+    assert ledgers.next_contact(-1) == 0
+    assert ledgers.next_contact(0) is None
+
+    from conops.schedulers import LongRangeAllocator
+
+    allocator = object.__new__(LongRangeAllocator)
+    allocator.config = c
+    allocator.ctx = SimpleNamespace(coverage=coverage)
+    allocator.bins = [(0, 10), (10, 20)]
+    budget = allocator._budget(
+        0, [SimpleNamespace(obsid=1, generated={"payload": (1, 0)})], None
+    )
+    assert budget.stores["payload"].downlink == pytest.approx([0.75, 0.3])
+
+    d = runtime(c)
+    d.coverage = coverage
+    d._log_repoints = Mock()
+    for view in c.recorder_views().values():
+        view.recorder.current_volume_gb = 5
+    generated, downlinked = d._process_data_management(
+        0, ACSMode.IDLE, 20, collection_seconds=0
+    )
+    assert downlinked == pytest.approx(1.4)
+    assert generated == pytest.approx(0.22)
+    assert c.recorder_views()["payload"].recorder.current_volume_gb == pytest.approx(
+        3.95
+    )
+    assert c.recorder_views()["bus"].recorder.current_volume_gb == pytest.approx(4.87)
+    d._log_repoints.assert_called_once_with(0, 20, 0)
