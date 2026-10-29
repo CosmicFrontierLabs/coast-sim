@@ -19,7 +19,7 @@ classifiers = [
 description = "COASTSim: ConOps Astronomical Space Telescope Simulator" # Optional
 dynamic = ["version"]
 maintainers = [
-    { name = "Jamie A. Kennea", email = "jamie@cosmicfrontier.org" }, # Optional
+    { name = "Jamie A. Kennea", email = "jamie@pompey.org" }, # Optional
 ]
 name = "coast-sim" # Required
 readme = "README.md" # Optional
