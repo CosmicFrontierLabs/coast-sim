@@ -993,9 +993,9 @@ class RollingHorizonDITL(DITL):
         cursor = utime
         for at in [*unloads, start]:
             if at > cursor:
-                _, _, after = self._forecast_momentum(
+                after = self._forecast_momentum(
                     cursor, at, attitude_at, start_eci_n_m_s=ahead
-                )
+                ).end_eci_n_m_s
                 if after is not None:
                     ahead = after
                 cursor = at

@@ -201,8 +201,12 @@ class PlanEntry(BaseModel):
         gt=0.0,
         le=1.0,
         allow_inf_nan=False,
-        exclude_if=lambda value: value == 1.0,
-        description="Commanded fraction of configured slew-rate limits; acceleration and settling are unchanged.",
+        exclude_if=lambda v: v == 1.0,
+        description=(
+            "The fraction of the configured slew rates the slew into this "
+            "entry is flown at, where its momentum does not fit the wheels at "
+            "full rate; acceleration and settling are unchanged"
+        ),
     )
     insaa: int = 0
     end: float = 0
@@ -845,6 +849,11 @@ class PlanEntry(BaseModel):
         assert self.acs_config is not None, (
             "ACS config must be set to calculate slew time"
         )
+        limits = (
+            self.acs_config
+            if self.slew_rate_fraction == 1.0
+            else self.acs_config.at_rate_fraction(self.slew_rate_fraction)
+        )
         if self.acs_config.direction_dependent_slew:
             if lastroll is None or lastroll == -1.0:
                 raise ValueError(
@@ -865,10 +874,10 @@ class PlanEntry(BaseModel):
                 endroll,
             )
             slewtime = scheduled_slew_time(
-                self.acs_config.slew_time(self.slewdist, rotation_axis_body)
+                limits.slew_time(self.slewdist, rotation_axis_body)
             )
         else:
-            slewtime = scheduled_slew_time(self.acs_config.slew_time(self.slewdist))
+            slewtime = scheduled_slew_time(limits.slew_time(self.slewdist))
 
         return slewtime
 

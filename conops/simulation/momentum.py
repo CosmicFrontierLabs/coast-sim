@@ -468,6 +468,7 @@ class StoredMomentumTracker:
         self._momentum_eci_n_m_s: npt.NDArray[np.float64] | None = None
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
+        self._actuator_norm_n_m_s: float | None = None
 
     def copy(self) -> StoredMomentumTracker:
         """Independent speculative state; immutable inputs may be shared."""
@@ -522,6 +523,7 @@ class StoredMomentumTracker:
             else None
         )
         self._previous_utime = state.previous_utime
+        self._actuator_norm_n_m_s = None
 
     def unload(self, residual_fraction: float = 0.0) -> None:
         """Take the stored momentum out of the wheels, as a thruster dump
@@ -530,6 +532,7 @@ class StoredMomentumTracker:
             raise ValueError("residual_fraction must be in [0, 1)")
         if self._momentum_eci_n_m_s is not None:
             self._momentum_eci_n_m_s *= residual_fraction
+        self._actuator_norm_n_m_s = None
 
     @property
     def stored_momentum_norm_n_m_s(self) -> float:
@@ -537,6 +540,15 @@ class StoredMomentumTracker:
         if self._momentum_eci_n_m_s is None:
             return float(np.linalg.norm(self.initial_momentum_body_n_m_s))
         return float(np.linalg.norm(self._momentum_eci_n_m_s))
+
+    @property
+    def actuator_momentum_norm_n_m_s(self) -> float:
+        """The norm of what the wheels hold at the last sample: the stored
+        momentum less the body's own while it turns, where the sample gave
+        the angular velocity; the stored momentum's norm otherwise."""
+        if self._actuator_norm_n_m_s is None:
+            return self.stored_momentum_norm_n_m_s
+        return self._actuator_norm_n_m_s
 
     @property
     def momentum_eci_n_m_s(self) -> npt.NDArray[np.float64] | None:
@@ -582,6 +594,12 @@ class StoredMomentumTracker:
         """
         if not np.isfinite(utime):
             raise ValueError("utime must be finite")
+        body_momentum = (
+            np.zeros(3, dtype=np.float64)
+            if angular_velocity_body_rad_s is None
+            else self.inertia_tensor_body_kg_m2
+            @ _finite_vector3(angular_velocity_body_rad_s, name="angular velocity")
+        )
 
         elapsed_s = (
             0.0 if self._previous_utime is None else float(utime - self._previous_utime)
@@ -659,8 +677,10 @@ class StoredMomentumTracker:
         assert self._momentum_eci_n_m_s is not None
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
         actuator: npt.NDArray[np.float64] | None = None
+        self._actuator_norm_n_m_s = None
         if angular_velocity_body_rad_s is not None:
             actuator = momentum_body - body_momentum
+            self._actuator_norm_n_m_s = float(np.linalg.norm(actuator))
 
         field_body: tuple[float, float, float] | None = None
         density: float | None = None
@@ -687,9 +707,7 @@ class StoredMomentumTracker:
             actuator_momentum_body_n_m_s=(
                 _as_tuple(actuator) if actuator is not None else None
             ),
-            actuator_momentum_norm_n_m_s=(
-                float(np.linalg.norm(actuator)) if actuator is not None else None
-            ),
+            actuator_momentum_norm_n_m_s=self._actuator_norm_n_m_s,
         )
 
 

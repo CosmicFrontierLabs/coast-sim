@@ -1267,11 +1267,12 @@ class QueueDITL(DITLMixin, DITLStats):
         observing = self.ppt is not None and self.ppt is not self.charging_ppt
         obsid = self.ppt.obsid if observing and self.ppt is not None else None
         if self._momentum_at_capacity(utime, obsid):
+            demand = self._momentum_demand_n_m_s(tracker)
             self.log.log_event(
                 utime=utime,
                 event_type="MOMENTUM",
                 description=(
-                    f"Stored momentum {stored:.3f} N m s has reached the "
+                    f"Stored momentum {demand:.3f} N m s has reached the "
                     f"{capacity} N m s capacity: emergency thruster dump"
                     + (f" interrupts observation {obsid}" if obsid is not None else "")
                 ),
@@ -1346,9 +1347,8 @@ class QueueDITL(DITLMixin, DITLStats):
             attitude_at = self._observation_attitude(slew, [])
 
         # The tracker holds the momentum at its last sample, a step ago.
-        previous = getattr(self, "_momentum_previous", None)
-        begin = min(utime, previous.utime) if previous is not None else utime
-        times, norms, _ = self._forecast_momentum(
+        begin = self._momentum_forecast_begin(utime)
+        times, norms, _, _ = self._forecast_momentum(
             begin,
             end,
             attitude_at,
@@ -1417,9 +1417,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 return True
             ppt.end = was_end
             ppt.set_collection_window(timing)
-            _, from_empty, _ = self._forecast_momentum(
+            from_empty = self._forecast_momentum(
                 begin, cut, attitude_at, start_eci_n_m_s=None, slew=slew
-            )
+            ).norms
             if cut > was_end or (len(from_empty) and from_empty.max() >= capacity):
                 self.log.log_event(
                     utime=utime,
@@ -1441,9 +1441,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 f"{name} collects its minimum snapshot: thruster dump first"
             )
         else:
-            _, from_empty, _ = self._forecast_momentum(
+            from_empty = self._forecast_momentum(
                 begin, end, attitude_at, start_eci_n_m_s=None, slew=slew
-            )
+            ).norms
             if len(from_empty) and from_empty.max() >= capacity:
                 assert self._sequence is not None
                 parent = self._sequence.parent
@@ -1476,6 +1476,123 @@ class QueueDITL(DITLMixin, DITLStats):
         self.ppt = None
         self._ppt_unavailable = True
         # Activities are managed before the fetch at each step: due at the next.
+        self._add_dump(utime + self.step_size)
+        return False
+
+    def _momentum_forecast_begin(self, utime: float) -> float:
+        """Where a forecast from the wheels as they are starts: the tracker's
+        last sample, a step ago, or now before the first."""
+        previous = getattr(self, "_momentum_previous", None)
+        return min(utime, previous.utime) if previous is not None else utime
+
+    def _cap_slew_momentum(
+        self, utime: float, ra: float, dec: float, slew: Slew
+    ) -> bool:
+        """Where the momentum of slews counts against the capacity, fly the
+        slew into the observation just selected at the first configured
+        rate fraction at which what the wheels hold, the stored momentum
+        less the body's own, stays within the capacity over the slew, from
+        the wheels as they are; a fraction the entry carries already is
+        the first tried. Returns False where no fraction fits and the
+        observation does not begin now: the wheels are emptied first where
+        the slowest fits from empty, and the observation is held out and
+        marked done where it does not, since a slew's momentum does not
+        vary with the orbit."""
+        tracker = self._stored_momentum_tracker
+        momentum_config = self.config.spacecraft_bus.attitude_control.stored_momentum
+        capacity = momentum_config.capacity_n_m_s
+        if (
+            tracker is None
+            or capacity is None
+            or not momentum_config.slew_momentum_enabled
+        ):
+            return True
+        ppt = self.ppt
+        assert ppt is not None
+        begin = self._momentum_forecast_begin(utime)
+        attitude_at = self._observation_attitude(slew, [])
+        fractions = momentum_config.slew_rate_fractions
+        first = (
+            fractions.index(slew.rate_fraction)
+            if slew.rate_fraction in fractions
+            else 0
+        )
+        for fraction in fractions[first:]:
+            slew.rate_fraction = fraction
+            slew.calc_slewtime()
+            demands = self._forecast_momentum(
+                begin,
+                float(slew.slewend),
+                attitude_at,
+                start_eci_n_m_s=tracker.momentum_eci_n_m_s,
+                slew=slew,
+            ).demands
+            if len(demands) == 0 or demands.max() < capacity:
+                if fraction != fractions[first]:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="MOMENTUM",
+                        description=(
+                            f"Slew to {ppt.obsid} flown at {fraction:g} of the slew "
+                            f"rate: the wheels hold {demands.max():.3f} N m s over it "
+                            f"within the {capacity} N m s capacity, more than that "
+                            "at full rate"
+                        ),
+                        obsid=ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                return True
+        name = (
+            f"the visit of {self._sequence.parent.obsid}"
+            if self._sequence is not None
+            else f"observation {ppt.obsid}"
+        )
+        from_empty = self._forecast_momentum(
+            begin, float(slew.slewend), attitude_at, start_eci_n_m_s=None, slew=slew
+        ).demands
+        if len(from_empty) and from_empty.max() >= capacity:
+            self.log.log_event(
+                utime=utime,
+                event_type="MOMENTUM",
+                description=(
+                    f"{name[0].upper()}{name[1:]} held out: its slew's momentum of "
+                    f"{from_empty.max():.3f} N m s at {fractions[-1]:g} of the slew "
+                    f"rate exceeds the {capacity} N m s capacity from empty wheels"
+                ),
+                obsid=ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            (self._sequence.parent if self._sequence is not None else ppt).done = True
+            self._retry_fetch_without_current_ppt(utime, ra, dec)
+            return False
+        if momentum_config.thruster_dump is None:
+            self.log.log_event(
+                utime=utime,
+                event_type="MOMENTUM",
+                description=(
+                    f"Stored momentum leaves the slew to {name} no room within the "
+                    f"{capacity} N m s capacity at {fractions[-1]:g} of the slew "
+                    "rate; no thrusters to empty the wheels"
+                ),
+                obsid=ppt.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            self._retry_fetch_without_current_ppt(utime, ra, dec)
+            return False
+        self.log.log_event(
+            utime=utime,
+            event_type="MOMENTUM",
+            description=(
+                f"Stored momentum leaves the slew to {name} no room within the "
+                f"{capacity} N m s capacity at {fractions[-1]:g} of the slew rate: "
+                "thruster dump first"
+            ),
+            obsid=ppt.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self._sequence = None
+        self.ppt = None
+        self._ppt_unavailable = True
         self._add_dump(utime + self.step_size)
         return False
 
@@ -4017,6 +4134,10 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.obstype = ObsType.PPT
         slew.obsid = target.obsid
         slew.at = target
+        # The fraction the entry carries, if any. (A test double has no number.)
+        fraction = getattr(target, "slew_rate_fraction", 1.0)
+        if isinstance(fraction, (int, float)):
+            slew.rate_fraction = float(fraction)
         return slew
 
     def _complete_ppt_slew(
@@ -4870,6 +4991,8 @@ class QueueDITL(DITLMixin, DITLStats):
             else:
                 slew = self._new_ppt_slew(self.ppt, utime)
                 self._complete_ppt_slew(slew, self.ppt, utime, request.start)
+                if not self._cap_slew_momentum(utime, ra, dec, slew):
+                    return None
                 if self._validate_ppt_slew(self.ppt, slew, utime, request) is None:
                     self._retry_fetch_without_current_ppt(utime, ra, dec)
                     return None

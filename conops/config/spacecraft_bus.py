@@ -110,13 +110,16 @@ class SpacecraftBus(ConfigModel):
         gravity_gradient_enabled = getattr(
             stored_momentum, "gravity_gradient_enabled", False
         )
+        slew_momentum_enabled = getattr(stored_momentum, "slew_momentum_enabled", False)
         if (
             gravity_gradient_enabled is True
             or getattr(stored_momentum, "capacity_enabled", False) is True
+            or slew_momentum_enabled is True
         ) and getattr(self, "inertia_tensor_body_kg_m2", None) is None:
             raise ValueError(
                 "inertia_tensor_body_kg_m2 is required when gravity-gradient "
-                "momentum tracking or momentum capacity enforcement is enabled"
+                "momentum tracking, momentum capacity enforcement or slew momentum "
+                "is enabled"
             )
         return self
 

@@ -249,6 +249,19 @@ class StoredMomentumConfig(ConfigModel):
         ),
     )
 
+    slew_momentum_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the momentum the body carries while slewing, I·ω, counts "
+            "against the capacity. On, capacity_n_m_s is the wheels' whole "
+            "capacity: a slew is admitted against the room the stored momentum "
+            "leaves, flown slower (slew_rate_fractions) where it does not fit, "
+            "and the wheels are emptied first where no rate fits. Off, the "
+            "capacity is the room left for stored momentum at the configured "
+            "slew rates. Needs capacity_n_m_s"
+        ),
+    )
+
     @model_validator(mode="after")
     def _dumps_need_a_capacity(self) -> "StoredMomentumConfig":
         if self.thruster_dump is not None and self.capacity_n_m_s is None:
@@ -257,6 +270,10 @@ class StoredMomentumConfig(ConfigModel):
             raise ValueError(
                 "enforce_capacity and thruster_dump are exclusive: enforcement "
                 "integrates the momentum in the executor, dumps need the run's tracker"
+            )
+        if self.slew_momentum_enabled and self.capacity_n_m_s is None:
+            raise ValueError(
+                "slew momentum needs capacity_n_m_s to be admitted against"
             )
         return self
 
@@ -269,13 +286,15 @@ class StoredMomentumConfig(ConfigModel):
 
     @property
     def enabled(self) -> bool:
-        """Whether any torque source is tracked."""
+        """Whether momentum is tracked: any torque source, or the momentum of
+        slews alone."""
         return (
             self.gravity_gradient_enabled
             or self.solar_radiation_pressure_enabled
             or self.aerodynamic_drag_enabled
             or self.magnetorquer_max_dipole_a_m2 is not None
             or self.residual_dipole_body_a_m2 is not None
+            or self.slew_momentum_enabled
         )
 
     @field_validator("initial_momentum_body_n_m_s", "residual_dipole_body_a_m2")

@@ -550,7 +550,11 @@ optional ``ppigrf``. ``capacity_n_m_s``, ``planning_level`` and ``thruster_dump`
 the wheels a capacity and the spacecraft thruster dumps, which dispatch calls for
 and the planners reserve where the stored momentum reaches the planning level, held
 in the ``DESAT`` ACS mode; the capacity itself is a red line fault management
-records. A held attitude is sampled at the ephemeris resolution and a slew every
+records. ``slew_momentum_enabled`` counts the momentum the body carries while it
+slews against the capacity, which is then the wheels' whole capacity: a slew that
+does not fit the room the stored momentum leaves is flown slower, at the first of
+``slew_rate_fractions`` that fits, by dispatch and by the planners alike. A held
+attitude is sampled at the ephemeris resolution and a slew every
 ``max_attitude_step_deg`` of motion, so tracking works at whatever resolution the
 ephemeris has.
 

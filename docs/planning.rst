@@ -385,7 +385,12 @@ says where the forecast still reaches it, if it does. A rolling-horizon run give
 each replan the stored momentum it will have when its horizon starts, the committed
 entries and their dumps included, so the replan's forecast starts where the wheels
 will be. The priority-first, local-search and CP-SAT planners all plan within the
-wheels this way.
+wheels this way. Where ``slew_momentum_enabled`` counts the momentum the body
+carries while it slews, the forecast checks what the wheels hold along each slew
+against the capacity, and a slew in which they would reach it is flown slower, at
+the next of ``slew_rate_fractions``, with the plan built again; at the slowest, a
+dump goes before the observation where its slew fits from empty wheels, and the
+observation is left out where it does not (see :doc:`momentum`, Slews).
 
 A snapshot is placed only where every peak from its segment onwards stays within
 the limit. It is never shortened to fit: a snapshot that does not fit before a
