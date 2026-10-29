@@ -154,6 +154,25 @@ class AttitudeControlSystem(ConfigModel):
             or self.max_slew_rate_body is not None
         )
 
+    def at_rate_fraction(self, fraction: float) -> "AttitudeControlSystem":
+        """These limits with the slew rates scaled by ``fraction``, as a slew
+        flown slower for its momentum is bounded; acceleration and settling
+        are unchanged. ``self`` at a fraction of 1."""
+        if not np.isfinite(fraction) or not 0.0 < fraction <= 1.0:
+            raise ValueError("a slew rate fraction must be finite and within (0, 1]")
+        if fraction == 1.0:
+            return self
+        return self.model_copy(
+            update={
+                "max_slew_rate": self.max_slew_rate * fraction,
+                "max_slew_rate_body": (
+                    tuple(x * fraction for x in self.max_slew_rate_body)
+                    if self.max_slew_rate_body is not None
+                    else None
+                ),
+            }
+        )
+
     def effective_slew_acceleration(
         self,
         rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,

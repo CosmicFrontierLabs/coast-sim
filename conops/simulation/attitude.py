@@ -5,12 +5,14 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 """
 
 from bisect import bisect_right
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property
 from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common.motion import RestToRestMotion
 from ..common.quaternion_curve import QuaternionHermite
@@ -434,6 +436,28 @@ class AttitudeTrajectory:
             ):
                 return leg.end
         raise AttitudeExecutionError("Trajectory has no physical stopping boundary")
+
+
+def slew_angular_velocity(
+    slew: "Slew",
+) -> Callable[[float], npt.NDArray[np.float64]]:
+    """The body's angular velocity along ``slew`` as the ACS flies it, in
+    radians per second at a time, for the momentum the body carries while it
+    turns: zero before the slew starts, once it has settled, and for a slew
+    that goes nowhere."""
+    zero = np.zeros(3, dtype=np.float64)
+    if float(slew.slewtime) <= 0.0 or float(slew.slewdist) <= 0.0:
+        return lambda utime: zero
+    trajectory = AttitudeTrajectory.from_slew(slew, slew.motion_limits)
+
+    def rate(utime: float) -> npt.NDArray[np.float64]:
+        if utime < trajectory.start or utime >= trajectory.end:
+            return zero
+        return np.deg2rad(
+            np.asarray(trajectory.state(utime).angular_velocity_body, dtype=np.float64)
+        )
+
+    return rate
 
 
 class AttitudeExecutor:
