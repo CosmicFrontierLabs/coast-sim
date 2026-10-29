@@ -385,7 +385,7 @@ class ACS:
         """Handle START_PASS command to command the start of a groundstation pass."""
         # Fetch the current pass from pass requests
         gspass = self.passrequests.current_pass(utime)
-        if gspass is None:
+        if gspass is None or not gspass.requires_tracking:
             self._log_or_print(
                 utime, "PASS", f"{unixtime2date(utime)}: No active pass found to start."
             )

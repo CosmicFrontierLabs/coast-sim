@@ -273,7 +273,7 @@ class LongRangeAllocator:
         passes: The run's predicted ground passes, for the data budget, where
             the caller has them; predicted once otherwise, which takes a
             while for a long run.
-        coverage: Station coverage for an antenna that needs no attitude,
+        coverage: Link coverage for passes without spacecraft tracking,
             for the data budget, where the caller has it; built from the
             configuration otherwise.
 
@@ -887,8 +887,7 @@ class LongRangeAllocator:
         contact_seconds = [0.0] * len(self.bins)
         coverage = self.ctx.coverage
         if coverage is not None:
-            # An antenna that needs no attitude downlinks whenever a station
-            # is in view, with the spacecraft in whatever mode it is in.
+            # Use the usable link spans within booked ground-station passes.
             for k, (b0, b1) in enumerate(self.bins):
                 downlink[k] += coverage.downlink_gb(max(b0, start), b1)
         else:

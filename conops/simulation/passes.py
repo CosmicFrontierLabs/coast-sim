@@ -1,8 +1,7 @@
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from functools import lru_cache
-from numbers import Integral
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple
 
 import numpy as np
 import rust_ephem
@@ -31,7 +30,9 @@ from ..config import (
 from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
 from ..config.constraint import in_attitude_constraint_scopes
+from ..config.groundstation import effective_downlink_rate_mbps, rate_varies_with_range
 from .attitude import AttitudeExecutionError, AttitudeTrajectory
+from .contact_schedule import ContactScheduler, RandomSource, deconflict_contacts
 from .slew import Slew
 
 # Legacy ground-pass roll for profiles without explicit roll samples.
@@ -66,13 +67,6 @@ def _cached_pass_attitude_delta(
 ) -> tuple[float, tuple[float, float, float]]:
     # Only geometry is reusable: slew limits and constraint paths remain live.
     return quaternion_attitude_delta(*start, *end)
-
-
-def _config_random_seed(config: MissionConfig) -> int | None:
-    seed = config.random_seed
-    if seed is None or isinstance(seed, bool) or not isinstance(seed, Integral):
-        return None
-    return int(seed)
 
 
 def _unit_vector_or_none(vector: np.ndarray) -> np.ndarray | None:
@@ -119,14 +113,16 @@ def _tracking_phase_reference_eci(
     return _rotate_about_axis(reference, target_axis, phase_deg)
 
 
-class RandomSource(Protocol):
-    def random(self) -> float: ...
+class StationGeometry(NamedTuple):
+    elevation_deg: np.ndarray
+    range_km: np.ndarray
+    to_station: np.ndarray
 
 
 class Pass(BaseModel):
-    """A groundstation pass consisting of the dwell phase.
+    """A booked ground-station contact for any antenna type.
 
-    The pass contains pointing profile information for ground station contacts.
+    Fixed antennas additionally carry a spacecraft tracking attitude profile.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -139,6 +135,10 @@ class Pass(BaseModel):
     station: str
     begin: float
     length: float
+    requires_tracking: bool = True
+    """Whether this contact requires a spacecraft tracking activity."""
+    downlink_volume_gb: float | None = Field(default=None, exclude=True)
+    """Predicted volume for overlap selection when the effective rate is known."""
 
     # What type of observation is this, a Ground Station Pass (GSP)
     obstype: ObsType = ObsType.GSP
@@ -208,7 +208,7 @@ class Pass(BaseModel):
         RA/Dec in the pass. If no profile is available, returns None values."""
 
         idx = self._profile_index(utime)
-        if idx is None:
+        if idx is None or not self.ra or not self.dec:
             return None, None
         return self.ra[idx], self.dec[idx]
 
@@ -534,8 +534,13 @@ class Pass(BaseModel):
         return bool(self.tracking_profiles_due_for_slew(utime, ra, dec, roll))
 
 
-class PassTimes:
-    """PassTimes class for calculating passes based on ephemeris and ground station location"""
+class PassTimes(ContactScheduler):
+    """Predict and book ground-station passes for every antenna type.
+
+    Probability and overlap selection happen before execution. Only fixed
+    antennas require spacecraft tracking profiles and tracking eligibility;
+    omni and gimballed antennas reserve station time while science continues.
+    """
 
     passes: list[Pass]
     constraint: Constraint
@@ -548,6 +553,7 @@ class PassTimes:
         config: MissionConfig,
         rng: RandomSource | None = None,
     ):
+        super().__init__(config, rng)
         self.constraint = config.constraint
         assert self.constraint.ephem is not None, (
             "Ephemeris must be set for PassTimes class"
@@ -555,28 +561,18 @@ class PassTimes:
         self.ephem = self.constraint.ephem
 
         self.config = config
-        self.rng = (
-            rng
-            if rng is not None
-            else np.random.default_rng(_config_random_seed(config))
-        )
         self.passes = []
         self.dropped_overlapping_passes: list[tuple[Pass, Pass]] = []
         self.dropped_constraint_passes: list[Pass] = []
         self.length = 1
+        self._geometry: dict[tuple[str, int, int], StationGeometry] = {}
+        self._rates: dict[tuple[str, int, int], np.ndarray] = {}
 
         # Ground stations registry from config
         if config.ground_stations is None:
             self.ground_stations = GroundStationRegistry.default()
         else:
             self.ground_stations = config.ground_stations
-
-        # What makes a good pass
-        self.minlen = 8 * 60  # 10 mins
-        self.schedule_chance = 1.0  # base chance of getting a pass
-
-    def _random(self) -> float:
-        return float(self.rng.random())
 
     def __getitem__(self, number: int) -> Pass:
         return self.passes[number]
@@ -591,7 +587,7 @@ class PassTimes:
         return None
 
     def current_pass(self, utime: float) -> Pass | None:
-        """Get the current active pass being tracked."""
+        """Get the current booked contact, whether or not it needs tracking."""
         for gspass in self.passes:
             if gspass.in_pass(utime):
                 return gspass
@@ -619,7 +615,12 @@ class PassTimes:
 
     def _pass_selection_key(self, gspass: Pass) -> tuple[float, float, float]:
         rate = self._station_downlink_rate_mbps(gspass)
-        return (rate * gspass.length, gspass.length, -gspass.begin)
+        volume = (
+            gspass.downlink_volume_gb * 1000.0
+            if gspass.downlink_volume_gb is not None
+            else rate * gspass.length
+        )
+        return (volume, gspass.length, -gspass.begin)
 
     def _gsp_antenna_boresight_body(self) -> tuple[float, float, float] | None:
         communications = self.config.spacecraft_bus.communications
@@ -1005,22 +1006,9 @@ class PassTimes:
         return profiles[0], profile_safe
 
     def _deconflict_overlapping_passes(self) -> None:
-        selected: list[Pass] = []
-        self.dropped_overlapping_passes = []
-
-        for gspass in sorted(self.passes, key=lambda x: x.begin, reverse=False):
-            if not selected or selected[-1].end <= gspass.begin:
-                selected.append(gspass)
-                continue
-
-            incumbent = selected[-1]
-            if self._pass_selection_key(gspass) > self._pass_selection_key(incumbent):
-                selected[-1] = gspass
-                self.dropped_overlapping_passes.append((incumbent, gspass))
-            else:
-                self.dropped_overlapping_passes.append((gspass, incumbent))
-
-        self.passes = selected
+        self.passes, self.dropped_overlapping_passes = deconflict_contacts(
+            self.passes, self._pass_selection_key
+        )
 
     def _station_visibility(
         self,
@@ -1036,6 +1024,17 @@ class PassTimes:
 
         Returns (elevation_angle, gs_to_sat_unit) arrays over [startindex, endindex).
         """
+        geometry = self.station_geometry(station, startindex, endindex)
+        return geometry.elevation_deg, -geometry.to_station
+
+    def station_geometry(
+        self, station: GroundStation, startindex: int, endindex: int
+    ) -> StationGeometry:
+        """Return station geometry, reusing a cached enclosing interval."""
+        for (code, first, last), geometry in self._geometry.items():
+            if code == station.code and first <= startindex and endindex <= last:
+                section = slice(startindex - first, endindex - first)
+                return StationGeometry(*(values[section] for values in geometry))
         gs_ephem = rust_ephem.GroundEphemeris(
             latitude=station.latitude_deg,
             longitude=station.longitude_deg,
@@ -1067,9 +1066,36 @@ class PassTimes:
         cos_angle = np.sum(earth_to_gs_unit * gs_to_sat_unit, axis=1)
 
         # Calculate elevation above local horizon
-        elevation_angle = np.degrees(np.arcsin(cos_angle))
+        elevation_angle = np.degrees(np.arcsin(np.clip(cos_angle, -1.0, 1.0)))
 
-        return elevation_angle, gs_to_sat_unit
+        geometry = StationGeometry(
+            elevation_angle, gs_to_sat_dist[:, 0], -gs_to_sat_unit
+        )
+        self._geometry[station.code, startindex, endindex] = geometry
+        return geometry
+
+    def downlink_rates(
+        self, station: GroundStation, startindex: int, endindex: int
+    ) -> np.ndarray:
+        """Effective Mbps per ephemeris step, zero below the elevation mask."""
+        for (code, first, last), rates in self._rates.items():
+            if code == station.code and first <= startindex and endindex <= last:
+                return rates[startindex - first : endindex - first]
+        geometry = self.station_geometry(station, startindex, endindex)
+        communications = self.config.spacecraft_bus.communications
+        visible = geometry.elevation_deg > station.min_elevation_deg
+        rate = effective_downlink_rate_mbps(station, communications) or 0.0
+        rates = np.where(visible, rate, 0.0)
+        if rate_varies_with_range(station, communications):
+            for k in np.flatnonzero(visible):
+                rates[k] = (
+                    effective_downlink_rate_mbps(
+                        station, communications, float(geometry.range_km[k])
+                    )
+                    or 0.0
+                )
+        self._rates[station.code, startindex, endindex] = rates
+        return rates
 
     def _build_pass(
         self,
@@ -1080,6 +1106,7 @@ class PassTimes:
         timestamp_unix: np.ndarray,
         gs_to_sat_unit: np.ndarray,
         apply_scheduling: bool = True,
+        booked_window: tuple[float, float] | None = None,
     ) -> tuple[Pass, bool] | None:
         """Build a Pass for one visibility window.
 
@@ -1092,34 +1119,48 @@ class PassTimes:
         global_end_idx = (
             startindex + end_idx
         )  # end_idx is already the first point below threshold
-        # Clamp to last valid index to avoid overflow on short ephemeris windows
-        global_end_idx = min(global_end_idx, len(timestamp_unix) - 1)
-
+        antenna_boresight = self._gsp_antenna_boresight_body()
         passstart = timestamp_unix[global_start_idx]
-        passend = timestamp_unix[global_end_idx]
+        if antenna_boresight is not None:
+            # Preserve the tracking profile's terminal-sample convention.
+            global_end_idx = min(global_end_idx, len(timestamp_unix) - 1)
+        passend = (
+            timestamp_unix[global_end_idx]
+            if global_end_idx < len(timestamp_unix)
+            else timestamp_unix[-1] + self.ephem.step_size
+        )
+        if booked_window is not None:
+            passstart, passend = booked_window
         passlen = passend - passstart
 
-        # Only consider passes that meet minimum length
-        if passlen < self.minlen:
+        if booked_window is None and not self.accepts(
+            station, passlen, apply_scheduling=apply_scheduling
+        ):
             return None
-
-        # Combine global and station-specific schedule probabilities
-        if apply_scheduling:
-            combined_prob = self.schedule_chance * station.schedule_probability
-            should_schedule = combined_prob >= 1.0 or (
-                combined_prob > 0.0 and self._random() <= combined_prob
-            )
-            if not should_schedule:
-                return None
 
         target_vectors = -gs_to_sat_unit[start_idx:end_idx]
         target_ra, target_dec = np.degrees(vec2radec(target_vectors.T))
         track_utime = timestamp_unix[
             startindex + start_idx : startindex + end_idx
         ].tolist()
-        antenna_boresight = self._gsp_antenna_boresight_body()
         if antenna_boresight is None:
-            return None
+            rates = self.downlink_rates(
+                station, startindex, startindex + len(gs_to_sat_unit)
+            )
+            return Pass(
+                config=self.config,
+                ephem=self.ephem,
+                station=station.code,
+                begin=passstart,
+                length=passlen,
+                requires_tracking=False,
+                downlink_volume_gb=float(
+                    np.sum(rates[start_idx:end_idx]) * self.ephem.step_size / 1000.0
+                ),
+                utime=track_utime,
+                station_ra=target_ra.tolist(),
+                station_dec=target_dec.tolist(),
+            ), True
         profile_result = self._constraint_safe_tracking_attitude_profiles(
             antenna_boresight, target_vectors, track_utime
         )
@@ -1162,6 +1203,9 @@ class PassTimes:
     ) -> None:
         """Calculate the passes using rust_ephem GroundEphemeris for vectorized operations.
 
+        Every antenna type uses this booking path. Only fixed antennas add
+        spacecraft attitude profiles and require station tracking eligibility.
+
         Args:
             year: Year of the first day.
             day: Day of year of the first day.
@@ -1183,10 +1227,72 @@ class PassTimes:
         num_steps = int(86400 * length / self.ephem.step_size)
         endindex = min(startindex + num_steps, len(timestamp_unix))
 
-        # Process stations that are allowed to drive spacecraft GSP tracking. RF
-        # uplink/downlink capability is modeled separately on each station.
+        self._predict_range(timestamp_unix, startindex, endindex, apply_scheduling)
+
+    def predict(self) -> list[Pass]:
+        """Book passes over the entire ephemeris before execution starts."""
+        self.passes = []
+        self.dropped_constraint_passes = []
+        times = np.array([dt.timestamp() for dt in self.ephem.timestamp])
+        self._predict_range(times, 0, len(times), True)
+        return self.passes
+
+    def restore_bookings(self, bookings: Sequence[tuple[float, float, str]]) -> None:
+        """Rebuild already booked passes without drawing or selecting them again."""
+        times = np.array([dt.timestamp() for dt in self.ephem.timestamp])
+        self.passes = []
+        self.dropped_overlapping_passes = []
+        self.dropped_constraint_passes = []
+        for begin, end, code in bookings:
+            lo, hi = max(begin, times[0]), min(end, times[-1] + self.ephem.step_size)
+            if hi <= lo:
+                continue
+            station = self.ground_stations.get(code)
+            start, stop = np.searchsorted(times, [lo, hi])
+            geometry = self.station_geometry(station, 0, len(times))
+            result = self._build_pass(
+                station,
+                0,
+                int(start),
+                int(stop),
+                times,
+                -geometry.to_station,
+                apply_scheduling=False,
+                booked_window=(float(lo), float(hi)),
+            )
+            if result is None or not result[1]:
+                raise ValueError(f"Cannot reconstruct booked pass at {code}: {lo}–{hi}")
+            self.passes.append(result[0])
+        self.passes.sort(key=lambda p: p.begin)
+        if any(a.end > b.begin for a, b in zip(self.passes, self.passes[1:])):
+            raise ValueError("Booked ground-station passes must not overlap")
+
+    def _predict_range(
+        self,
+        timestamp_unix: np.ndarray,
+        startindex: int,
+        endindex: int,
+        apply_scheduling: bool,
+    ) -> None:
+        if startindex >= endindex:
+            return
+        tracking = self._gsp_antenna_boresight_body() is not None
+
+        # Tracking eligibility limits spacecraft activities, while flexible
+        # antennas can book every station with a compatible downlink.
         for station in self.ground_stations.stations:
-            if not station.schedule_for_tracking:
+            if tracking and not station.schedule_for_tracking:
+                continue
+            if (
+                not tracking
+                and (
+                    effective_downlink_rate_mbps(
+                        station, self.config.spacecraft_bus.communications
+                    )
+                    or 0.0
+                )
+                <= 0.0
+            ):
                 continue
 
             elevation_angle, gs_to_sat_unit = self._station_visibility(

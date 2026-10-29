@@ -262,14 +262,29 @@ class DITLMixin:
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
         self.recorder = self.config.recorder
-        self.coverage: StationCoverage | None = StationCoverage.for_config(self.config)
-        """Station coverage for an antenna that needs no attitude, which
-        downlinks whenever a station is in view; None for a body-fixed
-        antenna, which downlinks during ground passes."""
+        self.coverage: StationCoverage | None = StationCoverage.for_config(
+            self.config, scheduled_passes=self.plan.ground_contacts
+        )
+        """Usable links during passes without spacecraft tracking; None
+        when passes require tracking activities."""
+        if self.coverage is not None:
+            self.passes = self.coverage.pass_times
+        self.plan.ground_contacts = self._booked_ground_contacts()
         self.repoints_in_observations = []
         """Each antenna repoint that fell in an observation whose category
         reports or forbids them: when, the observation's obsid, and the
         category's setting."""
+
+    def _booked_ground_contacts(self) -> list[tuple[float, float, str]] | None:
+        """Station reservations to preserve in the executed plan."""
+        return (
+            [
+                (span.begin, span.end, span.station)
+                for span in self.coverage.scheduled_passes
+            ]
+            if self.coverage is not None
+            else None
+        )
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
         """The category setting for antenna repoints during ``target``."""
@@ -700,8 +715,8 @@ class DITLMixin:
         contact_start = contact_stop = utime
         data_to_downlink = 0.0
         if self.coverage is not None:
-            # An antenna that needs no attitude downlinks whenever a station
-            # is in view, in whatever mode ACS is in. A gimballed antenna
+            # Passes without spacecraft tracking can downlink in any ACS
+            # mode. A gimballed antenna
             # reaches the station only within its range from the attitude
             # flown, taken as the attitude at the start of the step.
             attitude = (

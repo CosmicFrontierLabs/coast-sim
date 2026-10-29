@@ -316,10 +316,10 @@ class DITLStats:
             )
             print(f"Total Pass Time: {total_pass_time:.2f} hours")
 
-        # Station coverage for an antenna that needs no attitude
+        # Usable links during passes without spacecraft tracking
         if self.coverage is not None:
             print("\n" + "-" * 70)
-            print("GROUND STATION COVERAGE")
+            print("GROUND STATION PASS STATISTICS")
             print("-" * 70)
             begin, end = self.begin.timestamp(), self.end.timestamp()
             spans = self.coverage.spans(begin, end)

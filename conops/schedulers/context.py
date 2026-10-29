@@ -294,15 +294,22 @@ class SchedulingContext:
 
     @property
     def coverage(self) -> StationCoverage | None:
-        """Station coverage for an antenna that needs no attitude, or None
-        for a body-fixed antenna, whose contacts are its passes.
+        """Link coverage for passes without spacecraft tracking, or None
+        when passes require tracking activities.
 
         Built from the configuration unless the caller gave it, which takes
         a while for a long run (see
         :class:`~conops.simulation.coverage.StationCoverage`).
         """
         if self._coverage is None:
-            self._coverage = StationCoverage.for_config(self.config)
+            self._coverage = StationCoverage.for_config(
+                self.config,
+                scheduled_passes=(
+                    [(p.begin, p.end, p.station) for p in self._passes]
+                    if self._passes is not None
+                    else None
+                ),
+            )
         return self._coverage
 
     @coverage.setter
@@ -323,6 +330,13 @@ class SchedulingContext:
                 gspass
                 for gspass in self._passes
                 if self.ustart <= gspass.begin and gspass.end <= self.uend
+            ]
+        coverage = self.coverage
+        if coverage is not None:
+            return [
+                p
+                for p in coverage.pass_times.passes
+                if self.ustart <= p.begin and p.end <= self.uend
             ]
         passtimes = PassTimes(config=self.config)
         # PassTimes.get counts days from midnight UTC of the start date.

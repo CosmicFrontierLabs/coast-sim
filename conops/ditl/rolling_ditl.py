@@ -117,7 +117,7 @@ class RollingHorizonDITL(DITL):
             immediate replan.
         allow_interrupts: Whether a rapid replan may cut short the
             observation in progress.
-        include_passes: Whether plans reserve ground-station passes.
+        include_passes: Whether plans reserve spacecraft tracking activities for passes.
         scheduler: Scheduler class that builds each plan:
             :class:`~conops.schedulers.PriorityScheduler` or a subclass such as
             :class:`~conops.schedulers.LocalSearchScheduler` or
@@ -269,7 +269,7 @@ class RollingHorizonDITL(DITL):
         one left off: targets keep their collected science, and ToOs already
         in the target pool are neither added again nor re-run.
         """
-        self.plan = Plan()
+        self.plan = Plan(ground_contacts=self._booked_ground_contacts())
         self.replans = []
         self._next_replan = None
         # The passes belong to the interval: a later one predicts its own.

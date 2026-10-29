@@ -213,7 +213,7 @@ class PriorityScheduler:
         begin: Start of the planning horizon.
         end: End of the planning horizon.
         step_size: Simulation step in seconds; defaults to the ephemeris step.
-        include_passes: Whether to reserve ground-station passes.
+        include_passes: Whether to reserve spacecraft tracking activities for passes.
         locked: Science entries to keep exactly where their collection windows
             are; the slews into them are recomputed.
         log: Event log for placements and rejections.
@@ -304,7 +304,7 @@ class PriorityScheduler:
         self.passes = passes
         """The run's predicted ground passes, where the caller has them."""
         self.coverage = coverage
-        """Station coverage for an antenna that needs no attitude, where the
+        """Link coverage for passes without spacecraft tracking, where the
         caller has it; built from the configuration otherwise."""
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
@@ -403,7 +403,8 @@ class PriorityScheduler:
                 )
         if self.include_passes:
             for gspass in self.ctx.predict_passes():
-                self._place_pass(gspass)
+                if gspass.requires_tracking:
+                    self._place_pass(gspass)
         self._ledger = self._recorder_ledger()
         self._volumes = self._ledger.initial_volumes(
             [block.entry for block in self.timeline]
@@ -547,6 +548,14 @@ class PriorityScheduler:
         timeline = self._plan_charging(list(timeline))
         self.plan = Plan(
             entries=[block.entry for block in timeline],
+            ground_contacts=(
+                [
+                    (span.begin, span.end, span.station)
+                    for span in self.ctx.coverage.scheduled_passes
+                ]
+                if self.ctx.coverage is not None
+                else None
+            ),
             metadata={
                 "scheduler": self.scheduler_name,
                 "step_size": self.ctx.step_size,
@@ -1262,8 +1271,7 @@ class PriorityScheduler:
 
             # First try the gap as it is. Where the recorder has no room
             # before the next contact, nothing earlier in the gap fits
-            # either; a contact that is no block on the timeline (an antenna
-            # that needs no attitude downlinks in whatever mode ACS is in)
+            # either; a pass that requires no spacecraft tracking
             # can fall within the gap, so the gap is tried again after it.
             after = not_before
             while True:
@@ -1640,7 +1648,9 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
-        ss_min = request.remaining if request.whole else float(snapshot_min_seconds(target))
+        ss_min = (
+            request.remaining if request.whole else float(snapshot_min_seconds(target))
+        )
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = succ.ready if succ is not None else horizon_end

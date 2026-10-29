@@ -1,4 +1,4 @@
-"""Station coverage for antennas that need no spacecraft attitude."""
+"""Usable links during passes that require no spacecraft tracking."""
 
 import sys
 from pathlib import Path
@@ -15,7 +15,7 @@ from conops.config import (
     GroundStation,
     MissionConfig,
 )
-from conops.simulation import ContactSpan, StationCoverage, cut_windows
+from conops.simulation import ContactSpan, PassTimes, StationCoverage, cut_windows
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scheduler"))
 from planning_scenario import HOUR, MIN, T0  # noqa: E402
@@ -119,7 +119,7 @@ class TestSpans:
     ) -> None:
         _, coverage = omni
         lengths = [span.end - span.begin for span in coverage.spans(T0, END)]
-        assert 3 * MIN <= min(lengths) and max(lengths) <= 15 * MIN
+        assert 8 * MIN <= min(lengths) and max(lengths) <= 15 * MIN
 
     def test_a_window_clips_the_span_at_its_edges(
         self, omni: tuple[MissionConfig, StationCoverage]
@@ -142,6 +142,108 @@ class TestSpans:
         assert coverage.fraction(T0, T0) == 0.0
 
 
+class TestPassBookings:
+    @pytest.mark.parametrize(
+        "antenna_type", [AntennaType.FIXED, AntennaType.OMNI, AntennaType.GIMBALED]
+    )
+    def test_passtimes_carries_every_antenna_type(self, antenna_type) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        passes = PassTimes(config)
+        passes.get(2025, 305)
+
+        assert passes.passes
+        restored = PassTimes(config)
+        booked = [(p.begin, p.end, p.station) for p in passes.passes]
+        restored.restore_bookings(booked)
+        assert [(p.begin, p.end, p.station) for p in restored.passes] == booked
+        tracking = antenna_type == AntennaType.FIXED
+        for contact in [*passes.passes, *restored.passes]:
+            assert contact.requires_tracking == tracking
+            assert bool(contact.available_tracking_profiles()) == tracking
+            assert contact.station_ra_dec(contact.begin) != (None, None)
+            if not tracking:
+                assert contact.ra_dec(contact.begin) == (None, None)
+                assert contact.downlink_volume_gb > 0.0
+        if not tracking:
+            coverage = StationCoverage(config)
+            assert isinstance(coverage.pass_times, PassTimes)
+            assert [(p.begin, p.end, p.station) for p in passes.passes] == [
+                (p.begin, p.end, p.station) for p in coverage.scheduled_passes
+            ]
+
+    def test_uses_the_fixed_antenna_booking_policy(self, monkeypatch) -> None:
+        config = _config(HOURS, stations=True)
+        config.ground_stations.add(
+            GroundStation(
+                code="KIR",
+                name="Kiruna",
+                latitude_deg=67.86,
+                longitude_deg=20.22,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.5
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        coverage = StationCoverage(config)
+
+        # Compare bookings before spacecraft attitude constraints are applied.
+        monkeypatch.setattr(
+            PassTimes,
+            "_constraint_safe_tracking_attitude_profiles",
+            lambda self, boresight, vectors, times: (
+                [[(0.0, 0.0, 0.0)] * len(times)],
+                True,
+            ),
+        )
+        config.spacecraft_bus.communications = _comms(AntennaType.FIXED)
+        fixed = PassTimes(config)
+        fixed.get(2025, 305)
+        assert coverage.scheduled_passes
+        assert [(p.begin, p.end, p.station) for p in fixed.passes] == [
+            (p.begin, p.end, p.station) for p in coverage.scheduled_passes
+        ]
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_zero_probability_means_no_booked_contacts(self, antenna_type) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.0
+        coverage = StationCoverage(config)
+
+        assert coverage.visible.any()
+        assert coverage.scheduled_passes == []
+        assert not coverage.scheduled.any()
+        assert coverage.contacts == []
+        assert coverage.repoints == []
+        assert coverage.downlink_gb(T0, END) == 0.0
+        assert coverage.next_contact(T0) is None
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_probability_books_whole_passes_once_and_repeats_with_seed(
+        self, antenna_type
+    ) -> None:
+        config = _config(HOURS, stations=True)
+        config.ground_stations.stations = [config.ground_stations.get("SGS")]
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        all_passes = StationCoverage(config).scheduled_passes
+        config.ground_stations.stations[0].schedule_probability = 0.5
+        first = StationCoverage(config)
+        second = StationCoverage(config)
+
+        assert first.scheduled_passes == second.scheduled_passes
+        assert first.contacts == second.contacts
+        assert 0 < len(first.scheduled_passes) < len(all_passes)
+        assert all(span in all_passes for span in first.scheduled_passes)
+        # Reads of different planning horizons reuse the accepted windows.
+        middle = (T0 + END) / 2
+        assert first.downlink_gb(T0, middle) + first.downlink_gb(
+            middle, END
+        ) == pytest.approx(first.downlink_gb(T0, END))
+
+
 def _walk(
     visible: list[list[int]],
     rates: list[float],
@@ -154,6 +256,7 @@ def _walk(
     table: list[tuple[float, float]] | None = None,
     repoint_seconds: float = 0.0,
     repointing: bool = True,
+    scheduled: list[list[int]] | None = None,
 ) -> StationCoverage:
     """A coverage built from a visibility matrix (stations by steps) alone,
     to test the contact scheduling on its own. ``directions`` are the unit
@@ -176,6 +279,9 @@ def _walk(
     ]
     coverage.rates = np.array(rates, dtype=float)
     coverage.visible = np.array(visible, dtype=bool)
+    coverage.scheduled = np.array(
+        visible if scheduled is None else scheduled, dtype=bool
+    )
     coverage.rate_steps = np.where(coverage.visible, coverage.rates[:, None], 0.0)
     coverage._ranged = [False] * len(rates)
     coverage._cumulative = np.zeros((len(rates), steps + 1))
@@ -210,12 +316,17 @@ class TestScheduling:
         ]
         assert coverage.handovers == 1
 
-    def test_the_highest_rate_then_the_longest_view_is_chosen(self) -> None:
-        # Three stations rise together: S1 has the rate, S2 the longer view.
-        coverage = _walk([[1, 1, 1, 0], [1, 1, 0, 0], [1, 1, 1, 1]], [10.0, 20.0, 10.0])
-        assert [c.station for c in coverage.contacts] == ["S1", "S2"]
-        coverage = _walk([[1, 1, 1, 0], [1, 1, 0, 0], [1, 1, 1, 1]], [10.0] * 3)
-        assert [c.station for c in coverage.contacts] == ["S2"]
+    def test_only_booked_stations_are_acquired(self) -> None:
+        # A faster visible station has no booking; a later booked pass is used.
+        coverage = _walk(
+            [[1, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1]],
+            [10.0, 20.0, 10.0],
+            scheduled=[[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]],
+        )
+        assert coverage.contacts == [
+            ContactSpan(0.0, 120.0, "S0", 10.0),
+            ContactSpan(120.0, 240.0, "S2", 10.0),
+        ]
 
     def test_a_handover_costs_its_latency_but_a_fresh_contact_does_not(
         self,
@@ -277,7 +388,11 @@ class TestScheduling:
         coverage = StationCoverage.for_config(config)
         assert coverage is not None
         assert int((coverage.visible.sum(axis=0) > 1).sum()) > 0
-        assert coverage.handovers > 0
+        assert coverage.dropped_overlapping_passes
+        for earlier, later in zip(
+            coverage.scheduled_passes, coverage.scheduled_passes[1:]
+        ):
+            assert earlier.end <= later.begin
         step = coverage.step_size
         codes = [s.code for s in coverage.stations]
         for earlier, later in zip(coverage.contacts, coverage.contacts[1:]):

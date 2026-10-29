@@ -518,6 +518,22 @@ class TestExecuteCommandLogging:
         # _start_pass sets current_pass, not current_slew
         assert acs.acsmode == ACSMode.PASS
 
+    def test_booked_contact_without_tracking_does_not_change_attitude(
+        self, acs
+    ) -> None:
+        when = 1514764800.0
+        acs.passrequests.current_pass.return_value = Pass(
+            station="SGS", begin=when, length=600.0, requires_tracking=False
+        )
+        acs.acsmode = ACSMode.SCIENCE
+        before = acs.ra, acs.dec, acs.roll
+        acs._start_pass(
+            ACSCommand(command_type=ACSCommandType.START_PASS, execution_time=when),
+            when,
+        )
+        assert acs.acsmode == ACSMode.SCIENCE
+        assert (acs.ra, acs.dec, acs.roll) == before
+
 
 class TestGetModeCharging:
     """Test get_mode for CHARGING mode."""

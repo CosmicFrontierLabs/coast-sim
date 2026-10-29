@@ -24,6 +24,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..simulation.acs_command import ACSCommand
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
@@ -201,6 +202,23 @@ class DITL(DITLMixin, DITLStats):
         # after DITL initialization remains safe.
         if isinstance(self.plan, Plan):
             self.plan.bind_runtime(self.config, self.ephem)
+            # Plans can also be assigned after construction. Their booked
+            # station passes must survive replay without a new probability draw.
+            booked = self.plan.ground_contacts
+            if booked is not None and (
+                self.coverage is None
+                or booked
+                != [
+                    (span.begin, span.end, span.station)
+                    for span in self.coverage.scheduled_passes
+                ]
+            ):
+                self.coverage = StationCoverage.for_config(
+                    self.config, scheduled_passes=booked
+                )
+            self.plan.ground_contacts = self._booked_ground_contacts()
+            if self.coverage is not None:
+                self.passes = self.coverage.pass_times
 
         self._reset_stored_momentum_tracker()
 
@@ -677,6 +695,8 @@ class DITL(DITLMixin, DITLStats):
             self._entry_passes[id(entry)] = gspass
             planned.append(gspass)
         passrequests.passes = planned
+        if self.coverage is None:
+            self.passes = passrequests
 
     def _execute_plan(self, utime: float) -> bool:
         """Issue the ACS commands that the plan makes due at ``utime``.

@@ -59,7 +59,7 @@ class BandCapability(ConfigModel):
             "Downlink rate against spacecraft-to-station range, as (range_km, "
             "rate_mbps) rows in increasing range, interpolated linearly between "
             "rows and held at the end rows beyond them. Used where the range is "
-            "known: the contacts of an omni or gimballed antenna. Without it the "
+            "known by the link-coverage model. Without it the "
             "rate is downlink_rate_mbps at every range."
         ),
     )
@@ -280,8 +280,8 @@ class CommunicationsSystem(ConfigModel):
     acquisition_seconds: float = Field(
         default=0.0,
         description=(
-            "Seconds to acquire the link at the start of every contact, for an "
-            "omni or gimballed antenna, during which nothing is downlinked"
+            "Seconds to acquire the link during passes without spacecraft "
+            "tracking, during which nothing is downlinked"
         ),
         ge=0.0,
     )
@@ -290,7 +290,7 @@ class CommunicationsSystem(ConfigModel):
         default=0.0,
         description=(
             "Seconds to switch the link straight from one ground station to "
-            "another, for an omni or gimballed antenna, on top of the "
+            "another during passes without spacecraft tracking, on top of the "
             "acquisition, during which nothing is downlinked"
         ),
         ge=0.0,
