@@ -66,6 +66,7 @@ def mock_config(mock_spacecraft_bus):
     cfg.spacecraft_bus = mock_spacecraft_bus
     cfg.payload = Mock()
     cfg.recorder = Mock()
+    cfg.data_storage = None
     # ground stations
     cfg.ground_stations = Mock()
     # solar panel optional

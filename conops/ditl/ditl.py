@@ -464,6 +464,7 @@ class DITL(DITLMixin, DITLStats):
                 charge_state=int(self.battery.charge_state),
                 battery_alert=self.battery.battery_alert,
                 obsid=obsid,
+                recorders=self._recorder_telemetry(),
                 recorder_volume_gb=self.recorder.current_volume_gb,
                 recorder_fill_fraction=self.recorder.get_fill_fraction(),
                 recorder_alert=self.recorder.get_alert_level(),

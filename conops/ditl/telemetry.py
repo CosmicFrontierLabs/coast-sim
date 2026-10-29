@@ -29,6 +29,7 @@ HousekeepingFieldValue = (
     | list[bool]
     | list[float]
     | list[SolarArrayDriveAngle]
+    | dict[str, dict[str, float]]
     | None
 )
 
@@ -125,6 +126,7 @@ class Housekeeping(BaseModel):
         default=None, description="Battery alert level (0/1/2)"
     )
     obsid: int | None = Field(default=None, description="Current observation ID")
+    recorders: dict[str, dict[str, float]] = Field(default_factory=dict)
     recorder_volume_gb: float | None = Field(
         default=None, description="Recorder data volume in Gb"
     )

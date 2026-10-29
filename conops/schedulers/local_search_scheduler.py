@@ -400,10 +400,10 @@ class LocalSearchScheduler(PriorityScheduler):
             block, slew, succ_slew = charged
             # And only where the recorder has room for it; later gaps may be
             # after a contact that makes room.
-            volume = self._block_volume(block)
-            segment = self._block_segment(block)
-            # With what the slew into a contact after it comes to.
-            additions = [(segment, volume), *self._ingress_deltas(succ, succ_slew)]
+            additions = [
+                *self._block_additions(block),
+                *self._ingress_deltas(succ, succ_slew),
+            ]
             if not self._ledger.fits_all(state.volumes, additions):
                 continue
 

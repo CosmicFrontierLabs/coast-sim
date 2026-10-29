@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import cached_property
 
 import yaml
 from pydantic import Field, field_validator, model_validator
@@ -11,6 +12,7 @@ from ._base import ConfigModel
 from .battery import Battery
 from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import ScienceData
+from .data_storage import DataStorage, RecorderView
 from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
@@ -147,8 +149,15 @@ class MissionConfig(ConfigModel):
     )
     recorder: OnboardRecorder = Field(
         default_factory=OnboardRecorder,
+        # Omit default values so named stores round-trip without this field.
+        # Validation still rejects explicitly supplying both storage models.
+        exclude_if=lambda recorder: recorder == OnboardRecorder(),
         description="Onboard Data Recorder. Defines storage capacity and fill thresholds",
     )
+    data_storage: DataStorage | None = Field(
+        default=None, description="Independent stores and explicit data/downlink routes"
+    )
+
     fault_management: FaultManagement = Field(
         default_factory=FaultManagement,
         description="Fault Management System. Defines thresholds and responses for system health monitoring",
@@ -173,6 +182,44 @@ class MissionConfig(ConfigModel):
             "observe: queue dispatch, one plan, or rolling replanning"
         ),
     )
+
+    @model_validator(mode="after")
+    def _one_storage_model(self) -> MissionConfig:
+        self.__dict__.pop("_recorder_view_cache", None)
+        if (
+            isinstance(self.data_storage, DataStorage)
+            and "recorder" in self.model_fields_set
+        ):
+            raise ValueError("configure either recorder or data_storage, not both")
+        return self
+
+    @cached_property
+    def _recorder_view_cache(
+        self,
+    ) -> tuple[int, dict[str, MissionConfig | RecorderView]]:
+        if self.data_storage is None:
+            return id(self), {"default": self}
+        self.data_storage.require_ready(self)
+        return id(self), {
+            name: RecorderView(self, name) for name in self.data_storage.stores
+        }
+
+    def recorder_views(
+        self, *, refresh: bool = False
+    ) -> dict[str, MissionConfig | RecorderView]:
+        """Validated views, reused through a run's candidate and step loops.
+
+        Constructors refresh these before each run. After editing nested
+        configuration in place, other callers must request a refresh too.
+        Recorder volumes themselves remain live through the cached views.
+        """
+        if refresh:
+            self.__dict__.pop("_recorder_view_cache", None)
+        # Pydantic copies cached properties; copied views must bind to this
+        # configuration, even for a shallow model_copy(update=...).
+        if self._recorder_view_cache[0] != id(self):
+            self.__dict__.pop("_recorder_view_cache", None)
+        return self._recorder_view_cache[1]
 
     @field_validator("attitude_constraint_scopes", mode="before")
     @classmethod
@@ -215,7 +262,7 @@ class MissionConfig(ConfigModel):
                 name="battery_level", yellow=yellow, red=red, direction="below"
             )
         # Add recorder threshold if not already present
-        if not any(
+        if not isinstance(self.data_storage, DataStorage) and not any(
             t.name == "recorder_fill_fraction" for t in self.fault_management.thresholds
         ):
             # Use recorder's built-in thresholds
@@ -225,6 +272,24 @@ class MissionConfig(ConfigModel):
                 red=self.recorder.red_threshold,
                 direction="above",
             )
+        if isinstance(self.data_storage, DataStorage):
+            # The legacy aggregate threshold is meaningless for independent stores.
+            self.fault_management.thresholds = [
+                t
+                for t in self.fault_management.thresholds
+                if t.name != "recorder_fill_fraction"
+            ]
+            for name, store in self.data_storage.stores.items():
+                key = f"recorders.{name}.fill_fraction"
+                if store.recorder is not None and not any(
+                    t.name == key for t in self.fault_management.thresholds
+                ):
+                    self.fault_management.add_threshold(
+                        name=key,
+                        yellow=store.recorder.yellow_threshold,
+                        red=store.recorder.red_threshold,
+                        direction="above",
+                    )
         # Add star tracker threshold if not already present and star trackers are configured
         star_trackers = None
         try:
