@@ -128,6 +128,48 @@ def test_roundtrip_and_legacy_assignment(tmp_path):
     )
 
 
+def test_stores_reject_a_shared_recorder_instance():
+    recorder = OnboardRecorder(capacity_gb=10, current_volume_gb=0)
+    with pytest.raises(ValidationError, match="payload.*bus.*same recorder"):
+        DataStorage(
+            stores={
+                "payload": DataStore(owner="payload", recorder=recorder),
+                "bus": DataStore(owner="spacecraft_bus", recorder=recorder),
+            }
+        )
+
+
+def test_equal_but_independent_recorders_are_allowed():
+    stores = DataStorage(
+        stores={
+            name: DataStore(
+                owner=owner,
+                recorder=OnboardRecorder(capacity_gb=10, current_volume_gb=0),
+            )
+            for name, owner in (("payload", "payload"), ("bus", "spacecraft_bus"))
+        }
+    ).stores
+    stores["payload"].recorder.current_volume_gb = 3
+    assert stores["bus"].recorder.current_volume_gb == 0
+
+
+@pytest.mark.parametrize("entry", ["scheduler", "simulation"])
+@pytest.mark.parametrize("mutation", ["recorder", "store"])
+def test_new_run_rejects_recorder_aliases_after_caching(entry, mutation):
+    c = config()
+    c.recorder_views()
+    stores = c.data_storage.stores
+    if mutation == "recorder":
+        stores["payload"].recorder = stores["bus"].recorder
+    else:
+        stores["payload"] = stores["bus"]
+    with pytest.raises(ValueError, match="payload.*bus.*same recorder"):
+        if entry == "scheduler":
+            PriorityScheduler(c, [], BEGIN, BEGIN + timedelta(hours=1))
+        else:
+            DITLMixin(c)
+
+
 @pytest.mark.parametrize("factory", [config, MissionConfig])
 def test_recorder_views_are_cached_with_live_volumes(factory):
     c = factory()

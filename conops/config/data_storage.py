@@ -103,6 +103,18 @@ class DataStorage(ConfigModel):
     def check_references(self) -> None:
         if not self.stores or any(not name or "." in name for name in self.stores):
             raise ValueError("stores need nonempty identifiers without dots")
+        recorder_owners: dict[int, str] = {}
+        for name, store in self.stores.items():
+            if store.recorder is None:
+                continue
+            identity = id(store.recorder)
+            if identity in recorder_owners:
+                raise ValueError(
+                    f"stores {recorder_owners[identity]!r} and {name!r} use the "
+                    "same recorder instance; create a separate OnboardRecorder "
+                    "for each store"
+                )
+            recorder_owners[identity] = name
         destinations = [
             self.bus_housekeeping,
             *self.instrument_science.values(),
