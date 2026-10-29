@@ -42,6 +42,7 @@ from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
+from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.momentum_planning import MomentumObservationPlanner
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
@@ -281,6 +282,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._temporary_rejected_ppts: list[tuple[Pointing, bool]] | None = None
         self._retry_ppt_fetch_requested = False
         self._momentum_recovery: Slew | None = None
+        self.acs.momentum_readmit = self._readmit_momentum_slew
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
         # Set True when the queue is empty or all candidates are rejected; False on
@@ -862,6 +864,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
 
     def calc(self) -> bool:
+        """Run the simulation; an unexecutable momentum state fails diagnostically."""
+        try:
+            return self._calc()
+        except MomentumLimitError as exc:
+            self._report_momentum_failure(exc)
+            return False
+
+    def _calc(self) -> bool:
         """
         Run the DITL (Day In The Life) simulation.
 
@@ -894,6 +904,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.end = self.end.replace(tzinfo=timezone.utc)
 
         self._begin_fault_run()
+        self.acs.momentum_readmit = self._readmit_momentum_slew
         self.acs.solar_array_drive_state = self.config.solar_panel.initial_drive_state()
 
         # Check that ephemeris is set
@@ -1650,6 +1661,15 @@ class QueueDITL(DITLMixin, DITLStats):
         if entry.config is not None:
             timing = entry.config.payload.observation_timing
             entry.set_collection_window(timing)
+            if slew._momentum_collection_begin is not None:
+                assert (
+                    entry.collection_begin is not None
+                    and entry.collection_end is not None
+                )
+                entry.collection_begin = max(
+                    entry.collection_begin,
+                    min(entry.collection_end, slew._momentum_collection_begin),
+                )
             if slew._momentum_collection_end is not None:
                 assert (
                     entry.collection_end is not None
@@ -1811,6 +1831,42 @@ class QueueDITL(DITLMixin, DITLStats):
             self._fetch_new_ppt(utime, ra, dec)
             if self.ppt is None:
                 self._schedule_idle_recovery(utime)
+
+    def _readmit_momentum_slew(self, slew: Slew, utime: float) -> Slew | None:
+        """Re-run admission after an intervening maneuver or delayed command."""
+        planner = MomentumObservationPlanner(self)
+        if slew.obstype != ObsType.PPT:
+            return planner.idle_recovery(utime)
+        target = self.ppt
+        if target is None or slew.at is not target:
+            return None
+        # ACS invokes this only after reaching rest. The interrupted slew's
+        # nominal end no longer describes the physical readiness time.
+        admitted = planner.observation(target, utime, ready_time=utime)
+        pending = next(
+            (
+                entry
+                for entry in reversed(self.plan.entries)
+                if entry.obsid == target.obsid and entry.begin == slew.slewstart
+            ),
+            None,
+        )
+        self._momentum_recovery = None
+        if admitted is None:
+            if pending is not None:
+                self.plan.entries[:] = [
+                    entry for entry in self.plan if entry is not pending
+                ]
+            self.ppt = None
+            self._ppt_unavailable = None
+            return None
+        target.end = admitted.end
+        self._apply_slew_metadata(target, admitted.slew)
+        if pending is not None:
+            pending.end = admitted.end
+            self._apply_slew_metadata(pending, admitted.slew)
+        self._momentum_recovery = admitted.recovery
+        return admitted.slew
 
     def _schedule_idle_recovery(self, utime: float) -> None:
         """Reserve and command a safe inertial hold before the current one expires."""
@@ -3405,15 +3461,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self._momentum_recovery = admitted.recovery
                 if not enqueue_slew:
                     return slew
-                self.acs.slew_dists.append(slew.slewdist)
-                self.acs.enqueue_command(
-                    ACSCommand(
-                        command_type=ACSCommandType.SLEW_TO_TARGET,
-                        execution_time=slew.slewstart,
-                        slew=slew,
-                    )
-                )
-                self._ppt_unavailable = False
+                self._command_ppt_slew(utime, slew)
                 return slew
             slew = self._new_ppt_slew(self.ppt, utime)
 

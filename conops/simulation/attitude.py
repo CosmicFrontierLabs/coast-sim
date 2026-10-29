@@ -5,7 +5,7 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 """
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
@@ -52,6 +52,16 @@ class AttitudeState:
     utime: float
     quaternion: Quaternion
     angular_velocity_body: Attitude = _ZERO  # degrees / second
+
+    def coast(self, utime: float) -> "AttitudeState":
+        return AttitudeState(
+            utime,
+            _body_rotation(
+                self.quaternion,
+                (utime - self.utime) * np.asarray(self.angular_velocity_body),
+            ),
+            self.angular_velocity_body,
+        )
 
     @cached_property
     def attitude(self) -> Attitude:
@@ -454,15 +464,7 @@ class AttitudeExecutor:
             return self._state
         if self._trajectory is not None:
             return self._trajectory.state(utime)
-        elapsed = utime - self._state.utime
-        return AttitudeState(
-            utime,
-            _body_rotation(
-                self._state.quaternion,
-                elapsed * np.asarray(self._state.angular_velocity_body),
-            ),
-            self._state.angular_velocity_body,
-        )
+        return self._state.coast(utime)
 
     def advance(self, utime: float) -> None:
         state = self.predict(utime)
@@ -513,7 +515,9 @@ class AttitudeExecutor:
         self.install(trajectory)
         return trajectory.end
 
-    def install(self, trajectory: AttitudeTrajectory) -> None:
+    def install(
+        self, trajectory: AttitudeTrajectory, *, momentum_end: float | None = None
+    ) -> None:
         state = self.predict(trajectory.start)
         incoming = trajectory.state(trajectory.start)
         angle, _ = _quaternion_delta(state.quaternion, incoming.quaternion)
@@ -530,8 +534,20 @@ class AttitudeExecutor:
                 "A new trajectory must join the current attitude and angular velocity"
             )
         if self.momentum is not None:
-            self.check_momentum(trajectory)
-            self.momentum.commit(self.forecast_momentum(trajectory.start))
+            before = self.forecast_momentum(trajectory.start)
+            self.momentum.require(before)
+            forecast = self.momentum.forecast(
+                trajectory.state,
+                trajectory.end
+                if momentum_end is None
+                else max(trajectory.end, momentum_end),
+                initial=before,
+                trajectory=trajectory,
+            )
+            self.momentum.require(forecast)
+            # Execution reads the same certified integration cells, including
+            # partial ticks; it does not re-grid this immutable trajectory.
+            self.momentum.commit(replace(before, path=forecast.path))
         self._state = state
         self._trajectory = trajectory
 

@@ -112,13 +112,18 @@ def test_admission_slows_only_when_needed_and_keeps_settling(scenario):
     sim.acs._advance_attitude(plan.recovery._momentum_hold_end)
 
 
-def test_stale_admission_is_rejected_without_starting_motion(scenario):
+def test_delayed_admission_is_replanned_from_actual_state_and_time(scenario):
     sim, target = scenario
     plan = MomentumObservationPlanner(sim).observation(target, sim.ustart)
     assert plan is not None
-    with pytest.raises(MomentumLimitError, match="stale"):
-        sim.acs._start_slew(plan.slew, sim.ustart + 60)
-    assert sim.acs.current_slew is None
+    sim.acs._start_slew(plan.slew, sim.ustart + 60)
+    actual = sim.acs.current_slew
+    assert actual is not None and actual is not plan.slew
+    assert actual.slewstart == sim.ustart + 60
+    assert target.begin == actual.slewstart
+    assert target.collection_begin == actual._momentum_collection_begin
+    assert sim._momentum_recovery.slewstart == target.end
+    assert sim.acs._executor._trajectory is actual._momentum_trajectory
 
 
 def test_shorter_legal_snapshot_when_full_hold_is_unavailable(scenario, monkeypatch):
@@ -614,3 +619,338 @@ def test_mounted_candidate_checks_trial_instrument_roll(
         )
         is None
     )
+
+
+def test_momentum_admission_preserves_queue_collection_cap(scenario):
+    sim, target = scenario
+    target.ss_min = 60
+    target.collection_limit = 200
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    target.end = admitted.end
+    sim._apply_slew_metadata(target, admitted.slew)
+    assert target.exposure == 200
+    assert admitted.slew.at is target
+    assert admitted.slew.ephem is sim.ephem
+
+
+def test_recorder_rechecks_the_actual_slower_slew(scenario, monkeypatch):
+    sim, target = scenario
+    target.ss_min = 60
+    target.collection_limit = 200
+    original_slewtime = target.slewtime
+    monkeypatch.setattr(sim, "_recorder_room_gb", lambda *args: 1.0)
+    durations = []
+
+    def within(trial, room):
+        durations.append(trial.slewtime)
+        assert trial is not target and room == 1.0
+        return 123.8 if trial.slewtime >= 130 else 200
+
+    monkeypatch.setattr(sim.queue, "collection_within", within)
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    assert durations == [admitted.slew.slewtime]
+    assert target.slewtime == original_slewtime
+    target.end = admitted.end
+    sim._apply_slew_metadata(target, admitted.slew)
+    assert target.exposure == 123
+
+
+def test_slower_acquisition_must_meet_target_start_deadline(scenario):
+    sim, target = scenario
+    target.deadline = sim.ustart + 170
+    assert MomentumObservationPlanner(sim).observation(target, sim.ustart) is None
+    assert sim.acs.current_slew is None
+
+
+def test_saa_delay_moves_collection_window_and_preserves_minimum(scenario):
+    sim, target = scenario
+    sim.config.payload.observation_timing.setup_seconds = 60
+    sim.acs.saa = Mock(insaa=lambda time: time < sim.ustart + 480)
+    target.exptime = target.ss_min
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    target.end = admitted.end
+    sim._apply_slew_metadata(target, admitted.slew)
+    assert target.collection_begin == sim.ustart + 480
+    assert target.exposure == target.ss_min
+    sim._apply_slew_metadata(target, admitted.slew)
+    assert target.collection_begin == sim.ustart + 480
+    target.deadline = sim.ustart + 479
+    assert MomentumObservationPlanner(sim).observation(target, sim.ustart) is None
+
+
+def test_saa_delay_cannot_consume_minimum_collect_time(scenario, monkeypatch):
+    sim, target = scenario
+    sim.config.payload.observation_timing.setup_seconds = 60
+    sim.acs.saa = Mock(insaa=lambda time: time < sim.ustart + 480)
+    monkeypatch.setattr(
+        sim,
+        "_next_science_deadline",
+        lambda *args, **kwargs: (sim.ustart + 720, "pass"),
+    )
+    assert MomentumObservationPlanner(sim).observation(target, sim.ustart) is None
+
+
+def test_science_constraint_window_is_scanned_once_per_roll(scenario, monkeypatch):
+    sim, target = scenario
+    checks = []
+
+    def constraint(ra, dec, roll, time, mode, **kwargs):
+        if mode == ACSMode.SCIENCE:
+            assert kwargs["target"] is not target
+            checks.append(time)
+            if time > sim.ustart + 900:
+                return ("tracker", "science")
+        return None
+
+    monkeypatch.setattr(sim, "_attitude_constraint_name_for_attitude", constraint)
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None and admitted.end <= sim.ustart + 900
+    # Four rolls, at most one linear scan each, regardless of shortened visits.
+    assert len(checks) < 4 * 900 / sim.acs.momentum_budget.step
+
+
+def test_idle_escape_tries_destination_solar_roll_first(scenario, monkeypatch):
+    sim, _ = scenario
+    monkeypatch.setattr(
+        sim.acs, "_idle_safe_attitude_candidates", lambda time: [(180.0, 10.0)]
+    )
+    optimum = Mock(return_value=123.0)
+    monkeypatch.setattr(
+        "conops.simulation.momentum_planning.optimum_body_roll", optimum
+    )
+    planner = MomentumObservationPlanner(sim)
+    recovery = Mock(return_value=object())
+    monkeypatch.setattr(planner, "recovery", recovery)
+    planner._idle_escape(planner.executor.state, planner.budget.current)
+    assert recovery.call_args.args[2] == (180.0, 10.0, 123.0)
+    assert optimum.call_args.args[:3] == (180.0, 10.0, sim.ustart)
+    assert optimum.call_args.kwargs["drive_state"] is sim.acs.solar_array_drive_state
+
+
+def test_pass_conflict_allows_safe_idle_wait_with_torque_enabled(scenario, monkeypatch):
+    sim, _ = scenario
+    ephem = DeterministicEphemeris(
+        SCENARIO_BEGIN, SCENARIO_BEGIN + timedelta(hours=1), 2
+    )
+    sim.ephem = sim.acs.ephem = sim.config.constraint.ephem = ephem
+    sim.config.spacecraft_bus.attitude_control.stored_momentum.gravity_gradient_enabled = True
+    executor = sim.acs._executor
+    executor.momentum = MomentumBudget(sim.config, ephem, executor.state)
+    cutoff = sim.ustart + 3000
+    monkeypatch.setattr(
+        sim,
+        "_attitude_constraint_name_for_attitude",
+        lambda ra, dec, roll, time, mode, **kwargs: (
+            ("keepout", "hardware") if time >= cutoff else None
+        ),
+    )
+    monkeypatch.setattr(
+        sim._idle_safety, "first_violation", lambda attitude, start: cutoff
+    )
+    monkeypatch.setattr(
+        sim.acs, "_idle_safe_attitude_candidates", lambda time: [(180, 0)]
+    )
+    monkeypatch.setattr(sim.acs, "_idle_safe_roll_candidates", lambda roll: [0])
+    pending_pass = Mock()
+    pending_pass.tracking_profile_slew_deadlines.return_value = [
+        (None, sim.ustart + 30)
+    ]
+    monkeypatch.setattr(sim.acs.passrequests, "next_pass", lambda time: pending_pass)
+    assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart) is None
+    assert not sim.acs.fault_management.events
+
+
+def test_failed_momentum_initialization_returns_diagnostic_failure(scenario):
+    sim, _ = scenario
+    sim.ppt = None
+    sim.acs._executor = None
+    sim.config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s = (
+        100,
+        0,
+        0,
+    )
+    assert sim.calc() is False
+    assert any(
+        event.name == "attitude_execution"
+        and "Actuator momentum exceeds" in event.cause
+        for event in sim.fault_management.events
+    )
+
+
+def test_slow_slew_limits_are_cached_and_follow_config_mutation(scenario):
+    sim, _ = scenario
+    slew = Slew(config=sim.config, rate_fraction=0.5)
+    first = slew.motion_limits
+    assert slew.motion_limits is first
+    config = sim.config.spacecraft_bus.attitude_control
+    config.max_slew_rate = 1
+    config.max_slew_rate_body = (1, 2, 3)
+    config.slew_acceleration_body = (4, 5, 6)
+    config.settle_time = 17
+    second = slew.motion_limits
+    assert second is not first and slew.motion_limits is second
+    assert second.max_slew_rate == 0.5
+    assert second.max_slew_rate_body == (0.5, 1, 1.5)
+    assert second.slew_acceleration_body == (4, 5, 6)
+    assert second.settle_time == 17
+    slew.rate_fraction = 0.25
+    assert slew.motion_limits.max_slew_rate == 0.25
+    slew.rate_fraction = 1
+    assert slew.motion_limits is config
+
+
+def test_braking_deferral_readmits_and_updates_executed_command(scenario):
+    from conops.common import ACSCommandType
+    from conops.simulation.acs_command import ACSCommand
+    from conops.simulation.attitude import AttitudeTrajectory
+
+    sim, target = scenario
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    executor = sim.acs._executor
+    limits = sim.config.spacecraft_bus.attitude_control.model_copy(
+        update={"max_slew_rate": 0.5}
+    )
+    intervening = AttitudeTrajectory.turn_from_state(executor.state, (20, 0, 0), limits)
+    executor.install(intervening)
+    command = ACSCommand(
+        command_type=ACSCommandType.SLEW_TO_TARGET,
+        execution_time=sim.ustart + 5,
+        slew=admitted.slew,
+    )
+    sim.acs.enqueue_command(command)
+    sim.acs._process_commands(sim.ustart + 5)
+    assert command.execution_time > sim.ustart + 5
+    assert not sim.acs.executed_commands
+    sim.acs._process_commands(sim.ustart + 60)
+    assert sim.acs.executed_commands[-1] is command
+    assert command.slew is sim.acs.current_slew
+    assert command.slew is not admitted.slew
+    assert command.slew.slewstart == sim.ustart + 60
+    assert command.slew.startra > 0
+    assert target.begin == command.slew.slewstart
+    assert sim._momentum_recovery.slewstart == target.end
+
+
+def test_delayed_target_that_misses_deadline_is_cancelled(scenario):
+    sim, target = scenario
+    target.deadline = sim.ustart + 200
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    target.end = admitted.end
+    sim._apply_slew_metadata(target, admitted.slew)
+    sim._track_ppt_in_timeline()
+    assert len(sim.plan) == 1
+    assert sim.acs._start_slew(admitted.slew, sim.ustart + 60) is None
+    assert sim.ppt is None
+    assert not sim.plan.entries
+    assert sim.acs.current_slew is None
+    assert sim._momentum_recovery is None
+    assert not sim.acs.fault_management.events
+
+
+def test_runtime_scoped_checks_keep_the_admitted_target(scenario, monkeypatch):
+    sim, target = scenario
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    sim.acs._start_slew(admitted.slew, sim.ustart)
+    monkeypatch.setattr(type(target), "uses_mounted_attitude", lambda self: True)
+    checked = Mock(return_value=["late telescope keepout"])
+    monkeypatch.setattr(type(target), "attitude_constraint_names", checked)
+    sim.acs.pointing(sim.ustart + 240)
+    assert checked.call_count == 1
+    assert checked.call_args.args[-1] == ACSMode.SCIENCE
+    assert sim.acs.last_slew.at is target
+
+
+def test_interrupted_saa_wait_has_empty_collection_window(scenario):
+    sim, target = scenario
+    sim.config.payload.observation_timing.setup_seconds = 60
+    sim.acs.saa = Mock(insaa=lambda time: time < sim.ustart + 480)
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    target.end = sim.ustart + 300
+    sim._apply_slew_metadata(target, admitted.slew)
+    assert target.collection_begin <= target.end
+    assert target.collection_end == target.collection_begin
+
+
+def test_execution_momentum_failure_ends_run_with_retained_diagnostics(
+    scenario, monkeypatch
+):
+    sim, _ = scenario
+    sim.ppt = None
+    record = sim._record_pointing_data
+
+    def tighten_capacity(*args):
+        record(*args)
+        sim.acs.momentum_budget.capacity = 0.01
+
+    monkeypatch.setattr(sim, "_record_pointing_data", tighten_capacity)
+    assert sim.calc() is False
+    assert len(sim.telemetry.housekeeping) == 1
+    assert sim.acs._executor.state.utime == sim.ustart
+    assert any(
+        event.name == "attitude_execution" for event in sim.fault_management.events
+    )
+
+
+def test_plan_replay_reports_invalid_initial_momentum(scenario):
+    from conops import DITL
+    from conops.targets import Plan
+
+    sim, target = scenario
+    sim.config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s = (
+        100,
+        0,
+        0,
+    )
+    target.begin, target.end = sim.ustart, sim.ustart + 600
+    plan = Plan(entries=[target])
+    replay = DITL(config=sim.config, ephem=sim.ephem, plan=plan)
+    replay.acs.ra, replay.acs.dec, replay.acs.roll = 0, 0, 0
+    assert replay.calc() is False
+    assert any(
+        event.name == "attitude_execution" for event in replay.fault_management.events
+    )
+
+
+def test_expired_science_deadline_rejects_before_scanning_a_negative_hold(
+    scenario, monkeypatch
+):
+    sim, target = scenario
+    monkeypatch.setattr(
+        sim, "_next_science_deadline", lambda *args, **kwargs: (sim.ustart - 1, "pass")
+    )
+    assert MomentumObservationPlanner(sim).observation(target, sim.ustart) is None
+
+
+def test_run_with_intervening_motion_keeps_plan_and_execution_consistent(
+    scenario, monkeypatch
+):
+    sim, target = scenario
+    sim.ppt = None
+    target.exptime = 300
+    visible = sim.ustart + 120
+    monkeypatch.setattr(type(target), "next_vis", lambda self, now: max(now, visible))
+    intervening = Slew(
+        config=sim.config, endra=180, rate_fraction=0.5, obstype=ObsType.IDLE
+    )
+    pointing = sim.acs.pointing
+    started = False
+
+    def with_intervening_guidance(time):
+        nonlocal started
+        if time == sim.ustart + 60 and not started:
+            started = True
+            sim.acs._start_slew(intervening, time)
+        return pointing(time)
+
+    monkeypatch.setattr(sim.acs, "pointing", with_intervening_guidance)
+    assert sim.calc()
+    entries = [entry for entry in sim.plan if entry.obsid == target.obsid]
+    assert len(entries) == 1
+    assert entries[0].begin == sim.ustart + 180
+    assert entries[0].exposure == 300
+    assert not sim.validate_plan_matches_execution()

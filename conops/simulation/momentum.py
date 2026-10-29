@@ -141,6 +141,7 @@ class StoredMomentumTracker:
         position_eci_km: npt.ArrayLike,
         attitude_quaternion_eci_to_body: npt.ArrayLike,
         angular_velocity_body_rad_s: npt.ArrayLike | None = None,
+        torque_eci_n_m: npt.ArrayLike | None = None,
     ) -> MomentumSample:
         """Advance to one attitude sample using trapezoidal torque integration."""
         if not np.isfinite(utime):
@@ -169,6 +170,11 @@ class StoredMomentumTracker:
             else np.zeros(3)
         )
         torque_eci = rotation_eci_to_body.T @ torque_body
+        if torque_eci_n_m is not None:
+            # A trajectory forecast can evaluate a partial integration cell
+            # using the same linearly interpolated torque as its full cell.
+            torque_eci = _finite_vector3(torque_eci_n_m, name="torque_eci_n_m")
+            torque_body = rotation_eci_to_body @ torque_eci
         body_momentum = (
             np.zeros(3)
             if angular_velocity_body_rad_s is None

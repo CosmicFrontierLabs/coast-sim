@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import rust_ephem
@@ -37,7 +38,7 @@ from .attitude import (
     AttitudeTrajectory,
 )
 from .emergency_charging import EmergencyCharging
-from .momentum_budget import MomentumBudget, MomentumLimitError
+from .momentum_budget import MomentumBudget
 from .passes import Pass
 from .slew import Slew
 
@@ -96,6 +97,7 @@ class ACS:
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
+        self.momentum_readmit: Callable[[Slew, float], Slew | None] | None = None
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
         self._attitude_guidance_disabled = False
 
@@ -392,7 +394,7 @@ class ACS:
     def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
         """Handle SLEW_TO_TARGET command."""
         if command.slew is not None:
-            self._start_slew(command.slew, utime)
+            command.slew = self._start_slew(command.slew, utime)
 
     # Handle Ground Station Pass Commands
     def _start_pass(self, command: ACSCommand, utime: float) -> None:
@@ -503,7 +505,7 @@ class ACS:
             safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
         )
 
-    def _start_slew(self, slew: Slew, utime: float) -> None:
+    def _start_slew(self, slew: Slew, utime: float) -> Slew | None:
         """Start executing a slew.
 
         The ACS always drives the spacecraft from its current position. When a slew
@@ -519,12 +521,33 @@ class ACS:
         # Advance the OLD trajectory before replacing it, even between samples.
         prepared = slew._momentum_trajectory if executor.momentum is not None else None
         if prepared is not None:
-            if prepared.start != utime:
-                raise MomentumLimitError(
-                    "Momentum-admitted slew is stale; replan at the actual execution time"
-                )
-            executor.check_momentum(prepared, slew._momentum_hold_end)
-            executor.install(prepared)
+            angle, _ = _quaternion_delta(
+                prepared.state(prepared.start).quaternion, executor.state.quaternion
+            )
+            if prepared.start != utime or angle > 1e-8:
+                if self.momentum_readmit is None:
+                    raise AttitudeExecutionError(
+                        "Stale momentum admission needs a scheduler"
+                    )
+                replacement = self.momentum_readmit(slew, utime)
+                if replacement is None:
+                    self._log_or_print(
+                        utime, "SLEW", "Delayed slew no longer admissible"
+                    )
+                    return None
+                slew = replacement
+                prepared = slew._momentum_trajectory
+                assert prepared is not None
+                if slew.slewstart > utime:
+                    self.enqueue_command(
+                        ACSCommand(
+                            command_type=ACSCommandType.SLEW_TO_TARGET,
+                            execution_time=slew.slewstart,
+                            slew=slew,
+                        )
+                    )
+                    return None
+            executor.install(prepared, momentum_end=slew._momentum_hold_end)
         else:
             slew.startra = self.ra
             slew.startdec = self.dec
@@ -553,6 +576,7 @@ class ACS:
             self.last_ppt = slew
         else:
             self.science_observation_active = False
+        return slew
 
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""

@@ -68,6 +68,8 @@ def test_short_slew_peak_cannot_hide_between_scheduler_ticks():
     state, momentum = executor.state, executor.momentum.current
     with pytest.raises(MomentumLimitError, match="Actuator momentum exceeds"):
         executor.install(trajectory)
+    with pytest.raises(MomentumLimitError, match="Actuator momentum exceeds"):
+        executor.install(trajectory, momentum_end=start)
     assert executor.state is state and executor.momentum.current is momentum
 
 
@@ -193,9 +195,13 @@ def test_tracking_interior_peak_cannot_hide_between_integration_samples(tail):
         0.654498, rel=1e-5
     )
     before = executor.momentum.current
-    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+    with pytest.raises(
+        MomentumLimitError, match="Actuator momentum could not be certified"
+    ):
         executor.check_momentum(trajectory)
-    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+    with pytest.raises(
+        MomentumLimitError, match="Actuator momentum could not be certified"
+    ):
         executor.install(trajectory)
     assert executor.momentum.current is before
     assert executor.state.utime == start
@@ -210,7 +216,9 @@ def test_execution_checks_tracking_interior_peak_without_committing_failure():
     # independently of the admission check that normally catches this curve.
     executor.momentum.capacity = 0.5
     state, before = executor.state, executor.momentum.current
-    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+    with pytest.raises(
+        MomentumLimitError, match="Actuator momentum could not be certified"
+    ):
         executor.advance(trajectory.start + 60)
     assert executor.state is state
     assert executor.momentum.current is before
@@ -296,7 +304,9 @@ def test_uncertified_tracking_interval_remains_rejected_when_forecast_is_extende
         trajectory.state, trajectory.end, initial=forecast, trajectory=trajectory
     )
     assert extended.uncertified_interval == forecast.uncertified_interval
-    with pytest.raises(MomentumLimitError, match="Tracking actuator momentum"):
+    with pytest.raises(
+        MomentumLimitError, match="Actuator momentum could not be certified"
+    ):
         executor.momentum.commit(extended)
 
 
@@ -339,3 +349,74 @@ def test_capacity_requires_inertia_even_without_external_torque():
 def test_invalid_speed_search_rejected(fractions):
     with pytest.raises(ValueError):
         StoredMomentumConfig(slew_rate_fractions=fractions)
+
+
+def test_slew_interior_peak_is_certified_between_grid_samples():
+    config, ephem, executor = setup_budget(capacity=1000)
+    config.spacecraft_bus.inertia_tensor_body_kg_m2 = [
+        [1000, 100, 150],
+        [100, 900, 100],
+        [150, 100, 800],
+    ]
+    config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s = (
+        10,
+        7,
+        3,
+    )
+    executor.momentum = MomentumBudget(config, ephem, executor.state)
+    trajectory = AttitudeTrajectory.turn_from_state(
+        executor.state, (0, 0, 150), config.spacecraft_bus.attitude_control
+    )
+    forecast = executor.check_momentum(trajectory)
+    # The constant-rate interior peak lies between the five-degree samples.
+    assert (
+        max(node.sample.actuator_momentum_norm_n_m_s for node in forecast.path.nodes)
+        < 28.5268
+    )
+    executor.momentum.capacity = 28.5268
+    before = executor.momentum.current
+    with pytest.raises(MomentumLimitError, match="could not be certified"):
+        executor.install(trajectory)
+    assert executor.momentum.current is before
+    assert executor._trajectory is None
+
+
+def test_chunked_execution_reuses_admission_grid_and_torque_integral():
+    config, _, executor = setup_budget(
+        capacity=50, gravity=True, inertia=(1000, 800, 600), attitude=(0, 45, 0)
+    )
+    start = executor.state.utime
+    trajectory = AttitudeTrajectory.turn_from_state(
+        executor.state, (90, 30, 70), config.spacecraft_bus.attitude_control
+    )
+    end = trajectory.end + 127.31
+    expected = executor.check_momentum(trajectory, end)
+    executor.install(trajectory, momentum_end=end)
+    path = executor.momentum.current.path
+    nodes = tuple(path.times)
+    for time in np.arange(start + 0.731, end, 3.173):
+        executor.advance(float(time))
+        assert executor.momentum.current.path is path
+    executor.advance(end)
+    assert tuple(path.times) == nodes
+    assert executor.momentum.current.sample == expected.sample
+    assert executor.momentum.current.peak_n_m_s == expected.peak_n_m_s
+
+
+def test_install_certifies_pending_motion_and_full_hold_once(monkeypatch):
+    config, _, executor = setup_budget(capacity=50)
+    start = executor.state.utime
+    trajectory = AttitudeTrajectory.turn_from_state(
+        executor.state, (40, 15, 0), config.spacecraft_bus.attitude_control
+    )
+    budget = executor.momentum
+    original = budget.forecast
+    forecasts = []
+
+    def record(state_at, end, **kwargs):
+        forecasts.append(end)
+        return original(state_at, end, **kwargs)
+
+    monkeypatch.setattr(budget, "forecast", record)
+    executor.install(trajectory, momentum_end=trajectory.end + 100)
+    assert forecasts == [start, trajectory.end + 100]

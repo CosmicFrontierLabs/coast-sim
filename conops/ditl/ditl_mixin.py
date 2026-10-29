@@ -15,6 +15,7 @@ from conops.config.groundstation import GroundStation, effective_downlink_rate_m
 from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
 from ..simulation.acs import ACS
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
+from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from .telemetry import SolarArrayDriveAngle, Telemetry
@@ -204,6 +205,21 @@ class DITLMixin:
     def fault_management(self) -> FaultManagementRun:
         """Current run's fault evaluator/report, shared with the ACS."""
         return self.acs.fault_management
+
+    def _report_momentum_failure(self, error: MomentumLimitError) -> None:
+        # A rejected command can use ACS fault recovery. If advancing the
+        # installed physical trajectory itself fails, terminate the run:
+        # freezing attitude or disabling the guard cannot provide a safehold.
+        executor = self.acs._executor
+        self.fault_management.report_fault(
+            utime=executor.state.utime
+            if executor is not None
+            else self.begin.timestamp(),
+            name="attitude_execution",
+            cause=str(error),
+            metadata={"momentum_capacity": True},
+            acs=self.acs,
+        )
 
     def _begin_fault_run(self) -> None:
         """Start an independent fault interval, retaining all earlier reports.

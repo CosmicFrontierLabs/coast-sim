@@ -15,7 +15,8 @@ import numpy as np
 from ..common import ACSMode, ObsType
 from ..common.vector import quaternion_attitude_delta
 from .attitude import Attitude, AttitudeState, AttitudeTrajectory
-from .momentum_budget import MomentumForecast, MomentumLimitError
+from .momentum_budget import MomentumForecast
+from .roll import optimum_body_roll
 from .slew import Slew
 
 if TYPE_CHECKING:
@@ -41,9 +42,11 @@ class MomentumObservationPlanner:
         self.settings = (
             simulation.config.spacecraft_bus.attitude_control.stored_momentum
         )
-        self.end = min(simulation._simulation_end_deadline(), self.budget.times[-1])
+        self.end = float(
+            min(simulation._simulation_end_deadline(), self.budget.times[-1])
+        )
 
-    def _safe(
+    def _first_violation(
         self,
         trajectory: AttitudeTrajectory,
         end: float,
@@ -51,9 +54,9 @@ class MomentumObservationPlanner:
         *,
         start: float | None = None,
         target: "Pointing | None" = None,
-    ) -> bool:
+    ) -> float | None:
         if end > self.end:
-            return False
+            return self.end
         start = trajectory.start if start is None else start
         times = np.unique(
             np.r_[
@@ -65,12 +68,28 @@ class MomentumObservationPlanner:
                 [t for t in trajectory.boundaries if start <= t <= end],
             ]
         )
-        return all(
-            self.sim._attitude_constraint_name_for_attitude(
-                *trajectory.state(float(t)).attitude, float(t), mode, target=target
-            )
+        for t in times:
+            if (
+                self.sim._attitude_constraint_name_for_attitude(
+                    *trajectory.state(float(t)).attitude, float(t), mode, target=target
+                )
+                is not None
+            ):
+                return float(t)
+        return None
+
+    def _safe(
+        self,
+        trajectory: AttitudeTrajectory,
+        end: float,
+        mode: ACSMode,
+        *,
+        start: float | None = None,
+        target: "Pointing | None" = None,
+    ) -> bool:
+        return (
+            self._first_violation(trajectory, end, mode, start=start, target=target)
             is None
-            for t in times
         )
 
     def _slew(
@@ -141,11 +160,18 @@ class MomentumObservationPlanner:
             return slew
         return None
 
-    def observation(self, target: "Pointing", now: float) -> MomentumObservation | None:
+    def observation(
+        self, target: "Pointing", now: float, *, ready_time: float | None = None
+    ) -> MomentumObservation | None:
         visible = target.next_vis(now)
         if visible is False:
             return None
-        start = max(self.sim._ppt_slew_execution_time(now), visible)
+        start = max(
+            self.sim._ppt_slew_execution_time(now)
+            if ready_time is None
+            else ready_time,
+            visible,
+        )
         start = now + ceil((start - now) / self.sim.step_size) * self.sim.step_size
         if start >= self.end or self.acs.passrequests.current_pass(start) is not None:
             return None
@@ -204,10 +230,30 @@ class MomentumObservationPlanner:
                     target.ss_max,
                     target.exptime if target.exptime is not None else target.ss_max,
                 )
+                collection_limit = getattr(target, "collection_limit", None)
+                if isinstance(collection_limit, (int, float)):
+                    requested = min(requested, float(collection_limit))
+                trial.slewtime = int(round(slew.slewtime))
+                room = self.sim._recorder_room_gb(now, *self.executor.state.attitude)
+                within = getattr(self.sim.queue, "collection_within", None)
+                if room is not None and callable(within):
+                    fits = float(within(trial, room))
+                    if fits < requested:
+                        requested = max(0.0, floor(fits))
+                collection_begin = self.sim._earliest_science_start(
+                    slew.slewend, slew.slewend + timing.setup_seconds
+                )
+                if (
+                    requested < target.ss_min
+                    or target.deadline is not None
+                    and collection_begin > target.deadline
+                ):
+                    break
+                teardown = timing.cleanup_seconds + timing.handoff_seconds
                 # Collection can finish between scheduler ticks. Certify the
                 # physical hold through the next tick, without collecting extra
                 # data or rounding a visibility/recovery deadline upward.
-                requested_end = slew.slewend + timing.total_seconds + requested
+                requested_end = collection_begin + requested + teardown
                 end = (
                     now
                     + min(
@@ -216,7 +262,24 @@ class MomentumObservationPlanner:
                     )
                     * self.sim.step_size
                 )
-                minimum = slew.slewend + timing.total_seconds + target.ss_min
+                minimum = collection_begin + target.ss_min + teardown
+                if end < minimum:
+                    break
+                # The locked attitude is identical for every shorter snapshot.
+                # Scan it once, then jump before its first bad sample.
+                violation = self._first_violation(
+                    trajectory,
+                    end,
+                    ACSMode.SCIENCE,
+                    start=slew.slewend,
+                    target=trial,
+                )
+                if violation is not None:
+                    end = (
+                        now
+                        + (floor((violation - now) / self.sim.step_size) - 1)
+                        * self.sim.step_size
+                    )
                 while end >= minimum:
                     held = self.budget.forecast(
                         trajectory.state, end, trajectory=trajectory, initial=arrival
@@ -230,15 +293,6 @@ class MomentumObservationPlanner:
                             - self.sim.step_size,
                         )
                         continue
-                    if not self._safe(
-                        trajectory,
-                        end,
-                        ACSMode.SCIENCE,
-                        start=slew.slewend,
-                        target=trial,
-                    ):
-                        end -= self.sim.step_size
-                        continue
                     recovery = self.recovery(
                         trajectory.state(end), held, initial.attitude
                     )
@@ -248,13 +302,11 @@ class MomentumObservationPlanner:
                             telescope.name if telescope is not None else None
                         )
                         slew.instrument_roll = float(roll)
+                        slew.at = target
                         slew._momentum_hold_end = end
-                        collection = min(
-                            requested, end - slew.slewend - timing.total_seconds
-                        )
-                        slew._momentum_collection_end = (
-                            slew.slewend + timing.setup_seconds + collection
-                        )
+                        collection = min(requested, end - collection_begin - teardown)
+                        slew._momentum_collection_begin = collection_begin
+                        slew._momentum_collection_end = collection_begin + collection
                         if collection > best_collection:
                             best = MomentumObservation(slew, end, recovery)
                             best_collection = collection
@@ -272,7 +324,16 @@ class MomentumObservationPlanner:
         self, initial: AttitudeState, momentum: MomentumForecast
     ) -> Slew | None:
         for ra, dec in self.acs._idle_safe_attitude_candidates(initial.utime):
-            for roll in self.acs._idle_safe_roll_candidates(initial.attitude[2]):
+            preferred = optimum_body_roll(
+                ra,
+                dec,
+                initial.utime,
+                self.sim.ephem,
+                self.sim.config.solar_panel,
+                self.sim.constraint,
+                drive_state=self.acs.solar_array_drive_state,
+            )
+            for roll in self.acs._idle_safe_roll_candidates(preferred):
                 # Re-certifying a short zero-motion hold is not proof that a
                 # momentum-limited escape remains possible at the next tick.
                 if (
@@ -302,9 +363,10 @@ class MomentumObservationPlanner:
         hold = AttitudeTrajectory.turn_from_state(
             initial, initial.attitude, self.sim.config.spacecraft_bus.attitude_control
         )
-        if forecast.first_violation is None and self._safe(
+        can_wait = forecast.first_violation is None and self._safe(
             hold, next_tick, ACSMode.IDLE
-        ):
+        )
+        if can_wait:
             if (
                 next_tick == self.end
                 or self._idle_escape(self.executor.predict(next_tick), forecast)
@@ -322,6 +384,17 @@ class MomentumObservationPlanner:
         result = self._idle_escape(initial, self.budget.current)
         if result is not None:
             return result
-        raise MomentumLimitError(
-            "No path- and momentum-validated idle continuation found"
+        # Geometry/pass conflicts are ordinary idle planning failures. Waiting
+        # is still legal before the conservative departure deadline, provided
+        # momentum is safe through that deadline (a pass can move us sooner).
+        if can_wait and planner is not None:
+            deadline = min(self.end, planner.departure_deadline(initial.attitude, now))
+            if (
+                next_tick < deadline
+                and self.executor.forecast_momentum(deadline).first_violation is None
+            ):
+                return None
+        self.acs.report_idle_safety_fault(
+            now, "No path- and momentum-validated idle continuation found"
         )
+        return None

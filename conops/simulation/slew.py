@@ -69,7 +69,10 @@ class Slew(BaseModel):
     rate_fraction: float = Field(default=1.0, gt=0.0, le=1.0, allow_inf_nan=False)
     _momentum_trajectory: "AttitudeTrajectory | None" = PrivateAttr(default=None)
     _momentum_hold_end: float | None = PrivateAttr(default=None)
+    _momentum_collection_begin: float | None = PrivateAttr(default=None)
     _momentum_collection_end: float | None = PrivateAttr(default=None)
+    _motion_limits_key: tuple[object, ...] | None = PrivateAttr(default=None)
+    _motion_limits_cache: AttitudeControlSystem | None = PrivateAttr(default=None)
     # Private defaults are copied per instance, so these lists are never
     # shared. A default_factory would cost far more: pydantic inspects the
     # factory's signature for every instance, and schedulers build many slews.
@@ -118,7 +121,16 @@ class Slew(BaseModel):
             raise ValueError("Slew rate fraction must be finite and within (0, 1]")
         if self.rate_fraction == 1:
             return self.acs_config
-        return self.acs_config.model_copy(
+        # Include the source fields by value: ACS permits assignment, so a
+        # cached cap must follow changes to rates, acceleration and settling.
+        key = (
+            self.rate_fraction,
+            id(self.acs_config),
+            *self.acs_config.__dict__.items(),
+        )
+        if key == self._motion_limits_key and self._motion_limits_cache is not None:
+            return self._motion_limits_cache
+        limits = self.acs_config.model_copy(
             update={
                 "max_slew_rate": self.acs_config.max_slew_rate * self.rate_fraction,
                 "max_slew_rate_body": tuple(
@@ -128,6 +140,8 @@ class Slew(BaseModel):
                 else None,
             }
         )
+        self._motion_limits_key, self._motion_limits_cache = key, limits
+        return limits
 
     def __hash__(self) -> int:
         """Hash by identity, matching plain-object semantics (Slew instances are used as dict keys)."""

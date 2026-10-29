@@ -24,6 +24,7 @@ from ..config.constraint import (
     attitude_constraint_scope_label,
 )
 from ..simulation.acs_command import ACSCommand
+from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
@@ -152,6 +153,14 @@ class DITL(DITLMixin, DITLStats):
         self._attitude_constraint_violations: list[tuple[str, str] | None] = []
 
     def calc(self) -> bool:
+        """Execute the plan, retaining diagnostics if momentum capacity fails."""
+        try:
+            return self._calc()
+        except MomentumLimitError as exc:
+            self._report_momentum_failure(exc)
+            return False
+
+    def _calc(self) -> bool:
         """Execute Day In The Life simulation.
 
         Runs the complete DITL simulation by:
