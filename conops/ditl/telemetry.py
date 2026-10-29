@@ -72,6 +72,8 @@ class Housekeeping(BaseModel):
         atmosphere_density_kg_m3: The atmosphere's density (kg/m³), where drag is tracked
         stored_momentum_body_n_m_s: Accumulated stored momentum in body coordinates (N m s)
         stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
+        actuator_momentum_body_n_m_s: What the wheels hold in body coordinates, the stored momentum less the body's own while it turns (N m s)
+        actuator_momentum_norm_n_m_s: Norm of what the wheels hold (N m s)
     """
 
     timestamp: datetime = Field(description="UTC timestamp")
@@ -255,11 +257,14 @@ class Housekeeping(BaseModel):
     )
     actuator_momentum_body_n_m_s: list[float] | None = Field(
         default=None,
-        description="Rigid actuator demand including maneuver momentum, in body axes (N m s)",
+        description=(
+            "What the wheels hold in body coordinates [x, y, z], in N m s: the "
+            "stored momentum less the body's own, I·ω, while it turns"
+        ),
     )
     actuator_momentum_norm_n_m_s: float | None = Field(
         default=None,
-        description="Norm of rigid actuator momentum demand (N m s)",
+        description="Norm of what the wheels hold, in N m s",
     )
     disturbance_torques_body_n_m: dict[str, list[float]] | None = Field(
         default=None,
@@ -578,6 +583,16 @@ class HousekeepingList(list[Housekeeping]):
     def stored_momentum_norm_n_m_s(self) -> list[float | None]:
         """Get stored-momentum norms from all records."""
         return [hk.stored_momentum_norm_n_m_s for hk in self]
+
+    @property
+    def actuator_momentum_body_n_m_s(self) -> list[list[float] | None]:
+        """Get the body-frame momentum the wheels hold from all records."""
+        return [hk.actuator_momentum_body_n_m_s for hk in self]
+
+    @property
+    def actuator_momentum_norm_n_m_s(self) -> list[float | None]:
+        """Get the norms of what the wheels hold from all records."""
+        return [hk.actuator_momentum_norm_n_m_s for hk in self]
 
     @property
     def disturbance_torques_body_n_m(self) -> list[dict[str, list[float]] | None]:

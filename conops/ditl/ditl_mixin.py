@@ -1,7 +1,7 @@
 import math
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +24,7 @@ from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
+from ..simulation.attitude import slew_angular_velocity
 from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import (
     MomentumSample,
@@ -78,6 +79,18 @@ class _MomentumInputs:
             lerp(self.position_ecef_km, later.position_ecef_km),
             lerp(self.velocity_eci_km_s, later.velocity_eci_km_s),
         )
+
+
+class MomentumProfile(NamedTuple):
+    """A momentum forecast: the sample times, the stored momentum's norm at
+    each, what the wheels hold at each (the stored momentum less the body's
+    own along a slew, where slew momentum counts; the stored momentum
+    otherwise) and the momentum at the end in inertial coordinates."""
+
+    times: npt.NDArray[np.float64]
+    norms: npt.NDArray[np.float64]
+    demands: npt.NDArray[np.float64]
+    end_eci_n_m_s: npt.NDArray[np.float64] | None
 
 
 class _AttitudeRateViolation(BaseModel):
@@ -549,6 +562,7 @@ class DITLMixin:
                     sunlit=sunlit,
                     velocity_eci_km_s=between.velocity_eci_km_s,
                     position_ecef_km=between.position_ecef_km,
+                    angular_velocity_body_rad_s=self._body_rate_rad_s(between.utime),
                 )
         return tracker.update(
             utime=utime,
@@ -558,7 +572,36 @@ class DITLMixin:
             sunlit=sunlit,
             velocity_eci_km_s=velocity_eci_km_s,
             position_ecef_km=position_ecef_km,
+            angular_velocity_body_rad_s=self._body_rate_rad_s(utime),
         )
+
+    def _body_rate_rad_s(self, utime: float) -> npt.NDArray[np.float64]:
+        """The body's angular velocity as executed at ``utime``, in radians
+        per second, for the momentum it carries while it turns. At rest
+        where the ACS gives none (a test double has no motion)."""
+        executed = getattr(self.acs, "executed_angular_velocity", None)
+        try:
+            rate = np.asarray(
+                executed(utime) if callable(executed) else None, dtype=np.float64
+            )
+        except (TypeError, ValueError):
+            return np.zeros(3, dtype=np.float64)
+        if rate.shape != (3,) or not np.all(np.isfinite(rate)):
+            return np.zeros(3, dtype=np.float64)
+        return np.deg2rad(rate)
+
+    def _slew_momentum_enabled(self) -> bool:
+        """Whether the momentum of slews counts against the capacity."""
+        return bool(
+            self.config.spacecraft_bus.attitude_control.stored_momentum.slew_momentum_enabled
+        )
+
+    def _momentum_demand_n_m_s(self, tracker: StoredMomentumTracker) -> float:
+        """What is checked against the capacity: what the wheels hold where
+        the momentum of slews counts, the stored momentum otherwise."""
+        if self._slew_momentum_enabled():
+            return tracker.actuator_momentum_norm_n_m_s
+        return tracker.stored_momentum_norm_n_m_s
 
     def _dump_level_n_m_s(self) -> float | None:
         """The stored momentum at which a thruster dump is called for, if
@@ -589,17 +632,18 @@ class DITLMixin:
         )
 
     def _momentum_at_capacity(self, utime: float, obsid: int | None) -> bool:
-        """Whether the stored momentum has reached the wheels' capacity. The
-        first time, fault management records it, with the observation under
-        way if any: an emergency dump interrupting an observation is what
-        the planning level exists to prevent."""
+        """Whether what the wheels hold has reached their capacity: the
+        stored momentum, plus the body's own along a slew where slew
+        momentum counts. The first time, fault management records it, with
+        the observation under way if any: an emergency dump interrupting an
+        observation is what the planning level exists to prevent."""
         tracker = self._stored_momentum_tracker
         capacity = (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
         )
         if tracker is None or capacity is None:
             return False
-        stored = tracker.stored_momentum_norm_n_m_s
+        stored = self._momentum_demand_n_m_s(tracker)
         if stored < capacity:
             return False
         self.fault_management.report_momentum_capacity(
@@ -626,22 +670,20 @@ class DITLMixin:
         *,
         start_eci_n_m_s: npt.ArrayLike | None,
         slew: Slew | None = None,
-    ) -> tuple[
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64] | None,
-    ]:
+    ) -> MomentumProfile:
         """Forecast the stored momentum from ``begin`` to ``end`` at the
         attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
-        wheels where None: the sample times, the norm at each, and the
-        momentum at the end in inertial coordinates. Held attitudes are
-        sampled at the run's step and ``slew`` at the configured attitude
-        step, with the orbit interpolated between ephemeris samples, as the
-        run integrates. Empty where momentum is not tracked."""
+        wheels where None: the sample times, the norm at each, what the
+        wheels hold at each, and the momentum at the end in inertial
+        coordinates. Held attitudes are sampled at the run's step and
+        ``slew`` at the configured attitude step, with the orbit interpolated
+        between ephemeris samples, as the run integrates; where the momentum
+        of slews counts, the body's rate along ``slew`` is what the wheels
+        give up to it. Empty where momentum is not tracked."""
         empty = np.empty(0, dtype=np.float64)
         forecast = tracker_from_config(self.config)
         if forecast is None or end <= begin:
-            return empty, empty, None
+            return MomentumProfile(empty, empty, empty, None)
         if start_eci_n_m_s is not None:
             forecast.start_from_eci(start_eci_n_m_s)
         else:
@@ -650,6 +692,7 @@ class DITLMixin:
         if len(samples) == 0 or samples[-1] < end:
             samples = np.append(samples, end)
         slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
+        rate_at: Callable[[float], npt.NDArray[np.float64]] | None = None
         if slew is not None and slew.slewtime > 0.0 and slew_sample > 0.0:
             along = np.arange(
                 max(begin, float(slew.slewstart)),
@@ -657,6 +700,8 @@ class DITLMixin:
                 slew_sample,
             )
             samples = np.unique(np.concatenate([samples, along]))
+            if self._slew_momentum_enabled():
+                rate_at = slew_angular_velocity(slew)
         utimes = self._momentum_ephem_utimes()
         positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
         suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
@@ -672,6 +717,7 @@ class DITLMixin:
             )
 
         norms: list[float] = []
+        demands: list[float] = []
         for at in samples:
             position = interpolate(positions, float(at))
             # Eclipse is known at the ephemeris samples: the nearest one.
@@ -698,11 +744,20 @@ class DITLMixin:
                 position_ecef_km=(
                     interpolate(ecefs, float(at)) if ecefs is not None else None
                 ),
+                angular_velocity_body_rad_s=(
+                    rate_at(float(at)) if rate_at is not None else None
+                ),
             )
             norms.append(sample.stored_momentum_norm_n_m_s)
-        return (
+            demands.append(
+                sample.actuator_momentum_norm_n_m_s
+                if sample.actuator_momentum_norm_n_m_s is not None
+                else sample.stored_momentum_norm_n_m_s
+            )
+        return MomentumProfile(
             np.asarray(samples, dtype=np.float64),
             np.array(norms, dtype=np.float64),
+            np.array(demands, dtype=np.float64),
             forecast.momentum_eci_n_m_s,
         )
 

@@ -132,6 +132,12 @@ Under ``spacecraft_bus.attitude_control.stored_momentum``:
   observation admitted only where it fits, with the run failing otherwise (see
   the capacity enforcement under :doc:`configuration`). Everything on this page
   is the dumps' side.
+* ``slew_momentum_enabled`` (bool, default ``False``): whether the momentum the body
+  carries while it slews counts against the capacity (see `Slews`_). Needs a
+  capacity and an inertia tensor; on its own it enables tracking.
+* ``slew_rate_fractions`` (floats, default ``[1, 0.75, 0.5, 0.25, 0.125]``): the
+  fractions of the configured slew rates a slew may be flown at where its momentum
+  does not fit, descending from 1; the first that fits is taken.
 
 The inertia tensor's principal moments must be positive and satisfy the triangle
 inequalities; a planar body's equality is allowed within rounding. The tracker
@@ -212,25 +218,72 @@ A rolling-horizon run gives each replan the momentum it will have when its horiz
 starts. Without thrusters the plan stands and the log says where the forecast
 passes the capacity. See :doc:`planning`, Planning within the wheels.
 
+Slews
+-----
+
+The momentum tracked is the whole spacecraft's. While the body turns at an angular
+velocity :math:`\omega` it carries :math:`I\omega` of it, and the wheels hold the
+rest: the actuator momentum, :math:`R H - I\omega` in body coordinates, where
+:math:`H` is the stored vector in inertial coordinates. At rest the two are the same.
+Along a slew the body's share is large: a 1000 kg m² body turning at 0.5°/s carries
+8.7 N m s, an order of magnitude above a day's build-up from the environment on
+the example orbit. The simulations and the planners' forecast give the tracker the
+body's rate at every sample, from the ACS's executed motion and from the slew's
+profile respectively, and the telemetry reports what the wheels hold beside the
+stored momentum.
+
+What ``capacity_n_m_s`` means is set by ``slew_momentum_enabled``. Off, the default,
+the capacity is the room left for stored momentum at the configured slew rates, and
+only the stored momentum is checked against it; the body's share is reported and not
+counted. On, the capacity is the wheels' whole capacity, and what they hold along
+each slew is checked against it: a slew's momentum must fit the room the stored
+momentum leaves. Where it does not, the slew is flown slower. Dispatch, having
+chosen an observation, forecasts what the wheels hold over the slew into it from the
+wheels as they are at each of ``slew_rate_fractions`` in turn, and flies the slew
+at the first fraction that fits; acceleration and settling are unchanged, so the
+slew takes longer and the observation's collection starts later. The planners do
+the same for a plan: where the forecast finds a slew in which the wheels reach the
+capacity, the observation's slew is capped at the next fraction and the plan built
+again, and every plan entry carries ``slew_rate_fraction``, which a planned
+simulation flies and dispatch honours as the first fraction it tries. Where no
+fraction fits from the wheels as they are but the slowest fits from empty, the
+wheels are emptied first: dispatch calls for a thruster dump and the observation
+follows it, and the planners reserve a dump before the observation; without
+thrusters dispatch holds the observation out, and a plan stands with the overload
+logged. Where the slowest fraction does not fit even from empty wheels, the slew
+cannot be flown within the capacity at all: dispatch holds the observation out and
+marks it done, and the planners leave it out. The body's share is a transient and
+not what a dump removes, so the planning level and the dumps it calls for are on
+the stored momentum alone; the capacity, in fault management and in the forecast's
+checks, is on what the wheels hold.
+
+A visit's later steps are slewed to at full rate in the forecast at selection, which
+holds the attitude through those slews; only the slew into the first step carries
+the body's momentum there. The planners forecast every slew along a plan, step slews
+included.
+
 Telemetry and reporting
 -----------------------
 
 Housekeeping telemetry carries, at every step, each source's torque by name
 (``disturbance_torques_body_n_m``) and their total (``disturbance_torque_body_n_m``),
 the stored momentum in body coordinates and its norm (``stored_momentum_body_n_m_s``,
-``stored_momentum_norm_n_m_s``), the geomagnetic field in body coordinates where a
+``stored_momentum_norm_n_m_s``), what the wheels hold, the stored momentum less the
+body's own while it turns (``actuator_momentum_body_n_m_s``,
+``actuator_momentum_norm_n_m_s``), the geomagnetic field in body coordinates where a
 source uses one (``geomagnetic_field_body_t``) and the atmosphere's density where
 drag is tracked (``atmosphere_density_kg_m3``). The event log carries ``MOMENTUM``
-events for each dump called for, each unload and each selection decision the
-forecast makes; fault management carries the capacity events. The timelines
+events for each dump called for, each unload, each slew flown slower and each
+selection decision the forecast makes; fault management carries the capacity events. The timelines
 (:doc:`visualization`) draw dumps on the activities row, and the momentum example
 notebook plots the stored momentum with each source's share, emptied at every dump.
 
 What is left out
 ----------------
 
-* The rigid-body momentum of the slews themselves (:math:`I\omega`), a transient the
-  wheels give back when the slew ends.
+* The momentum of a slew between the samples: the body's rate is sampled every
+  ``max_attitude_step_deg`` of motion, so a peak between samples is read a sample
+  late; the attitude step is the convergence control.
 * Self-shadowing between plates, for sunlight and drag alike.
 * A thruster firing attitude: a dump holds the attitude the spacecraft has.
 * Propellant accounting for dumps.

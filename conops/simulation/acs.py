@@ -249,6 +249,16 @@ class ACS:
             return (self.ra, self.dec, self.roll)
         return self._executor.flown(utime).attitude
 
+    def executed_angular_velocity(self, utime: float) -> Attitude:
+        """The body's angular velocity at ``utime`` in degrees per second:
+        from the motion that was flying then for a time up to the present,
+        from the motion installed for a time after it."""
+        if self._executor is None:
+            return (0.0, 0.0, 0.0)
+        if utime > self._executor.state.utime:
+            return self._executor.predict(utime).angular_velocity_body
+        return self._executor.flown(utime).angular_velocity_body
+
     def attitude_moved(self, begin: float, end: float) -> bool:
         """Whether the attitude moved at any time in ``(begin, end]``."""
         return self._executor is not None and self._executor.moved_between(begin, end)

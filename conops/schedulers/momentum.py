@@ -21,6 +21,7 @@ from ..common import ObsType
 from ..common.ephemeris import position_vectors, velocity_vectors
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
+from ..simulation.attitude import slew_angular_velocity
 from ..simulation.momentum import (
     MomentumState,
     StoredMomentumTracker,
@@ -51,13 +52,14 @@ class _Span:
     def key(self) -> tuple[object, ...]:
         """What the momentum stored over the span depends on, besides the
         momentum it starts from: its times, its attitude or its slew's
-        path, and the unloading at its end."""
+        path and rate, and the unloading at its end."""
         slew = self.slew
         path = (
             (
                 float(slew.slewstart),  # type: ignore[attr-defined]
                 float(slew.slewend),  # type: ignore[attr-defined]
                 float(slew.slewdist),  # type: ignore[attr-defined]
+                float(slew.rate_fraction),  # type: ignore[attr-defined]
                 float(slew.startra),  # type: ignore[attr-defined]
                 float(slew.startdec),  # type: ignore[attr-defined]
                 float(slew.startroll),  # type: ignore[attr-defined]
@@ -71,8 +73,14 @@ class _Span:
         return (self.begin, self.end, self.attitude, path, self.unload_at_end)
 
 
-_Integrated = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], MomentumState]
-"""A span integrated: its sample times, the norm at each and the state at its end."""
+_Integrated = tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    MomentumState,
+]
+"""A span integrated: its sample times, the norm at each, what the wheels
+hold at each and the state at its end."""
 
 SpanCache = dict[tuple[object, ...], _Integrated]
 """Spans integrated, by the span's key and the state they started from.
@@ -101,6 +109,11 @@ class MomentumForecast:
         slew, where the plan takes over part-way through a run; None where
         the run starts fresh and the spacecraft idles until first commanded."""
         self.tracker: StoredMomentumTracker | None = tracker_from_config(config)
+        self.slew_momentum = bool(
+            config.spacecraft_bus.attitude_control.stored_momentum.slew_momentum_enabled
+        )
+        """Whether the momentum the body carries along a slew counts against
+        the capacity: what the wheels hold is then the stored momentum less it."""
         # As the simulations sample: a slew at the configured attitude step,
         # a held attitude at the ephemeris resolution.
         self.slew_sample_s = (
@@ -221,9 +234,26 @@ class MomentumForecast:
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The sample times and the stored momentum's norm at each, along
         ``timeline``, with each thruster dump unloading the wheels as it ends."""
+        times, norms, _ = self._profile(timeline)
+        return times, norms
+
+    def demand(
+        self, timeline: Sequence[_Block]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """The sample times and what the wheels hold at each along
+        ``timeline``: the stored momentum less the body's own along each
+        slew where slew momentum counts, the stored momentum otherwise."""
+        times, _, demands = self._profile(timeline)
+        return times, demands
+
+    def _profile(
+        self, timeline: Sequence[_Block]
+    ) -> tuple[
+        npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
         tracker = self.tracker
         if tracker is None:
-            return np.empty(0), np.empty(0)
+            return np.empty(0), np.empty(0), np.empty(0)
         if self.start_momentum_eci_n_m_s is not None:
             tracker.start_from_eci(self.start_momentum_eci_n_m_s)
         else:
@@ -231,8 +261,8 @@ class MomentumForecast:
         return self._integrate(tracker, self._spans(timeline))
 
     def loading(self, block: _Block) -> float:
-        """The most the block alone stores, from empty wheels: its slew and
-        its hold, with nothing before or after it."""
+        """The most the block alone asks of the wheels, from empty: its slew
+        and its hold, with nothing before or after it."""
         tracker = self.tracker
         if tracker is None:
             return 0.0
@@ -243,24 +273,29 @@ class MomentumForecast:
             if span.begin >= begin and span.end <= float(block.end)
         ]
         tracker.reset()
-        _, norms = self._integrate(tracker, spans)
-        return float(norms.max()) if len(norms) else 0.0
+        _, _, demands = self._integrate(tracker, spans)
+        return float(demands.max()) if len(demands) else 0.0
 
     def _integrate(
         self, tracker: StoredMomentumTracker, spans: Sequence[_Span]
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """Advance ``tracker`` through ``spans``: the sample times and the
-        norm at each. A span integrated before from the same state is read
-        from the cache, and the tracker continues from its end."""
+    ) -> tuple[
+        npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
+        """Advance ``tracker`` through ``spans``: the sample times, the norm
+        at each and what the wheels hold at each. A span integrated before
+        from the same state is read from the cache, and the tracker continues
+        from its end."""
         times: list[float] = []
         norms: list[float] = []
+        demands: list[float] = []
         for span in spans:
             key = (span.key, tracker.state)
             cached = self.cache.get(key)
             if cached is not None:
                 times.extend(cached[0])
                 norms.extend(cached[1])
-                tracker.restore(cached[2])
+                demands.extend(cached[2])
+                tracker.restore(cached[3])
                 continue
             first = len(times)
             interval = (
@@ -269,6 +304,11 @@ class MomentumForecast:
             samples = np.arange(span.begin, span.end, interval)
             if len(samples) == 0 or samples[-1] < span.end:
                 samples = np.append(samples, span.end)
+            rate_at = (
+                slew_angular_velocity(span.slew)  # type: ignore[arg-type]
+                if span.slew is not None and self.slew_momentum
+                else None
+            )
             for utime in samples:
                 position = self._interpolate(self._positions, float(utime))
                 attitude = self._attitude_at(span, float(utime))
@@ -288,29 +328,63 @@ class MomentumForecast:
                         if self._ecef is not None
                         else None
                     ),
+                    angular_velocity_body_rad_s=(
+                        rate_at(float(utime)) if rate_at is not None else None
+                    ),
                 )
                 times.append(float(utime))
                 norms.append(sample.stored_momentum_norm_n_m_s)
+                demands.append(
+                    sample.actuator_momentum_norm_n_m_s
+                    if sample.actuator_momentum_norm_n_m_s is not None
+                    else sample.stored_momentum_norm_n_m_s
+                )
             if span.unload_at_end is not None:
                 tracker.unload(span.unload_at_end)
                 times.append(span.end)
                 norms.append(tracker.stored_momentum_norm_n_m_s)
+                demands.append(tracker.stored_momentum_norm_n_m_s)
             self.cache[key] = (
                 np.array(times[first:]),
                 np.array(norms[first:]),
+                np.array(demands[first:]),
                 tracker.state,
             )
-        return np.array(times), np.array(norms)
+        return np.array(times), np.array(norms), np.array(demands)
 
     def first_crossing(
-        self, timeline: Sequence[_Block], level: float, after: float | None = None
+        self,
+        timeline: Sequence[_Block],
+        level: float,
+        after: float | None = None,
+        *,
+        demand: bool = False,
     ) -> float | None:
-        """When the stored momentum first reaches ``level`` along the
-        timeline, after ``after`` if given; None if it never does."""
-        times, norms = self.profile(timeline)
-        for utime, norm in zip(times, norms, strict=True):
+        """When the stored momentum, or with ``demand`` what the wheels hold,
+        first reaches ``level`` along the timeline, after ``after`` if given;
+        None if it never does."""
+        times, norms, demands = self._profile(timeline)
+        for utime, norm in zip(times, demands if demand else norms, strict=True):
             if after is not None and utime <= after:
                 continue
             if norm >= level:
                 return float(utime)
+        return None
+
+    def first_slew_overload(
+        self, timeline: Sequence[_Block], capacity: float
+    ) -> tuple[float, object] | None:
+        """The first slew along the timeline in which what the wheels hold
+        reaches ``capacity``: when, and the slew; None where none does.
+        Samples at a slew's ends carry no rate, so a reading there is the
+        hold's, not the slew's."""
+        if not self.slew_momentum:
+            return None
+        times, _, demands = self._profile(timeline)
+        for span in self._spans(timeline):
+            if span.slew is None:
+                continue
+            inside = (times > span.begin) & (times < span.end) & (demands >= capacity)
+            if inside.any():
+                return float(times[inside][0]), span.slew
         return None
