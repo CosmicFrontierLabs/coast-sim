@@ -567,12 +567,17 @@ class RollingHorizonDITL(DITL):
         used = None
         if self.allocator is not None:
             # Allocated from the exposure that remains, so nothing is used.
+            # The allocator budgets one recorder, so independent stores are
+            # summed into the volume it starts from.
+            volume = self._recorder_volume_at(utime, start, committed)
             self.allocation = self.allocator.allocate(
                 self.targets,
                 start,
                 reserved,
                 unplanned={int(t.obsid) for t in self._too_targets.values()},
-                start_volume_gb=self._recorder_volume_at(utime, start, committed),
+                start_volume_gb=(
+                    sum(volume.values()) if isinstance(volume, dict) else volume
+                ),
             )
         elif self.allocation is not None:
             used = self._used_by_bin(self.allocation, leading)
