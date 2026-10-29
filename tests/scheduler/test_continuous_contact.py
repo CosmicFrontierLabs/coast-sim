@@ -425,13 +425,26 @@ class TestPlanning:
             peak <= LIMIT + 1e-6 for peak in scheduler._ledger.peaks(scheduler._volumes)
         )
         assert len(_science(plan)) >= 5
-        # The recorder has room for three snapshots before the first contact;
-        # the next is placed after a contact, which is no block on the timeline.
-        coverage = scheduler.ctx.coverage
-        first = coverage.spans(T0, T0 + HOURS * HOUR)[0]
-        science = sorted(_science(plan), key=lambda e: float(e.begin))
-        assert float(science[2].end) < first.begin
-        assert float(science[3].begin) >= first.begin
+        # Both high-rate snapshots exceed the recorder's limit together, so
+        # a contact must make room for the second within the science gap.
+        # Check that behavior without assuming particular orbital pass times.
+        hungry = sorted(
+            (e for e in _science(plan) if int(e.obsid) == 1),
+            key=lambda e: float(e.begin),
+        )
+        assert len(hungry) == 2
+        assert (
+            sum(
+                scheduler._ledger.science_volume(
+                    e, e.collection_seconds_between(e.begin, e.end)
+                )
+                for e in hungry
+            )
+            > LIMIT
+        )
+        assert scheduler._ledger.segment(
+            float(hungry[0].collection_begin)
+        ) < scheduler._ledger.segment(float(hungry[1].collection_begin))
         ditl = _execute(config, plan, HOURS, STEP)
         assert ditl.validate_plan_matches_execution() == []
         assert ACSMode.PASS not in set(ditl.mode)
