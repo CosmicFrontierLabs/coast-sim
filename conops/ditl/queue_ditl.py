@@ -148,6 +148,7 @@ class _CommittedTOO:
     interrupted: Pointing
     value: MeritBreakdown
     dispatch_time: float
+    momentum_recovery: Slew | None = None
 
 
 class QueueDITL(DITLMixin, DITLStats):
@@ -749,7 +750,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # The value admission settled on, over the collection it admitted.
         admitted = preview.ppt.merit_breakdown or value
         return _CommittedTOO(
-            too, target, preview.ppt, slew, self.ppt, admitted, dispatch_time
+            too,
+            target,
+            preview.ppt,
+            slew,
+            self.ppt,
+            admitted,
+            dispatch_time,
+            preview._momentum_recovery,
         )
 
     def _dispatch_committed_too(self, utime: float) -> bool:
@@ -775,6 +783,7 @@ class QueueDITL(DITLMixin, DITLStats):
             "roll",
             "spacecraft_attitude",
             "instrument_name",
+            "slew_rate_fraction",
             "collection_begin",
             "collection_end",
             "merit",
@@ -799,6 +808,7 @@ class QueueDITL(DITLMixin, DITLStats):
             mark_done=False,
         )
         self.ppt = target
+        self._momentum_recovery = commitment.momentum_recovery
         self.acs.slew_dists.append(commitment.slew.slewdist)
         self.acs.enqueue_command(
             ACSCommand(
@@ -3388,11 +3398,13 @@ class QueueDITL(DITLMixin, DITLStats):
                         description="Target rejected: no momentum- and geometry-valid observation with recovery",
                     )
                     self._retry_fetch_without_current_ppt(utime, ra, dec)
-                    return
+                    return None
                 slew = admitted.slew
                 self.ppt.end = admitted.end
                 self._apply_slew_metadata(self.ppt, slew)
                 self._momentum_recovery = admitted.recovery
+                if not enqueue_slew:
+                    return slew
                 self.acs.slew_dists.append(slew.slewdist)
                 self.acs.enqueue_command(
                     ACSCommand(
@@ -3402,7 +3414,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     )
                 )
                 self._ppt_unavailable = False
-                return
+                return slew
             slew = self._new_ppt_slew(self.ppt, utime)
 
             # Check if target is visible

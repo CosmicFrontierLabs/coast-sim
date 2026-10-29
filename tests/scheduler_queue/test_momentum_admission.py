@@ -161,6 +161,26 @@ def test_other_roll_can_make_the_whole_observation_feasible(scenario, monkeypatc
     assert plan is not None and plan.slew.instrument_roll == 90
 
 
+@pytest.mark.parametrize("enqueue_slew", [False, True])
+def test_queue_admission_returns_slew_without_dispatching_a_preview(
+    scenario, enqueue_slew
+):
+    sim, target = scenario
+    sim.ppt = None
+    commands = list(sim.acs.command_queue)
+    distances = list(sim.acs.slew_dists)
+    slew = sim._fetch_new_ppt(sim.ustart, 0.0, 0.0, enqueue_slew=enqueue_slew)
+    assert slew is not None
+    assert sim.ppt is target
+    assert sim._momentum_recovery is not None
+    if enqueue_slew:
+        assert sim.acs.command_queue[-1].slew is slew
+        assert sim.acs.slew_dists == distances + [slew.slewdist]
+    else:
+        assert sim.acs.command_queue == commands
+        assert sim.acs.slew_dists == distances
+
+
 def test_queue_executes_reserved_recovery_only_when_no_target_follows(scenario):
     sim, target = scenario
     sim.ppt = None
@@ -175,6 +195,55 @@ def test_queue_executes_reserved_recovery_only_when_no_target_follows(scenario):
     sim.ppt = None
     sim._schedule_idle_recovery(target.end)
     assert sim.acs.command_queue[-1].slew is reserved
+
+
+def test_delayed_too_keeps_its_admitted_momentum_recovery(scenario, monkeypatch):
+    sim, _ = scenario
+    sim.ppt = None
+    sim.config.payload.observation_timing = ObservationTiming(
+        setup_seconds=43, cleanup_seconds=85, handoff_seconds=40
+    )
+    request = sim.submit_too(
+        obsid=30001,
+        ra=100,
+        dec=15,
+        merit=1000,
+        exptime=600,
+        name="Urgent",
+        submit_time=sim.ustart + 600,
+    )
+    preview = sim._preview_too_admission
+    dispatch = sim._dispatch_committed_too
+    dispatched = []
+
+    def preview_without_side_effects(*args, **kwargs):
+        commands = list(sim.acs.command_queue)
+        distances = list(sim.acs.slew_dists)
+        recovery = sim._momentum_recovery
+        result = preview(*args, **kwargs)
+        assert sim.acs.command_queue == commands
+        assert sim.acs.slew_dists == distances
+        assert sim._momentum_recovery is recovery
+        return result
+
+    def dispatch_with_recovery(utime):
+        commitment = sim._committed_too
+        result = dispatch(utime)
+        if result:
+            assert commitment.momentum_recovery is not None
+            assert sim._momentum_recovery is commitment.momentum_recovery
+            assert sim.ppt.slew_rate_fraction == commitment.slew.rate_fraction
+            dispatched.append(commitment)
+        return result
+
+    monkeypatch.setattr(sim, "_preview_too_admission", preview_without_side_effects)
+    monkeypatch.setattr(sim, "_dispatch_committed_too", dispatch_with_recovery)
+    assert sim.calc()
+    assert request.executed and len(dispatched) == 1
+    assert not sim.validate_plan_matches_execution()
+    assert all(
+        hk.actuator_momentum_norm_n_m_s <= 20 for hk in sim.telemetry.housekeeping
+    )
 
 
 def test_real_queue_run_with_capacity_and_coarse_scheduler(scenario):
