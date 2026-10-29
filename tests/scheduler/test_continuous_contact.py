@@ -442,9 +442,10 @@ class TestPlanning:
             )
             > LIMIT
         )
-        assert scheduler._ledger.segment(
-            float(hungry[0].collection_begin)
-        ) < scheduler._ledger.segment(float(hungry[1].collection_begin))
+        _, ledger, _ = scheduler._ledger.members[0]
+        assert ledger.segment(float(hungry[0].collection_begin)) < ledger.segment(
+            float(hungry[1].collection_begin)
+        )
         ditl = _execute(config, plan, HOURS, STEP)
         assert ditl.validate_plan_matches_execution() == []
         assert ACSMode.PASS not in set(ditl.mode)
