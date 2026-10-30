@@ -192,13 +192,16 @@ def test_pass_cleanup_survives_time_dependent_ingress_detour(timed_ditl):
     # Model a new detour required after admission, retaining real path/ACS timing.
     slew_constraint = SunConstraint(min_angle=45)
     timed_ditl.config.spacecraft_bus.attitude_control.slew_constraint = slew_constraint
-    with patch.object(
-        SunConstraint,
-        "route_around",
-        side_effect=lambda **kwargs: SimpleNamespace(
-            waypoint=(190.0, -20.0) if kwargs["time"] >= 1500 else None
-        ),
-    ) as planner:
+    with (
+        patch.object(
+            SunConstraint,
+            "route_around",
+            side_effect=lambda **kwargs: SimpleNamespace(
+                waypoint=(190.0, -20.0) if kwargs["time"] >= 1500 else None
+            ),
+        ) as planner,
+        patch.object(SunConstraint, "in_constraint_batch", return_value=[[False]]),
+    ):
         deadline = timed_ditl._next_pass_science_deadline(
             1050, target=entry, target_roll=entry.roll
         )

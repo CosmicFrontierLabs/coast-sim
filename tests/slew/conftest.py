@@ -1,5 +1,6 @@
 """Test fixtures for slew subsystem tests."""
 
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import numpy as np
@@ -16,6 +17,7 @@ def ephem():
     # attribute-restriction that Mock(spec=...) would impose.
     mock.__class__ = rust_ephem.Ephemeris
     mock.step_size = 60
+    mock.timestamp = [datetime(1970, 1, 1, tzinfo=timezone.utc)]
     return mock
 
 
@@ -26,6 +28,7 @@ def constraint(ephem):
     constraint.ephem = ephem
     constraint.constraint = Mock()
     constraint.constraint.route_around.return_value.waypoint = None
+    constraint.constraint.in_constraint_batch.return_value = np.array([[False]])
     return constraint
 
 

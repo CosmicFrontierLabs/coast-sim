@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -488,7 +489,9 @@ class Slew(BaseModel):
         spacecraft's general pointing constraint. rust-ephem's route_around
         finds a validated waypoint around a constraint crossing (Sun, Earth,
         Moon, etc.), then two SLERP segments connect it to the endpoints.
-        Falls back to plain quaternion SLERP when no waypoint is returned.
+        Check their actual pointing and roll samples in Rust before accepting
+        the detour. An unsafe detour retains the existing direct fallback for
+        downstream admission/execution checks.
         """
         assert self.acs_config is not None, "ACS config must be set to predict slew"
         assert self.constraint is not None, "Constraint must be set to predict slew"
@@ -593,6 +596,24 @@ class Slew(BaseModel):
         all_ras = ras1 + ras2[1:]
         all_decs = decs1 + decs2[1:]
         all_rolls = rolls1 + rolls2[1:]
+
+        # Pointing arcs validated by route_around can differ from these full-
+        # attitude SLERPs. Check their actual rolls at the same frozen sample.
+        sample_index = (
+            bisect_right(ephem.timestamp, self.slewstart, key=lambda t: t.timestamp())
+            - 1
+        )
+        if np.any(
+            slew_constraint.in_constraint_batch(
+                ephemeris=ephem,
+                target_ras=all_ras,
+                target_decs=all_decs,
+                target_rolls=all_rolls,
+                indices=sample_index,
+            )
+        ):
+            self._predict_slew_quaternion(steps)
+            return
 
         self.slewpath = (all_ras, all_decs)
         self._quat_roll_path = all_rolls
