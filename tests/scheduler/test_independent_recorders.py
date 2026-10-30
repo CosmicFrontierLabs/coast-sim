@@ -740,6 +740,7 @@ def test_coverage_respects_store_shares_and_range_dependent_routed_band():
         (2000, 40),
     ]
     coverage = object.__new__(StationCoverage)
+    coverage.repointing = False
     coverage.config = c
     coverage.times = np.array([0.0, 10.0, 20.0])
     coverage.step_size = 10.0

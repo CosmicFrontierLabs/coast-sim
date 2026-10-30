@@ -320,12 +320,7 @@ class DITLMixin:
 
     def _antenna_repoints(self, target: PlanEntry) -> str:
         """The category setting for antenna repoints during ``target``."""
-        categories = getattr(self.config, "observation_categories", None)
-        setting = getattr(categories, "antenna_repoints", None)
-        if not callable(setting):
-            return "allowed"
-        result = setting(int(target.obsid))
-        return result if isinstance(result, str) else "allowed"
+        return self.config.observation_categories.antenna_repoints(int(target.obsid))
 
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control

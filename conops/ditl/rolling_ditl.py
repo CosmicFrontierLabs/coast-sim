@@ -17,7 +17,7 @@ from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
-from ..schedulers.recorder import RecorderLedger
+from ..schedulers.recorder import RecorderAmount, RecorderLedger, combine_amounts
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
@@ -559,7 +559,11 @@ class RollingHorizonDITL(DITL):
             # contact the plans hold comes from them, so they are also the
             # passes to command, and DITL need not predict them again.
             self._run_passes = list(
-                SchedulingContext(self.config, self.begin, self.end).predict_passes()
+                self.coverage.pass_times.passes
+                if self.coverage is not None
+                else SchedulingContext(
+                    self.config, self.begin, self.end
+                ).predict_passes()
             )
             self._predicted_passes = list(self._run_passes)
         reserved = self._reserved_seconds(leading, utime)
@@ -729,7 +733,7 @@ class RollingHorizonDITL(DITL):
             origin=self.ustart,
             coverage=self.coverage,
         )
-        volumes = [0.0] * ledger.segments
+        volumes: list[RecorderAmount] = [0.0] * ledger.segments
         for entry in committed:
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
@@ -744,11 +748,12 @@ class RollingHorizonDITL(DITL):
                 # Already collecting: its fixed amount is on the recorder.
                 include_fixed=float(entry.collection_begin) >= utime,
             ):
-                volumes[segment] += volume
+                volumes[segment] = combine_amounts(volumes[segment], volume)
         for entry in contacts:
             # The slew into a contact still to come, flown in PASS mode.
-            volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
-        return ledger.peaks(volumes)[-1]
+            k = ledger.ingress_segment(entry)
+            volumes[k] = combine_amounts(volumes[k], ledger.ingress_volume(entry))
+        return ledger.level_at(volumes, start)
 
     def _battery_start(
         self, utime: float, start: float, committed: Sequence[PlanEntry]

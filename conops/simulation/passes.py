@@ -1,6 +1,6 @@
 import time
 from collections.abc import Iterator, Sequence
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from typing import Literal, NamedTuple
 
 import numpy as np
@@ -22,6 +22,7 @@ from ..common.vector import (
     vec2radec,
 )
 from ..config import (
+    BandCapability,
     Constraint,
     GroundStation,
     GroundStationRegistry,
@@ -565,8 +566,9 @@ class PassTimes(ContactScheduler):
         self.dropped_overlapping_passes: list[tuple[Pass, Pass]] = []
         self.dropped_constraint_passes: list[Pass] = []
         self.length = 1
-        self._geometry: dict[tuple[str, int, int], StationGeometry] = {}
-        self._rates: dict[tuple[str, int, int], np.ndarray] = {}
+        self._geometry: dict[str, StationGeometry] = {}
+        self._rates: dict[str, np.ndarray] = {}
+        self._routed_rates: dict[tuple[str, str | None], np.ndarray] = {}
 
         # Ground stations registry from config
         if config.ground_stations is None:
@@ -576,6 +578,11 @@ class PassTimes(ContactScheduler):
 
     def __getitem__(self, number: int) -> Pass:
         return self.passes[number]
+
+    @cached_property
+    def times(self) -> np.ndarray:
+        """Unix timestamps converted once, when prediction first needs them."""
+        return np.array([t.timestamp() for t in self.ephem.timestamp])
 
     def __len__(self) -> int:
         return len(self.passes)
@@ -635,28 +642,55 @@ class PassTimes(ContactScheduler):
             or not rate_varies_with_range(station, communications)
         ):
             return rate * gspass.length / 1000.0
-        storage = self.config.data_storage
-        assert storage is not None
-        times = np.array([t.timestamp() for t in self.ephem.timestamp])
+        times = self.times
         first = max(0, int(np.searchsorted(times, gspass.begin, side="right")) - 1)
         last = int(np.searchsorted(times, gspass.end, side="left"))
-        geometry = self.station_geometry(station, first, last)
         seconds = np.maximum(
             0.0,
             np.minimum(times[first:last] + self.ephem.step_size, gspass.end)
             - np.maximum(times[first:last], gspass.begin),
         )
-        return sum(
-            sum(
-                storage.downlink_rate(
-                    self.config, name, gspass.station, float(distance)
-                )
-                for name in storage.stores
+        return float(np.dot(self.routed_rates(station)[first:last], seconds)) / 1000.0
+
+    def routed_rates(
+        self, station: GroundStation, store: str | None = None
+    ) -> np.ndarray:
+        """Reserved Mbps by step on the routed band, cached once per store/station."""
+        key = (station.code, store)
+        cached = self._routed_rates.get(key)
+        if cached is not None:
+            return cached
+        rates = np.zeros(len(self.times))
+        storage = self.config.data_storage
+        communications = self.config.spacecraft_bus.communications
+        if storage is not None and communications is not None:
+            route = next(
+                (r for r in storage.downlinks or [] if r.station == station.code), None
             )
-            * float(duration)
-            / 1000.0
-            for distance, duration in zip(geometry.range_km, seconds)
-        )
+            if route is not None:
+                ground = next((b for b in station.bands if b.band == route.band), None)
+                space = communications.get_band(route.band)
+                if ground is not None and space is not None:
+                    distances = self.station_geometry(
+                        station, 0, len(self.times)
+                    ).range_km
+
+                    def values(band: BandCapability) -> np.ndarray:
+                        table = band.downlink_rate_vs_range_km
+                        return (
+                            np.full(len(distances), band.downlink_rate_mbps)
+                            if table is None
+                            else np.interp(distances, *np.asarray(table).T)
+                        )
+
+                    share = (
+                        sum(route.shares.values())
+                        if store is None
+                        else route.shares.get(store, 0.0)
+                    )
+                    rates = np.minimum(values(ground), values(space)) * share
+        self._routed_rates[key] = rates
+        return rates
 
     def _pass_selection_key(self, gspass: Pass) -> tuple[float, float, float]:
         if self.config.data_storage is not None:
@@ -1073,19 +1107,23 @@ class PassTimes(ContactScheduler):
         return geometry.elevation_deg, -geometry.to_station
 
     def station_geometry(
-        self, station: GroundStation, startindex: int, endindex: int
+        self,
+        station: GroundStation,
+        startindex: int,
+        endindex: int,
+        *,
+        out: StationGeometry | None = None,
     ) -> StationGeometry:
-        """Return station geometry, reusing a cached enclosing interval."""
-        for (code, first, last), geometry in self._geometry.items():
-            if code == station.code and first <= startindex and endindex <= last:
-                section = slice(startindex - first, endindex - first)
-                return StationGeometry(*(values[section] for values in geometry))
+        """Slice one full-ephemeris geometry per station; never retain daily slices."""
+        cached = self._geometry.get(station.code)
+        if cached is not None:
+            return StationGeometry(*(v[startindex:endindex] for v in cached))
         gs_ephem = rust_ephem.GroundEphemeris(
             latitude=station.latitude_deg,
             longitude=station.longitude_deg,
             height=station.elevation_m,
-            begin=self.ephem.timestamp[startindex],
-            end=self.ephem.timestamp[endindex - 1],
+            begin=self.ephem.timestamp[0],
+            end=self.ephem.timestamp[-1],
             step_size=self.ephem.step_size,
         )
 
@@ -1093,9 +1131,7 @@ class PassTimes(ContactScheduler):
         gs_pos = gs_ephem.gcrs_pv.position  # Shape: (N, 3)
 
         # Vector from ground station to satellite (target direction)
-        gs_to_sat = (
-            self.ephem.gcrs_pv.position[startindex:endindex] - gs_pos
-        )  # Shape: (N, 3)
+        gs_to_sat = self.ephem.gcrs_pv.position - gs_pos  # Shape: (N, 3)
 
         # Normalize to get unit vector toward satellite
         gs_to_sat_dist = np.linalg.norm(gs_to_sat, axis=1, keepdims=True)
@@ -1116,17 +1152,26 @@ class PassTimes(ContactScheduler):
         geometry = StationGeometry(
             elevation_angle, gs_to_sat_dist[:, 0], -gs_to_sat_unit
         )
-        self._geometry[station.code, startindex, endindex] = geometry
-        return geometry
+        if out is not None:
+            for target, source in zip(out, geometry):
+                target[:] = source
+            geometry = out
+        self._geometry[station.code] = geometry
+        return StationGeometry(*(v[startindex:endindex] for v in geometry))
 
     def downlink_rates(
-        self, station: GroundStation, startindex: int, endindex: int
+        self,
+        station: GroundStation,
+        startindex: int,
+        endindex: int,
+        *,
+        out: np.ndarray | None = None,
     ) -> np.ndarray:
         """Effective Mbps per ephemeris step, zero below the elevation mask."""
-        for (code, first, last), rates in self._rates.items():
-            if code == station.code and first <= startindex and endindex <= last:
-                return rates[startindex - first : endindex - first]
-        geometry = self.station_geometry(station, startindex, endindex)
+        cached = self._rates.get(station.code)
+        if cached is not None:
+            return cached[startindex:endindex]
+        geometry = self.station_geometry(station, 0, len(self.times))
         communications = self.config.spacecraft_bus.communications
         visible = geometry.elevation_deg > station.min_elevation_deg
         rate = effective_downlink_rate_mbps(station, communications) or 0.0
@@ -1139,8 +1184,11 @@ class PassTimes(ContactScheduler):
                     )
                     or 0.0
                 )
-        self._rates[station.code, startindex, endindex] = rates
-        return rates
+        if out is not None:
+            out[:] = rates
+            rates = out
+        self._rates[station.code] = rates
+        return rates[startindex:endindex]
 
     def _build_pass(
         self,
@@ -1265,7 +1313,7 @@ class PassTimes(ContactScheduler):
 
         # Use binary search instead of np.where for finding start index
         # Prefer adapter datetimes if available, otherwise use Time.unix
-        timestamp_unix = np.array([dt.timestamp() for dt in self.ephem.timestamp])
+        timestamp_unix = self.times
         startindex = int(np.searchsorted(timestamp_unix, ustart))
 
         # Calculate end index
@@ -1278,13 +1326,13 @@ class PassTimes(ContactScheduler):
         """Book passes over the entire ephemeris before execution starts."""
         self.passes = []
         self.dropped_constraint_passes = []
-        times = np.array([dt.timestamp() for dt in self.ephem.timestamp])
+        times = self.times
         self._predict_range(times, 0, len(times), True)
         return self.passes
 
     def restore_bookings(self, bookings: Sequence[tuple[float, float, str]]) -> None:
         """Rebuild already booked passes without drawing or selecting them again."""
-        times = np.array([dt.timestamp() for dt in self.ephem.timestamp])
+        times = self.times
         self.passes = []
         self.dropped_overlapping_passes = []
         self.dropped_constraint_passes = []

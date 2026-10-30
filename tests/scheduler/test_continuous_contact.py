@@ -2,6 +2,7 @@
 forecasts, allocation budgets and dispatch."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -15,6 +16,7 @@ from conops.config import (
     CommunicationsSystem,
     HousekeepingData,
     MissionConfig,
+    ObservationTiming,
     OnboardRecorder,
     SchedulerConfig,
     SchedulerMode,
@@ -31,8 +33,9 @@ from conops.schedulers import (
     LongRangeAllocator,
     PriorityScheduler,
 )
+from conops.schedulers.priority_scheduler import StartState
 from conops.schedulers.recorder import RecorderLedger
-from conops.simulation import PassTimes, StationCoverage
+from conops.simulation import ContactSpan, PassTimes, StationCoverage
 from conops.targets import Plan, Pointing
 
 from .planning_scenario import BEGIN, HOUR, MIN, T0
@@ -355,6 +358,45 @@ class TestDispatchRoom:
 
 
 class TestPlanning:
+    def test_weeklong_omni_contact_does_not_refit_at_every_step(self, monkeypatch):
+        hours = 7 * 24
+        config = _recorder_config(hours=hours)
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        config.constraint.sun_constraint = None
+        config.constraint.earth_constraint = None
+        config.constraint.invalidate_combined_constraint_cache()
+        config.recorder.current_volume_gb = 17.0
+        # This link cannot clear enough room for a snapshot over the whole
+        # week. Retrying at 10,080 individual credits is both futile and costly.
+        coverage = Mock(spec=StationCoverage)
+        coverage.step_size = STEP
+        coverage.repoints = []
+        coverage.scheduled_passes = [ContactSpan(T0, T0 + hours * HOUR, "MAL", 1e-5)]
+        coverage.rate_spans.return_value = coverage.scheduled_passes
+        target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(hours=hours),
+            include_passes=False,
+            coverage=coverage,
+            start_state=StartState(time=T0, attitude=(0.0, 0.0, 0.0)),
+        )
+        fit = scheduler._fit_in_gap
+        calls = 0
+
+        def bounded_fit(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            assert calls < 40, "Recorder retries must not walk telemetry steps"
+            return fit(*args, **kwargs)
+
+        monkeypatch.setattr(scheduler, "_fit_in_gap", bounded_fit)
+        plan = scheduler.schedule()
+        assert not _science(plan)
+        assert scheduler._ledger.segments <= 3
+
     @pytest.mark.parametrize(
         "scheduler_class", [PriorityScheduler, LocalSearchScheduler, CpSatScheduler]
     )
@@ -463,7 +505,7 @@ class TestPlanning:
             config, T0, end, [], start_volume_gb=0.0, coverage=coverage
         )
         spans = coverage.spans(T0, end)
-        assert ledger.segments > len(spans) + 1
+        assert ledger.segments == len(spans) + 1
         assert sum(ledger.downlink_gb) == pytest.approx(
             _planned_downlink(coverage, T0, end)
         )
@@ -480,7 +522,7 @@ class TestPlanning:
         assert not any(entry.obstype == ObsType.GSP for entry in plan)
         assert (
             scheduler._ledger.segments
-            > len(scheduler.ctx.coverage.spans(T0, T0 + HOURS * HOUR)) + 1
+            == len(scheduler.ctx.coverage.spans(T0, T0 + HOURS * HOUR)) + 1
         )
         assert all(
             peak <= LIMIT + 1e-6 for peak in scheduler._ledger.peaks(scheduler._volumes)
@@ -534,6 +576,28 @@ class TestPlanning:
 
 
 class TestRollingHorizon:
+    def test_first_replan_reuses_unseeded_bookings(self, monkeypatch):
+        config = _recorder_config()
+        config.random_seed = None
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.5
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(minutes=5),
+            horizon=timedelta(minutes=3),
+            replan_interval=timedelta(minutes=2),
+        )
+        booked = list(ditl.coverage.pass_times.passes)
+
+        def no_prediction(*args, **kwargs):
+            raise AssertionError("Replanning must reuse the run's bookings")
+
+        monkeypatch.setattr(PassTimes, "predict", no_prediction)
+        assert ditl.calc()
+        assert ditl._run_passes == booked
+
     def test_the_run_shares_its_coverage_with_each_plan(self) -> None:
         config = _recorder_config()
         seen: list[object] = []
@@ -773,6 +837,37 @@ class TestAntennaRepoints:
     @staticmethod
     def _overlaps(cuts: list[tuple[float, float]], begin: float, end: float) -> bool:
         return any(c0 < end and c1 > begin or begin <= c0 < end for c0, c1 in cuts)
+
+    @pytest.mark.parametrize("path", ["queue", "dispatch"])
+    @pytest.mark.parametrize("cut_begin", [-30, 30])
+    def test_repoint_finished_during_setup_does_not_reject_collection(
+        self, monkeypatch, path, cut_begin
+    ):
+        config = self._config(hours=1)
+        config.payload.observation_timing = ObservationTiming(setup_seconds=300)
+        ditl = QueueDITL(config, begin=BEGIN, end=BEGIN + timedelta(hours=1))
+        ditl.ustart, ditl.uend = T0, T0 + HOUR
+        target = _data_target(config, 1, 105.0, 10.0, LOW_RATE, minutes=1, snapshot=1)
+        target.visibility()
+        ditl.queue.targets = [target]
+        calls = []
+
+        def cut_at(time):
+            calls.append(time)
+            return (T0 + cut_begin, T0 + 120) if time < T0 + 120 else None
+
+        monkeypatch.setattr(ditl.coverage, "next_repoint_cut", cut_at)
+        # The fast candidate check is enabled only when there are repoints.
+        from conops.simulation.coverage import Repoint
+
+        ditl.coverage.repoints = [Repoint(T0 + cut_begin, T0 + 120, "MAL", "tracking")]
+        if path == "queue":
+            assert ditl.queue.get(0.0, 0.0, T0) is target
+        else:
+            assert (
+                ditl._fetch_new_ppt_inner(T0, 0.0, 0.0, enqueue_slew=False) is not None
+            )
+        assert calls and all(time >= T0 + 300 for time in calls)
 
     def test_a_plan_keeps_forbidden_observations_between_repoints(self) -> None:
         config = self._config()

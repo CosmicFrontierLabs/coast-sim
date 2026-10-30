@@ -571,13 +571,22 @@ class TargetQueue:
                 # Not during a repoint, and the minimum snapshot before the
                 # next one; the window then ends where the repoint begins.
                 assert self.coverage is not None
-                cut = self.coverage.next_repoint_cut(utime)
-                if cut is not None and (cut[0] <= utime or cut[0] < endtime):
+                collection_start = (
+                    utime + target.slewtime + self.observation_timing.setup_seconds
+                )
+                cut = self.coverage.next_repoint_cut(collection_start)
+                if cut is not None and (
+                    cut[0] <= collection_start
+                    or cut[0] < collection_start + snapshot_min_seconds(target)
+                ):
                     continue
                 if cut is not None:
                     visibility_window = [
                         float(visibility_window[0]),
-                        min(float(visibility_window[1]), cut[0]),
+                        min(
+                            float(visibility_window[1]),
+                            cut[0] + self.observation_timing.post_collection_seconds,
+                        ),
                     ]
             if visibility_window:
                 target.begin = int(utime)

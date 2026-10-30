@@ -3808,9 +3808,9 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if self.coverage is not None and self._antenna_repoints(target) == "forbidden":
             # The observation ends before the antenna next moves.
-            cut = self.coverage.next_repoint_cut(slew_end)
+            cut = self.coverage.next_repoint_cut(collection_start)
             if cut is not None:
-                target.end = min(target.end, cut[0])
+                target.end = min(target.end, cut[0] + timing.post_collection_seconds)
         target.set_collection_window(timing)
         target.collection_begin = min(target.end, collection_start)
         target.collection_end = max(

@@ -33,6 +33,7 @@ from .priority_scheduler import (
     _Request,
     program_shares,
 )
+from .recorder import RecorderAmount, amounts_equal, combine_amounts
 
 _VOLUME_TOLERANCE_GB = 1e-9
 """Within which two ledgers' volumes are the same, allowing for rounding."""
@@ -66,7 +67,7 @@ class _State(BaseModel):
     """Science collected and planned so far, by program."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
-    volumes: tuple[float, ...]
+    volumes: tuple[RecorderAmount, ...]
     """Science volume planned in each segment of the recorder ledger."""
     energy: tuple[Additions, ...]
     """What the plan draws from the battery, by segment of the battery ledger."""
@@ -462,8 +463,7 @@ class LocalSearchScheduler(PriorityScheduler):
         ):
             return False
         if self._ledger.active and any(
-            abs(x - y) > _VOLUME_TOLERANCE_GB
-            for x, y in zip(a.volumes, b.volumes, strict=True)
+            not amounts_equal(x, y) for x, y in zip(a.volumes, b.volumes, strict=True)
         ):
             return False
         if self._battery.active and a.energy != b.energy:
@@ -526,7 +526,7 @@ class LocalSearchScheduler(PriorityScheduler):
                     programs=later.programs,
                     last_visit=later.last_visit,
                     volumes=tuple(
-                        a + b - c
+                        combine_amounts(combine_amounts(a, b), c, -1.0)
                         for a, b, c in zip(
                             here.volumes, later.volumes, there.volumes, strict=True
                         )

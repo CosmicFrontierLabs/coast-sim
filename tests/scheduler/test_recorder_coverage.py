@@ -5,12 +5,12 @@ from unittest.mock import Mock
 import pytest
 
 from conops.config import MissionConfig, OnboardRecorder, ScienceData
-from conops.schedulers.recorder import RecorderLedger
+from conops.schedulers.recorder import RecorderLedger, amount_total
 from conops.simulation import ContactSpan, StationCoverage
 from conops.targets import PlanEntry
 
 
-def _ledger(begin, end, rate, *, start=0.0):
+def _ledger(begin, end, rate, *, start=0.0, horizon=600):
     coverage = Mock(spec=StationCoverage)
     coverage.step_size = 60.0
 
@@ -19,11 +19,12 @@ def _ledger(begin, end, rate, *, start=0.0):
         return [ContactSpan(left, right, "TEST", rate)] if right > left else []
 
     coverage.spans.side_effect = spans
+    coverage.rate_spans.side_effect = lambda lo, hi, recorder=None: spans(lo, hi)
     config = MissionConfig(
         recorder=OnboardRecorder(capacity_gb=20, current_volume_gb=start)
     )
     return RecorderLedger(
-        config, 0, 600, [], start_volume_gb=start, step_size=60, coverage=coverage
+        config, 0, horizon, [], start_volume_gb=start, step_size=60, coverage=coverage
     )
 
 
@@ -69,6 +70,17 @@ def test_fixed_science_is_counted_once_across_downlink_boundaries(include_fixed)
     ledger = _ledger(0, 600, 1)
     entry = _science(0.001, fixed=2)
     additions = ledger.science_additions(entry, 600, 0, include_fixed=include_fixed)
-    assert sum(volume for _, volume in additions) == pytest.approx(
+    assert sum(amount_total(volume) for _, volume in additions) == pytest.approx(
         0.6 + (2 if include_fixed else 0)
     )
+
+
+def test_weeklong_continuous_contact_coalesces_without_losing_production_timing():
+    week = 7 * 86400
+    ledger = _ledger(0, week, 10, start=17, horizon=week)
+    assert ledger.segments <= 3  # Independent of the 10,080 telemetry steps.
+    early = _science(0.1, end=60)
+    assert not ledger.fits_all(ledger.initial_volumes([early]), [])
+    late = _science(0.001, begin=week - 600, end=week)
+    assert ledger.fits_all(ledger.initial_volumes([late]), [])
+    assert ledger.levels(ledger.initial_volumes([late]))[-1] == pytest.approx(0.0)
