@@ -581,3 +581,43 @@ class TestDispatch:
             for e in again.log.events
             if e.description.startswith("Thruster dump unloads")
         ) == len(dumps)
+
+
+class TestWithEnforcement:
+    def test_dumps_empty_the_wheels_enforcement_integrates(self) -> None:
+        """With the capacity enforced and thrusters configured, one tracker
+        serves both: enforcement integrates into the simulation's tracker,
+        the dump called for at the planning level empties it, and
+        enforcement forecasts on from the emptied wheels. The wheels start
+        just under the level and the gravity gradient takes them over it."""
+        config = _config(
+            capacity_n_m_s=25.0,
+            planning_level=0.4,
+            enforce_capacity=True,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+            initial_momentum_body_n_m_s=(9.95, 0.0, 0.0),
+        )
+        ditl = _dispatch(config)
+        budget = ditl.acs.momentum_budget
+        assert budget is not None
+        assert ditl._stored_momentum_tracker is budget.live
+        records = ditl.telemetry.housekeeping
+        stored = np.array(records.stored_momentum_norm_n_m_s, dtype=float)
+        demand = np.array(
+            [v for v in records.actuator_momentum_norm_n_m_s if v is not None]
+        )
+        assert len(demand) == len(records)
+        assert demand.max() < 25.0
+        assert _capacity_faults(ditl) == []
+        dumps = [e for e in ditl.plan if e.desaturation]
+        assert dumps
+        times = np.array([hk.timestamp.timestamp() for hk in records])
+        for dump in dumps:
+            # The level is reached before the dump; the dump waits for the
+            # observation under way, during which the torque may ease.
+            assert stored[times < float(dump.begin)].max() >= 10.0 - 0.05
+            before = stored[times < float(dump.begin)][-1]
+            after = stored[times >= float(dump.end)][0]
+            assert after < 0.1 * before
+        events = _momentum_events(ditl)
+        assert sum(e.startswith("Thruster dump unloads") for e in events) == len(dumps)
