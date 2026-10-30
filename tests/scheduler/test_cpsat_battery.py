@@ -184,12 +184,15 @@ def _scheduler(config, targets, **options) -> CpSatScheduler:
 class TestScheduler:
     def test_the_solvers_plan_stays_within_the_level_and_executes(self) -> None:
         config = _battery_config(BORESIGHT, stations=True)
-        scheduler = _scheduler(config, _targets(config))
+        # Exercise a real solve and execution; optimizing the plan to exhaustion
+        # adds no coverage to the battery and execution assertions below.
+        scheduler = _scheduler(config, _targets(config), solver_time_limit=2.0)
 
         plan = scheduler.schedule()
 
         assert scheduler.solver_score >= scheduler.start_score
         assert "INFEASIBLE" not in scheduler.solver_statuses
+        assert set(scheduler.solver_statuses) & {"OPTIMAL", "FEASIBLE"}
         assert _science(plan) and _charges(plan)
         ditl = _execute(config, plan)
         assert ditl.validate_plan_matches_execution() == []

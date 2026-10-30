@@ -265,6 +265,36 @@ def _fresh(week: Week, **options: object) -> Week:
     return config, targets, allocator, allocator.allocate(targets, T0)
 
 
+@pytest.fixture
+def reserve_week() -> Week:
+    """Oversubscribe two bins without a full survey's MILP search space.
+
+    The full week above covers changing visibility and program priorities;
+    reserve and stability checks only need competing requests in shared bins.
+    Give each bin 1.8 hours of reserve so the ToOs straddle that boundary.
+    """
+    config = _config(24)
+    targets = [
+        _target(
+            config,
+            100 + i,
+            *PATCH[i % len(PATCH)],
+            merit=90 - i,
+            minutes=240,
+            snapshot=20,
+        )
+        for i in range(8)
+    ]
+    allocator = LongRangeAllocator(
+        config,
+        BEGIN,
+        BEGIN + timedelta(hours=24),
+        bin_length=timedelta(hours=12),
+        reserve=0.2,
+    )
+    return config, targets, allocator, allocator.allocate(targets, T0)
+
+
 HIGH_GBPS = 0.01
 """A high-data target: 12 Gb per 20-minute snapshot."""
 LOW_GBPS = 0.0005
@@ -1038,8 +1068,8 @@ class TestSolver:
             for seconds in allocation.seconds[int(target.obsid)].values():
                 assert seconds >= min(float(target.ss_min), float(target.exptime or 0))
 
-    def test_allocating_again_keeps_the_allocation(self, week: Week) -> None:
-        _, targets, allocator, first = _fresh(week)
+    def test_allocating_again_keeps_the_allocation(self, reserve_week: Week) -> None:
+        _, targets, allocator, first = reserve_week
 
         again = allocator.allocate(targets, T0)
 
@@ -1065,8 +1095,10 @@ class TestReserve:
         too.exptime = seconds
         return too
 
-    def test_a_too_within_the_reserve_leaves_the_plan_alone(self, week: Week) -> None:
-        config, targets, allocator, before = _fresh(week)
+    def test_a_too_within_the_reserve_leaves_the_plan_alone(
+        self, reserve_week: Week
+    ) -> None:
+        config, targets, allocator, before = reserve_week
         assert HOUR < before.reserve[0]
         too = self._too(config, HOUR)
 
@@ -1078,9 +1110,9 @@ class TestReserve:
             assert after.seconds[obsid] == before.seconds[obsid]
 
     def test_a_too_larger_than_the_reserve_takes_regular_capacity(
-        self, week: Week
+        self, reserve_week: Week
     ) -> None:
-        config, targets, allocator, before = _fresh(week)
+        config, targets, allocator, before = reserve_week
         too = self._too(config, int(before.reserve[0] + HOUR))
 
         after = allocator.allocate([*targets, too], T0, unplanned={too.obsid})
@@ -1090,9 +1122,11 @@ class TestReserve:
         )
 
     def test_without_a_reserve_a_too_displaces_planned_requests(
-        self, week: Week
+        self, reserve_week: Week
     ) -> None:
-        config, targets, allocator, before = _fresh(week, reserve=0.0)
+        config, targets, allocator, _ = reserve_week
+        allocator.reserve = 0.0
+        before = allocator.allocate(targets, T0)
         too = self._too(config, 2 * HOUR)
 
         after = allocator.allocate([*targets, too], T0, unplanned={too.obsid})
@@ -1101,8 +1135,10 @@ class TestReserve:
             after.seconds[int(t.obsid)] != before.seconds[int(t.obsid)] for t in targets
         )
 
-    def test_unplanned_requests_go_first_whatever_their_merit(self, week: Week) -> None:
-        config, targets, allocator, _ = _fresh(week)
+    def test_unplanned_requests_go_first_whatever_their_merit(
+        self, reserve_week: Week
+    ) -> None:
+        config, targets, allocator, _ = reserve_week
         too = self._too(config, 2 * HOUR)
         too.merit = 1.0
 

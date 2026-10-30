@@ -485,6 +485,8 @@ def test_planners_cannot_borrow_payload_space_for_housekeeping(scheduler_class):
         current_volume_gb=0, capacity_gb=0.1, planning_limit=0.8
     )
     target = _data_target(c, 1, 105, 10, 0.001, minutes=20)
+    # Bound the local search by iterations even though no science can fit.
+    options = {"max_iterations": 3} if scheduler_class is LocalSearchScheduler else {}
     scheduler = scheduler_class(
         c,
         [target],
@@ -492,6 +494,7 @@ def test_planners_cannot_borrow_payload_space_for_housekeeping(scheduler_class):
         BEGIN + timedelta(hours=HOURS),
         step_size=STEP,
         include_passes=False,
+        **options,
     )
     plan = scheduler.schedule()
     assert not any(e.collection_begin is not None for e in plan)
