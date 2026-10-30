@@ -1,5 +1,6 @@
 """The benchmark harness runs every scheduling mode and measures them alike."""
 
+from collections.abc import Callable
 from datetime import timedelta
 
 import pytest
@@ -16,6 +17,8 @@ from conops.benchmark import (
     run_benchmark,
 )
 from conops.config import MissionConfig, SchedulerConfig
+from conops.ditl import DITL, QueueDITL
+from conops.ditl.ditl_mixin import DITLMixin
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import Pointing
 
@@ -139,6 +142,54 @@ def test_failing_contender_is_reported_not_raised() -> None:
     lines = format_results([result]).splitlines()
     assert lines[2].split() == ["broken", "error:", "RuntimeError"]
     assert lines[-1] == "broken: RuntimeError: boom"
+
+
+@pytest.mark.parametrize("factory", [dispatch, planned, rolling, configured])
+def test_diagnosed_fault_is_reported_as_a_failed_run(
+    factory: Callable[[], Contender], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    begin_run = DITLMixin._begin_fault_run
+
+    def inject_fault(simulation: DITLMixin) -> None:
+        begin_run(simulation)
+        simulation.fault_management.report_fault(
+            utime=T0,
+            name="attitude_execution",
+            cause="injected attitude failure",
+            metadata={},
+            acs=simulation.acs,
+        )
+
+    monkeypatch.setattr(DITLMixin, "_begin_fault_run", inject_fault)
+    (result,) = run_benchmark(_scenario(), [factory()])
+
+    assert result.error is not None
+    assert "calc() returned False" in result.error
+    assert "attitude_execution: injected attitude failure" in result.error
+    assert result.mismatches is None
+    assert "injected attitude failure" in format_results([result])
+
+
+@pytest.mark.parametrize("factory", [dispatch, planned, rolling, configured])
+@pytest.mark.parametrize("raises", [False, True])
+def test_calc_failure_is_reported_even_without_fault_events(
+    factory: Callable[[], Contender], raises: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(simulation: DITLMixin) -> bool:
+        if raises:
+            raise ValueError("calculation failed")
+        return False
+
+    monkeypatch.setattr(DITL, "calc", fail)
+    monkeypatch.setattr(QueueDITL, "calc", fail)
+    (result,) = run_benchmark(_scenario(), [factory()])
+
+    assert result.error == (
+        "ValueError: calculation failed"
+        if raises
+        else "RuntimeError: calc() returned False: no operational fault recorded"
+    )
+    assert result.mismatches is None
 
 
 def test_a_long_error_does_not_widen_the_table() -> None:

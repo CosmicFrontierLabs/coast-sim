@@ -11,6 +11,18 @@ from ..schedulers import LongRangeAllocator, PriorityScheduler
 from .harness import BenchmarkScenario, Contender, Run
 
 
+def _calculate(ditl: DITL | QueueDITL) -> None:
+    """Run a simulation, reporting diagnosed failures to the harness."""
+    if not ditl.calc():
+        causes = [
+            f"{event.name}: {event.cause}"
+            for event in ditl.fault_management.events
+            if event.event_type == "operational_fault"
+        ]
+        detail = "; ".join(causes) or "no operational fault recorded"
+        raise RuntimeError(f"calc() returned False: {detail}")
+
+
 def _allocator(
     config: MissionConfig,
     scenario: BenchmarkScenario,
@@ -61,7 +73,7 @@ def dispatch(
         queue_targets(ditl, scenario.make_targets(config))
         for too in scenario.toos:
             ditl.submit_too(**too.model_dump())
-        ditl.calc()
+        _calculate(ditl)
         return Run(simulation=ditl)
 
     suffix = _allocation_suffix(allocation, allocation_reserve)
@@ -96,7 +108,7 @@ def planned(
         planning_seconds = time.perf_counter() - began
         ditl = DITL(config=config, plan=plan, begin=scenario.begin, end=scenario.end)
         ditl.step_size = builder.ctx.step_size
-        ditl.calc()
+        _calculate(ditl)
         return Run(simulation=ditl, planning_seconds=planning_seconds)
 
     return Contender(
@@ -146,7 +158,7 @@ def rolling(
         ditl.step_size = int(ditl.ephem.step_size)
         for too in scenario.toos:
             ditl.submit_too(**too.model_dump())
-        ditl.calc()
+        _calculate(ditl)
         return Run(
             simulation=ditl,
             planning_seconds=sum(r.planning_seconds for r in ditl.replans),
@@ -176,7 +188,7 @@ def configured(name: str = "configured") -> Contender:
         if isinstance(ditl, (QueueDITL, RollingHorizonDITL)):
             for too in scenario.toos:
                 ditl.submit_too(**too.model_dump())
-        ditl.calc()
+        _calculate(ditl)
         if isinstance(ditl, RollingHorizonDITL):
             planning = sum(r.planning_seconds for r in ditl.replans)
         elif isinstance(ditl, QueueDITL):

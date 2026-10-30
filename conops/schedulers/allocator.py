@@ -269,7 +269,18 @@ class _StoreBudget(NamedTuple):
         by bin, keeping what every bin from it on carries within the limit."""
         assert self.limit is not None
         carries = _carries(self.start, self.housekeeping, science, self.downlink)
-        return min(self.limit - carry for carry in carries[k:])
+        # Work backwards through the carry recurrence. Spare downlink can
+        # absorb more data even when the current carry has clipped to zero.
+        allowed = self.limit
+        for j in range(len(science) - 1, k - 1, -1):
+            allowed = (
+                min(self.limit, allowed)
+                + self.downlink[j]
+                - self.housekeeping[j]
+                - science[j]
+            )
+        incoming = carries[k - 1] if k else self.start
+        return allowed - incoming
 
 
 class _Budget(NamedTuple):

@@ -42,6 +42,7 @@ from conops.schedulers import (
     RecorderBudget,
     SchedulingContext,
 )
+from conops.schedulers.allocator import _StoreBudget
 from conops.simulation.passes import Pass
 from conops.targets import Plan, Pointing, TargetQueue
 
@@ -402,6 +403,66 @@ def _seconds_of(allocation: Allocation, obsids: Collection[int]) -> float:
 
 
 class TestDataBudget:
+    @pytest.mark.parametrize("solver", ["greedy", "milp", "fallback"])
+    def test_unused_downlink_allows_more_science(
+        self, solver: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if solver != "greedy" and not HAS_ORTOOLS:
+            pytest.skip("needs OR-Tools")
+        config = _with_stores(_config(1, stations=True), limit=1.0)
+        config.data_storage.stores["payload"].recorder.capacity_gb = 10.0
+        target = _target(config, 100, *PATCH[0], minutes=40, ss_min=1)
+        target.science_data = {"Default Instrument": ScienceData(rate_gbps=0.01)}
+        contact = Pass(
+            station=config.ground_stations.stations[0].code,
+            begin=T0,
+            length=600,
+        )
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=1),
+            bin_length=timedelta(hours=1),
+            reserve=0.0,
+            efficiency=1.0,
+            passes=[contact],
+            solver="milp" if solver == "fallback" else solver,
+        )
+        if solver == "fallback":
+            monkeypatch.setattr(
+                allocator,
+                "_solve",
+                lambda demands, *args: ({d.obsid: {} for d in demands}, list(demands)),
+            )
+
+        allocation = allocator.allocate([target], T0)
+
+        assert allocation.downlink == pytest.approx([6.0])
+        assert allocation.seconds[100][0] == pytest.approx(1600.0)
+        assert allocation.recorders["payload"].volumes() == pytest.approx([10.0])
+
+    @pytest.mark.parametrize(
+        ("start", "science", "downlink", "k", "expected"),
+        [
+            (0.0, [0.0], [6.0], 0, 16.0),
+            (3.0, [2.0], [6.0], 0, 11.0),
+            (0.0, [0.0, 8.0], [6.0, 0.0], 0, 8.0),
+            (0.0, [0.0, 8.0], [6.0, 10.0], 0, 16.0),
+            (0.0, [0.0, 0.0], [6.0, 0.0], 1, 10.0),
+            (0.0, [0.0, 20.0], [6.0, 10.0], 0, 6.0),
+        ],
+    )
+    def test_room_respects_later_bins_and_only_uses_future_downlink(
+        self,
+        start: float,
+        science: list[float],
+        downlink: list[float],
+        k: int,
+        expected: float,
+    ) -> None:
+        store = _StoreBudget(10.0, start, downlink, [0.0] * len(science), {})
+        assert store.room(science, k) == pytest.approx(expected)
+
     @pytest.mark.parametrize("solver", ["milp", "greedy"])
     def test_the_run_carries_no_more_data_than_its_contacts_and_recorder_allow(
         self, solver: str, data_passes: list[Pass]
