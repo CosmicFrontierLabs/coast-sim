@@ -21,7 +21,7 @@ from ..common import ObsType
 from ..common.ephemeris import position_vectors, velocity_vectors
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
-from ..simulation.attitude import slew_angular_velocity
+from ..simulation.attitude import Attitude, slew_angular_velocity
 from ..simulation.momentum import (
     MomentumState,
     StoredMomentumTracker,
@@ -31,8 +31,12 @@ from ..simulation.momentum import (
 
 if TYPE_CHECKING:
     from ..config import MissionConfig
-    from .context import Attitude, SchedulingContext
+    from ..simulation.slew import Slew
+    from .context import SchedulingContext
     from .priority_scheduler import _Block
+
+
+_SpanKey = tuple[float, float, Attitude | None, tuple[float, ...] | None, float | None]
 
 
 @dataclass(frozen=True)
@@ -43,29 +47,29 @@ class _Span:
     end: float
     attitude: Attitude | None
     """The attitude held, or None along a slew."""
-    slew: object | None = None
+    slew: Slew | None = None
     """The slew flown, with an ``attitude(utime)`` of its own."""
     unload_at_end: float | None = None
     """The residual fraction a thruster dump leaves when the span ends."""
 
     @property
-    def key(self) -> tuple[object, ...]:
+    def key(self) -> _SpanKey:
         """What the momentum stored over the span depends on, besides the
         momentum it starts from: its times, its attitude or its slew's
         path and rate, and the unloading at its end."""
         slew = self.slew
         path = (
             (
-                float(slew.slewstart),  # type: ignore[attr-defined]
-                float(slew.slewend),  # type: ignore[attr-defined]
-                float(slew.slewdist),  # type: ignore[attr-defined]
-                float(slew.rate_fraction),  # type: ignore[attr-defined]
-                float(slew.startra),  # type: ignore[attr-defined]
-                float(slew.startdec),  # type: ignore[attr-defined]
-                float(slew.startroll),  # type: ignore[attr-defined]
-                float(slew.endra),  # type: ignore[attr-defined]
-                float(slew.enddec),  # type: ignore[attr-defined]
-                float(slew.endroll),  # type: ignore[attr-defined]
+                float(slew.slewstart),
+                float(slew.slewend),
+                float(slew.slewdist),
+                float(slew.rate_fraction),
+                float(slew.startra),
+                float(slew.startdec),
+                float(slew.startroll),
+                float(slew.endra),
+                float(slew.enddec),
+                float(slew.endroll),
             )
             if slew is not None
             else None
@@ -82,7 +86,7 @@ _Integrated = tuple[
 """A span integrated: its sample times, the norm at each, what the wheels
 hold at each and the state at its end."""
 
-SpanCache = dict[tuple[object, ...], _Integrated]
+SpanCache = dict[tuple[_SpanKey, MomentumState], _Integrated]
 """Spans integrated, by the span's key and the state they started from.
 A plan's passes share one: each reserves a dump and plans again from the
 start, so the timeline up to the new dump is the one before and its spans
@@ -199,7 +203,7 @@ class MomentumForecast:
 
     def _attitude_at(self, span: _Span, utime: float) -> Attitude:
         if span.slew is not None:
-            sampled = span.slew.attitude(utime)  # type: ignore[attr-defined]
+            sampled = span.slew.attitude(utime)
             return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
         if span.attitude is not None:
             return span.attitude
@@ -305,7 +309,7 @@ class MomentumForecast:
             if len(samples) == 0 or samples[-1] < span.end:
                 samples = np.append(samples, span.end)
             rate_at = (
-                slew_angular_velocity(span.slew)  # type: ignore[arg-type]
+                slew_angular_velocity(span.slew)
                 if span.slew is not None and self.slew_momentum
                 else None
             )
@@ -373,7 +377,7 @@ class MomentumForecast:
 
     def first_slew_overload(
         self, timeline: Sequence[_Block], capacity: float
-    ) -> tuple[float, object] | None:
+    ) -> tuple[float, Slew] | None:
         """The first slew along the timeline in which what the wheels hold
         reaches ``capacity``: when, and the slew; None where none does.
         Samples at a slew's ends carry no rate, so a reading there is the

@@ -92,7 +92,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 # orbit_visualizer lives in its own repo (orbit-visualizer) — exclude it here
-exclude = ["orbit_visualizer*"]
+exclude = ["orbit_visualizer*", "stubs*"]
 
 [tool.setuptools.package-data]
 "conops" = ["data/*.csv"]

@@ -125,7 +125,7 @@ class IGRFField:
 
     def __init__(self) -> None:
         try:
-            import ppigrf  # type: ignore[import-untyped]
+            import ppigrf
         except ImportError as exc:  # pragma: no cover - exercised without the extra
             raise ImportError(
                 "the 'igrf' field model needs the ppigrf package: "

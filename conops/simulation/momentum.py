@@ -26,6 +26,8 @@ from .atmosphere import AtmosphereModel, atmosphere_from_config
 from .geomagnetic import GeomagneticField, field_from_name
 
 if TYPE_CHECKING:
+    import rust_ephem
+
     from ..config import MissionConfig
     from ..config.surfaces import SurfaceModel
 
@@ -231,19 +233,26 @@ class OrbitTables:
     sun_positions_eci_km: npt.NDArray[np.float64] | None = None
 
     @classmethod
-    def from_ephem(cls, ephem: object) -> OrbitTables:
+    def from_ephem(cls, ephem: rust_ephem.Ephemeris) -> OrbitTables:
         """The tables of ``ephem``; a test double may lack all but the
         positions."""
         from ..common.ephemeris import position_vectors, velocity_vectors
 
         times = np.array(
-            [t.timestamp() for t in ephem.timestamp],  # type: ignore[attr-defined]
+            [
+                float(
+                    (t - np.datetime64("1970-01-01T00:00:00")) / np.timedelta64(1, "s")
+                )
+                if isinstance(t, np.datetime64)
+                else t.timestamp()
+                for t in ephem.timestamp
+            ],
             dtype=np.float64,
         )
-        positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)  # type: ignore[arg-type]
+        positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)
         sun = getattr(getattr(ephem, "sun_pv", None), "position", None)
         ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
-        velocities = velocity_vectors(ephem)  # type: ignore[arg-type]
+        velocities = velocity_vectors(ephem)
         return cls(
             times,
             positions,
