@@ -284,6 +284,10 @@ The project includes a comprehensive test suite:
 pytest tests/
 ```
 
+The test extra includes `pytest-xdist`; the default run uses up to eight workers
+and keeps every regression test enabled. For serial debugging, use
+`pytest -n 0 tests/`. Set an explicit worker count with `pytest -n 4 tests/`.
+
 The test suite includes a COAST-owned default plan output regression check. Run
 it directly when reviewing scheduler/output changes:
 
