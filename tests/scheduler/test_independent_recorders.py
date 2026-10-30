@@ -753,8 +753,11 @@ def test_coverage_respects_store_shares_and_range_dependent_routed_band():
     expected = {"payload": 1.05, "bus": 0.35}
     for name, ledger, _ in ledgers.members:
         assert sum(ledger.downlink_gb) == pytest.approx(expected[name])
-    assert ledgers.next_contact(-1) == 0
-    assert ledgers.next_contact(0) is None
+    # Capacity becomes available after transmission, at each completed step.
+    assert ledgers.next_contact(-1) == 10
+    assert ledgers.next_contact(0) == 10
+    assert ledgers.next_contact(10) == 20
+    assert ledgers.next_contact(20) is None
 
     from conops.schedulers import LongRangeAllocator
 

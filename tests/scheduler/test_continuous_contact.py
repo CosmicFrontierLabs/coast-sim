@@ -25,7 +25,12 @@ from conops.config.observation_categories import (
     ObservationCategory,
 )
 from conops.ditl import RollingHorizonDITL
-from conops.schedulers import LongRangeAllocator, PriorityScheduler
+from conops.schedulers import (
+    CpSatScheduler,
+    LocalSearchScheduler,
+    LongRangeAllocator,
+    PriorityScheduler,
+)
 from conops.schedulers.recorder import RecorderLedger
 from conops.simulation import PassTimes, StationCoverage
 from conops.targets import Plan, Pointing
@@ -98,6 +103,28 @@ def _planned_downlink(coverage: StationCoverage, begin: float, end: float) -> fl
     )
 
 
+@pytest.fixture(scope="module")
+def omni_run() -> QueueDITL:
+    """One executed scenario for the read-only science, plot and stats checks."""
+    config = _recorder_config()
+    ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS))
+    assert isinstance(ditl, QueueDITL)
+    ditl.step_size = STEP
+    assert ditl.calc()
+    return ditl
+
+
+@pytest.fixture(scope="module")
+def contact_window(omni_run: QueueDITL) -> tuple[datetime, datetime]:
+    """A short execution interval containing a booked, usable pass."""
+    assert omni_run.coverage is not None
+    first = omni_run.coverage.scheduled_passes[0]
+    return (
+        datetime.fromtimestamp(max(T0, first.begin - 10 * MIN), timezone.utc),
+        datetime.fromtimestamp(first.end + 10 * MIN, timezone.utc),
+    )
+
+
 class TestExecution:
     @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
     def test_future_days_are_booked_before_execution(
@@ -107,7 +134,9 @@ class TestExecution:
         for station in config.ground_stations.stations:
             station.schedule_probability = 0.5
         config.ground_stations.get("SGS").schedule_probability = 1.0
-        ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=48))
+        # The ephemeris books both days before execution; only a short run is
+        # needed to verify that execution consumes those existing bookings.
+        ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=2))
         assert isinstance(ditl.passes, PassTimes)
         assert ditl.coverage is not None
         assert ditl.passes is ditl.coverage.pass_times
@@ -132,9 +161,7 @@ class TestExecution:
         config = _recorder_config(antenna_type, gimbal_range_deg=180.0)
         for station in config.ground_stations.stations:
             station.schedule_probability = 0.0
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=2))
         ditl.step_size = STEP
         assert ditl.calc()
         assert ditl.coverage is not None
@@ -160,16 +187,13 @@ class TestExecution:
         )
         assert sum(allocator.allocate(_targets(config), T0).downlink) == 0.0
 
-    def test_an_omni_antenna_downlinks_without_a_pass(self) -> None:
+    def test_an_omni_antenna_downlinks_without_a_pass(
+        self, omni_run: QueueDITL
+    ) -> None:
         """Dispatch with an omni antenna never enters PASS mode, yet downlinks
         in every span of coverage, at the station's rate, and keeps the
         recorder within its planning limit."""
-        config = _recorder_config()
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
-        ditl.step_size = STEP
-        assert ditl.calc()
+        ditl = omni_run
 
         assert ditl.coverage is not None
         assert ACSMode.PASS not in set(ditl.mode)
@@ -186,14 +210,9 @@ class TestExecution:
         observed = {hk.obsid for hk in ditl.telemetry.housekeeping if hk.obsid}
         assert {1, 2, 3} <= observed
 
-    def test_downlink_happens_in_science_mode(self) -> None:
+    def test_downlink_happens_in_science_mode(self, omni_run: QueueDITL) -> None:
         """The spacecraft stays on its target through a contact."""
-        config = _recorder_config()
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
-        ditl.step_size = STEP
-        assert ditl.calc()
+        ditl = omni_run
         assert ditl.coverage is not None
         first = ditl.coverage.spans(T0, T0 + HOURS * HOUR)[0]
         k = ditl.utime.index(first.begin)
@@ -201,29 +220,27 @@ class TestExecution:
         assert any(ditl.mode[i] == ACSMode.SCIENCE for i in steps_in_contact)
         assert ditl.data_downlinked_gb[k] > ditl.data_downlinked_gb[k - 1]
 
-    def test_a_gimballed_antenna_downlinks_only_within_its_range(self) -> None:
+    def test_a_gimballed_antenna_downlinks_only_within_its_range(
+        self, contact_window: tuple[datetime, datetime]
+    ) -> None:
         """A gimbal that reaches everywhere downlinks as an omni antenna does;
         one that cannot move downlinks only when the attitude flown happens
         to put its boresight on the station."""
         config = _recorder_config(AntennaType.GIMBALED, gimbal_range_deg=180.0)
-        free = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        begin, end = contact_window
+        free = create_ditl(config, _targets(config), begin, end)
         free.step_size = STEP
         assert free.calc()
         config = _recorder_config(AntennaType.GIMBALED, gimbal_range_deg=1.0)
-        stuck = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        stuck = create_ditl(config, _targets(config), begin, end)
         stuck.step_size = STEP
         assert stuck.calc()
 
-        omni = _recorder_config()
-        reference = create_ditl(
-            omni, _targets(omni), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        config = _recorder_config()
+        reference = create_ditl(config, _targets(config), begin, end)
         reference.step_size = STEP
         assert reference.calc()
+        assert free.data_downlinked_gb[-1] > 0.0
         assert free.data_downlinked_gb[-1] == pytest.approx(
             reference.data_downlinked_gb[-1]
         )
@@ -231,27 +248,33 @@ class TestExecution:
 
     def test_a_body_fixed_antenna_keeps_its_passes(self) -> None:
         config = _recorder_config(AntennaType.FIXED)
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        first = PassTimes(config).predict()[0]
+        # Fly the ingress and the pass itself without simulating the many
+        # hours before the first usable tracking opportunity.
+        begin = datetime.fromtimestamp(max(T0, first.begin - 10 * MIN), timezone.utc)
+        end = datetime.fromtimestamp(first.end + 10 * MIN, timezone.utc)
+        ditl = create_ditl(config, _targets(config), begin, end)
         ditl.step_size = STEP
         assert ditl.calc()
         assert ditl.coverage is None
         assert ACSMode.PASS in set(ditl.mode)
         assert ditl.data_downlinked_gb[-1] > 0.0
 
-    def test_a_station_not_scheduled_for_tracking_downlinks(self) -> None:
+    def test_a_station_not_scheduled_for_tracking_downlinks(
+        self, contact_window: tuple[datetime, datetime]
+    ) -> None:
         config = _recorder_config()
         for station in config.ground_stations.stations:
             station.schedule_for_tracking = False
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
+        begin, end = contact_window
+        ditl = create_ditl(config, _targets(config), begin, end)
         ditl.step_size = STEP
         assert ditl.calc()
         assert ditl.data_downlinked_gb[-1] > 0.0
 
-    def test_the_timeline_plot_shows_the_coverage_as_ground_contact(self) -> None:
+    def test_the_timeline_plot_shows_the_coverage_as_ground_contact(
+        self, omni_run: QueueDITL
+    ) -> None:
         import matplotlib
 
         matplotlib.use("Agg")
@@ -269,12 +292,7 @@ class TestExecution:
             plot_ditl_timeline_plotly,
         )
 
-        config = _recorder_config()
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
-        ditl.step_size = STEP
-        assert ditl.calc()
+        ditl = omni_run
         assert ditl.coverage is not None
         t_start = float(ditl.plan[0].begin)
         spans = ditl.coverage.spans(T0, T0 + HOURS * HOUR)
@@ -299,13 +317,9 @@ class TestExecution:
         assert {f"Contact: {s.station}" for s in spans} <= names
 
     def test_statistics_report_the_coverage(
-        self, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str], omni_run: QueueDITL
     ) -> None:
-        config = _recorder_config()
-        ditl = create_ditl(config, _targets(config), BEGIN, BEGIN + timedelta(hours=2))
-        ditl.step_size = STEP
-        assert ditl.calc()
-        ditl.print_statistics()
+        omni_run.print_statistics()
         out = capsys.readouterr().out
         assert "GROUND STATION PASS STATISTICS" in out
         assert "% of the run" in out
@@ -341,7 +355,23 @@ class TestDispatchRoom:
 
 
 class TestPlanning:
-    def test_science_during_a_contact_cannot_spend_future_downlink(self):
+    @pytest.mark.parametrize(
+        "scheduler_class", [PriorityScheduler, LocalSearchScheduler, CpSatScheduler]
+    )
+    def test_science_during_a_contact_cannot_spend_future_downlink(
+        self, scheduler_class
+    ):
+        options = {}
+        if scheduler_class is CpSatScheduler:
+            pytest.importorskip("ortools")
+            options = {
+                "solver_time_limit": 0.5,
+                "workers": 1,
+                "seed": 1,
+                "max_iterations": 0,
+            }
+        elif scheduler_class is LocalSearchScheduler:
+            options = {"max_iterations": 3, "seed": 1}
         config = _recorder_config()
         config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
         config.recorder.current_volume_gb = 17.0
@@ -351,8 +381,14 @@ class TestPlanning:
         begin = datetime.fromtimestamp(first.begin, timezone.utc)
         end = datetime.fromtimestamp(first.end + 5 * MIN, timezone.utc)
         target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
-        scheduler = PriorityScheduler(
-            config, [target], begin, end, coverage=coverage, include_passes=False
+        scheduler = scheduler_class(
+            config,
+            [target],
+            begin,
+            end,
+            coverage=coverage,
+            include_passes=False,
+            **options,
         )
         plan = scheduler.schedule()
         assert _science(plan)
@@ -701,7 +737,8 @@ class TestAntennaRepoints:
     """Repoints are logged, counted in sensitive observations, and kept out
     of observations whose category forbids them."""
 
-    def _config(self, hours: int = HOURS) -> MissionConfig:
+    @staticmethod
+    def _config(hours: int = HOURS) -> MissionConfig:
         config = _recorder_config(hours=hours)
         config.spacecraft_bus.communications = CommunicationsSystem(
             name="S-band",
@@ -778,13 +815,22 @@ class TestAntennaRepoints:
             for e in ditl.log.events
         )
 
-    def test_dispatch_keeps_forbidden_observations_between_repoints(self) -> None:
-        config = self._config()
+    @pytest.fixture(scope="class")
+    @classmethod
+    def repoint_dispatch(cls) -> QueueDITL:
+        config = cls._config()
         ditl = create_ditl(
             config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
         )
+        assert isinstance(ditl, QueueDITL)
         ditl.step_size = STEP
         assert ditl.calc()
+        return ditl
+
+    def test_dispatch_keeps_forbidden_observations_between_repoints(
+        self, repoint_dispatch: QueueDITL
+    ) -> None:
+        ditl = repoint_dispatch
         assert ditl.coverage is not None
         assert ditl.queue.coverage is ditl.coverage
         observed = {hk.obsid for hk in ditl.telemetry.housekeeping if hk.obsid}
@@ -797,15 +843,9 @@ class TestAntennaRepoints:
         assert len(events) == len(ditl.coverage.repoints_in(T0, T0 + HOURS * HOUR))
 
     def test_statistics_report_the_repoints(
-        self, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str], repoint_dispatch: QueueDITL
     ) -> None:
-        config = self._config()
-        ditl = create_ditl(
-            config, _targets(config), BEGIN, BEGIN + timedelta(hours=HOURS)
-        )
-        ditl.step_size = STEP
-        assert ditl.calc()
-        ditl.print_statistics()
+        repoint_dispatch.print_statistics()
         out = capsys.readouterr().out
         assert "Antenna Repoints:" in out
         assert "Repoints During Sensitive Observations:" in out
