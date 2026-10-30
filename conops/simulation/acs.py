@@ -37,6 +37,7 @@ from .attitude import (
     AttitudeTrajectory,
 )
 from .emergency_charging import EmergencyCharging
+from .momentum_budget import MomentumBudget
 from .passes import Pass
 from .slew import Slew
 
@@ -95,6 +96,7 @@ class ACS:
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
+        self.readmission_requests: list[Slew] = []
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
         self._attitude_guidance_disabled = False
 
@@ -209,9 +211,22 @@ class ACS:
                     self.constraint,
                     drive_state=self.solar_array_drive_state,
                 )
-            self._executor = AttitudeExecutor(utime, self._initial_attitude)
+            executor = AttitudeExecutor(utime, self._initial_attitude)
+            if (
+                self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+                is True
+            ):
+                executor.momentum = MomentumBudget(
+                    self.config, self.ephem, executor.state
+                )
+            # Failed initialization must not leave an unguarded executor behind.
+            self._executor = executor
         self._executor.advance(utime)
         return self._executor
+
+    @property
+    def momentum_budget(self) -> MomentumBudget | None:
+        return self._executor.momentum if self._executor is not None else None
 
     def motion_ready_time(self, utime: float) -> float:
         """Next feasible rest-to-rest handoff, without changing executed state."""
@@ -361,7 +376,8 @@ class ACS:
             # Dispatch to appropriate handler based on command type
             match command.command_type:
                 case ACSCommandType.SLEW_TO_TARGET:
-                    self._handle_slew_command(command, utime)
+                    if not self._handle_slew_command(command, utime):
+                        continue
                 case ACSCommandType.START_PASS:
                     self._start_pass(command, utime)
                 case ACSCommandType.END_PASS:
@@ -375,10 +391,14 @@ class ACS:
 
             self.executed_commands.append(command)
 
-    def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
+    def _handle_slew_command(self, command: ACSCommand, utime: float) -> bool:
         """Handle SLEW_TO_TARGET command."""
         if command.slew is not None:
-            self._start_slew(command.slew, utime)
+            started = self._start_slew(command.slew, utime)
+            if started is None:
+                return False
+            command.slew = started
+        return True
 
     # Handle Ground Station Pass Commands
     def _start_pass(self, command: ACSCommand, utime: float) -> None:
@@ -489,7 +509,7 @@ class ACS:
             safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
         )
 
-    def _start_slew(self, slew: Slew, utime: float) -> None:
+    def _start_slew(self, slew: Slew, utime: float) -> Slew | None:
         """Start executing a slew.
 
         The ACS always drives the spacecraft from its current position. When a slew
@@ -503,16 +523,27 @@ class ACS:
                 "A slew must wait for the current motion to stop"
             )
         # Advance the OLD trajectory before replacing it, even between samples.
-        slew.startra = self.ra
-        slew.startdec = self.dec
-        slew.startroll = self.roll  # Start roll from current ACS roll
-        slew.slewstart = utime
-        slew.calc_slewtime()
-        executor.install(
-            AttitudeTrajectory.from_slew(
-                slew, self.config.spacecraft_bus.attitude_control, executor.state
+        prepared = slew._momentum_trajectory if executor.momentum is not None else None
+        if prepared is not None:
+            angle, _ = _quaternion_delta(
+                prepared.state(prepared.start).quaternion, executor.state.quaternion
             )
-        )
+            if prepared.start != utime or angle > 1e-8:
+                self.readmission_requests.append(slew)
+                self._log_or_print(
+                    utime, "SLEW", "Delayed slew requires scheduler re-admission"
+                )
+                return None
+            executor.install(prepared, momentum_end=slew._momentum_hold_end)
+        else:
+            slew.startra = self.ra
+            slew.startdec = self.dec
+            slew.startroll = self.roll
+            slew.slewstart = utime
+            slew.calc_slewtime()
+            executor.install(
+                AttitudeTrajectory.from_slew(slew, slew.motion_limits, executor.state)
+            )
 
         slewdist = slew.slewdist
         self._log_or_print(
@@ -532,6 +563,7 @@ class ACS:
             self.last_ppt = slew
         else:
             self.science_observation_active = False
+        return slew
 
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
@@ -588,6 +620,8 @@ class ACS:
         slew.obstype = obstype
         slew.obsid = obsid
         slew.instrument_roll = instrument_roll
+        if target_request is not None:
+            slew.rate_fraction = target_request.slew_rate_fraction
 
         # A plan entry commanded by DITL, which ends at a set time.
         planned_entry = target_request

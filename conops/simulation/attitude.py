@@ -5,7 +5,7 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 """
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
@@ -24,6 +24,7 @@ from ..common.vector import (
 from ..config import AttitudeControlSystem
 
 if TYPE_CHECKING:
+    from .momentum_budget import MomentumBudget, MomentumForecast
     from .slew import Slew
 
 Attitude = tuple[float, float, float]
@@ -51,6 +52,16 @@ class AttitudeState:
     utime: float
     quaternion: Quaternion
     angular_velocity_body: Attitude = _ZERO  # degrees / second
+
+    def coast(self, utime: float) -> "AttitudeState":
+        return AttitudeState(
+            utime,
+            _body_rotation(
+                self.quaternion,
+                (utime - self.utime) * np.asarray(self.angular_velocity_body),
+            ),
+            self.angular_velocity_body,
+        )
 
     @cached_property
     def attitude(self) -> Attitude:
@@ -231,6 +242,21 @@ class AttitudeTrajectory:
     def start(self) -> float:
         return self.legs[0].start
 
+    @cached_property
+    def boundaries(self) -> tuple[float, ...]:
+        """Integration knots include peak-rate corners, not just endpoints."""
+        times = [self.start, self.end]
+        for leg in self.legs:
+            times.extend((leg.start, leg.end))
+            if isinstance(leg, _MotionLeg) and leg.scale > 0:
+                times.extend(
+                    (
+                        leg.start + leg.motion.ramp / leg.scale,
+                        leg.start + (leg.motion.duration - leg.motion.ramp) / leg.scale,
+                    )
+                )
+        return tuple(sorted(set(times)))
+
     @classmethod
     def from_slew(
         cls,
@@ -381,6 +407,18 @@ class AttitudeTrajectory:
         index = max(0, bisect_right(self._starts, utime) - 1)
         return self.legs[index]
 
+    def tracking_curve_interval(
+        self, start: float, end: float
+    ) -> tuple[QuaternionHermite, float, float] | None:
+        """Resolve an integration interval partitioned at trajectory boundaries."""
+        leg = self._leg_at(start)
+        if not isinstance(leg, _TrackingLeg) or start >= leg.end:
+            return None
+        if not leg.start <= start < end <= leg.end:
+            raise ValueError("Tracking integration interval crosses a leg boundary")
+        duration = leg.end - leg.start
+        return leg.curve, (start - leg.start) / duration, (end - leg.start) / duration
+
     def state(self, utime: float) -> AttitudeState:
         if utime < self.start:
             raise AttitudeExecutionError("Cannot evaluate motion before its start")
@@ -410,6 +448,7 @@ class AttitudeExecutor:
             raise AttitudeExecutionError("Initial angular velocity must be finite")
         self._state = AttitudeState(utime, _quaternion(attitude), angular_velocity_body)
         self._trajectory: AttitudeTrajectory | None = None
+        self.momentum: MomentumBudget | None = None
 
     @property
     def state(self) -> AttitudeState:
@@ -425,18 +464,43 @@ class AttitudeExecutor:
             return self._state
         if self._trajectory is not None:
             return self._trajectory.state(utime)
-        elapsed = utime - self._state.utime
-        return AttitudeState(
-            utime,
-            _body_rotation(
-                self._state.quaternion,
-                elapsed * np.asarray(self._state.angular_velocity_body),
-            ),
-            self._state.angular_velocity_body,
-        )
+        return self._state.coast(utime)
 
     def advance(self, utime: float) -> None:
-        self._state = self.predict(utime)
+        state = self.predict(utime)
+        if self.momentum is not None:
+            self.momentum.commit(self.forecast_momentum(utime))
+        self._state = state
+
+    def forecast_momentum(self, end: float) -> "MomentumForecast":
+        assert self.momentum is not None
+        return self.momentum.forecast(
+            self.predict,
+            end,
+            trajectory=self._trajectory,
+        )
+
+    def check_momentum(
+        self, trajectory: AttitudeTrajectory, end: float | None = None
+    ) -> "MomentumForecast":
+        """Predict pending motion and a proposed trajectory without committing."""
+        return self._certify_momentum(trajectory, end)[1]
+
+    def _certify_momentum(
+        self, trajectory: AttitudeTrajectory, end: float | None
+    ) -> tuple["MomentumForecast", "MomentumForecast"]:
+        """The single admission sequence used by previews and installation."""
+        assert self.momentum is not None
+        before = self.forecast_momentum(trajectory.start)
+        self.momentum.require(before)
+        forecast = self.momentum.forecast(
+            trajectory.state,
+            trajectory.end if end is None else max(trajectory.end, end),
+            initial=before,
+            trajectory=trajectory,
+        )
+        self.momentum.require(forecast)
+        return before, forecast
 
     def next_rest_time(self, utime: float) -> float:
         self._check_time(utime)
@@ -457,7 +521,9 @@ class AttitudeExecutor:
         self.install(trajectory)
         return trajectory.end
 
-    def install(self, trajectory: AttitudeTrajectory) -> None:
+    def install(
+        self, trajectory: AttitudeTrajectory, *, momentum_end: float | None = None
+    ) -> None:
         state = self.predict(trajectory.start)
         incoming = trajectory.state(trajectory.start)
         angle, _ = _quaternion_delta(state.quaternion, incoming.quaternion)
@@ -473,6 +539,11 @@ class AttitudeExecutor:
             raise AttitudeExecutionError(
                 "A new trajectory must join the current attitude and angular velocity"
             )
+        if self.momentum is not None:
+            before, forecast = self._certify_momentum(trajectory, momentum_end)
+            # Execution reads the same certified integration cells, including
+            # partial ticks; it does not re-grid this immutable trajectory.
+            self.momentum.commit(replace(before, path=forecast.path))
         self._state = state
         self._trajectory = trajectory
 
@@ -480,5 +551,5 @@ class AttitudeExecutor:
         state = self.predict(utime)
         if any(abs(rate) > 1e-10 for rate in state.angular_velocity_body):
             raise AttitudeExecutionError("Cannot stop moving attitude instantaneously")
-        self._state = state
+        self.advance(utime)
         self._trajectory = None

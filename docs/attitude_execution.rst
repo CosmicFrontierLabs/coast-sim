@@ -94,12 +94,26 @@ Initialization errors, nonmonotonic time, unrelated programming errors, and
 validation failures without an operational attitude fault remain explicit errors;
 fault recovery does not certify an invalid plan for export.
 
+With momentum capacity enforcement enabled, a rejected command uses the same
+fault recovery path. If initialization or advancing the installed trajectory
+exceeds capacity, both simulators terminate with ``False`` and retain the fault
+report and any completed telemetry. They cannot continue a physically valid
+safehold by freezing attitude or disabling the momentum guard.
+
 Model limits
 ------------
 
 This is a kinematic execution boundary, not a full spacecraft dynamics engine.
-It enforces angular rate and acceleration, but does not model actuator torque,
-wheel momentum, flexible modes, jerk limits or pointing-control error. Acceleration
+It enforces angular rate and acceleration. Optional ``stored_momentum.capacity_n_m_s``
+also enables sampled rigid-body actuator-momentum checks on all installed and
+executed trajectories. Admission and execution share integration knots anchored
+to the trajectory, including its acceleration boundaries. Partial scheduler ticks
+read the same linearly interpolated inertial-torque model without changing those
+knots. Interval bounds check interior demand for slews, braking, coasting and
+Hermite tracking; these bounds certify the sampled torque model, not the true
+continuous external torque. Changing capacity invalidates the cached certificate.
+The model does not include actuator torque, individual wheel/CMG
+states, flexible modes, jerk limits or pointing-control error. Acceleration
 can change discontinuously within the specified bound; angular velocity cannot.
 
 The contact model preserves sampled attitudes and continuous angular velocity,

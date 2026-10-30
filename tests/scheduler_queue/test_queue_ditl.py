@@ -1120,7 +1120,7 @@ class TestFetchNewPPT:
         with patch.object(queue_ditl, "_ppt_optimum_roll", return_value=70.0):
             queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
-        assert deadlines.call_count == 2  # feasibility and final task deadline
+        assert deadlines.call_count == 1  # shared feasibility and final task deadline
         deadlines.assert_called_with(1100.0, 45.0, 30.0, 70.0, for_admission=True)
 
     def test_sync_acs_slew_metadata_updates_exported_plan_entry(
@@ -1404,7 +1404,7 @@ class TestFetchNewPPT:
         assert entry.slewdist == 10.0
 
     def test_rejected_ppt_keeps_queue_estimate_metadata(self, queue_ditl) -> None:
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1424,6 +1424,10 @@ class TestFetchNewPPT:
         cast(Mock, queue_ditl.acs.passrequests).next_pass = Mock(return_value=None)
         queue_ditl.constraint.in_earth = Mock(return_value=True)
 
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(70)
+        ]
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
@@ -1612,7 +1616,7 @@ class TestFetchNewPPT:
     ) -> None:
         """Test slew rejection when execution time falls during a pass."""
         # Setup mock PPT
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1643,7 +1647,7 @@ class TestFetchNewPPT:
     ) -> None:
         """Test slew rejection when slew would complete during a pass."""
         # Setup mock PPT
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1680,7 +1684,7 @@ class TestFetchNewPPT:
         """Test target rejection when there's not enough time before next pass."""
         queue_ditl.ephem.step_size = 60
         # Setup mock PPT with minimum observation time requirement
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.roll = 0.0
@@ -1725,7 +1729,7 @@ class TestFetchNewPPT:
         """Pass admission should include the early trigger used by pass slews."""
         queue_ditl.ephem.step_size = 60
 
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.roll = 0.0
@@ -1813,7 +1817,7 @@ class TestFetchNewPPT:
             side_effect=lambda ra, dec, time: time < 1180.0
         )
 
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -1939,7 +1943,7 @@ class TestFetchNewPPT:
     ) -> None:
         """Reject an infeasible top target and commit the next feasible target."""
         queue_ditl.ephem.step_size = 60
-        bad_ppt = Mock()
+        bad_ppt = Mock(exptime=None)
         bad_ppt.ra = 45.0
         bad_ppt.dec = 30.0
         bad_ppt.roll = 0.0
@@ -2053,7 +2057,7 @@ class TestFetchNewPPT:
 
         targets = []
         for index in range(1100):
-            target = Mock()
+            target = Mock(exptime=None)
             target.ra = 45.0
             target.dec = 30.0
             target.obsid = 1000 + index
@@ -2106,7 +2110,7 @@ class TestFetchNewPPT:
         - _ppt_unavailable set to True
         - log event describing the locked-roll violation emitted
         """
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1001
@@ -2126,6 +2130,10 @@ class TestFetchNewPPT:
         # in the locked-roll window.
         queue_ditl.constraint.in_earth = Mock(return_value=True)
 
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(70)
+        ]
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         # No slew should be enqueued
@@ -2143,7 +2151,7 @@ class TestFetchNewPPT:
         self, queue_ditl: QueueDITL
     ) -> None:
         """Try the next candidate when downstream roll validation rejects the first."""
-        bad_ppt = Mock()
+        bad_ppt = Mock(exptime=None)
         bad_ppt.ra = 45.0
         bad_ppt.dec = 30.0
         bad_ppt.obsid = 1001
@@ -2180,6 +2188,10 @@ class TestFetchNewPPT:
             side_effect=lambda ra, *args, **kwargs: ra == bad_ppt.ra
         )
 
+        queue_ditl.ephem.timestamp = [
+            datetime.fromtimestamp(1000.0 + 60.0 * index, timezone.utc)
+            for index in range(70)
+        ]
         queue_ditl._fetch_new_ppt(1000.0, 10.0, 20.0)
 
         assert queue_ditl.ppt is good_ppt
@@ -2232,7 +2244,7 @@ class TestFetchNewPPT:
             for index in range(3)
         ]
 
-        mock_ppt = Mock()
+        mock_ppt = Mock(exptime=None)
         mock_ppt.ra = 45.0
         mock_ppt.dec = 30.0
         mock_ppt.obsid = 1003
@@ -4572,6 +4584,8 @@ class TestCheckAndManagePasses:
         queue_ditl.ephem.timestamp = [datetime.fromtimestamp(sample_time, timezone.utc)]
         queue_ditl._ephem_utime_cache = None
         slew = Mock(spec=Slew)
+        slew._momentum_trajectory = None
+        slew.at = None
         slew.slewstart = 1000.0
         slew.slewend = 1120.0
         slew.slewtime = 120.0
@@ -6729,7 +6743,7 @@ class TestQueueDITLCoverage:
             mock_queue_class.return_value = mock_queue
 
             # Mock PPT with visibility check failing
-            mock_ppt = Mock()
+            mock_ppt = Mock(exptime=None)
             mock_ppt.next_vis = Mock(return_value=None)  # Not visible
             mock_ppt.obsid = 12345
 

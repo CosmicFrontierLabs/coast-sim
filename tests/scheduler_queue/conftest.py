@@ -242,6 +242,8 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         mock_acs.passrequests = mock_pt
         mock_acs.slew_dists = []
         mock_acs.executed_commands = []
+        mock_acs.readmission_requests = []
+        mock_acs._executor = None
         mock_acs.last_slew = None
         mock_acs.current_slew = None  # No active slew by default
         mock_acs.current_pass = None  # No acquired contact by default
@@ -296,6 +298,7 @@ def queue_ditl(mock_config: Mock, mock_ephem: DummyEphemeris) -> QueueDITL:
         # Mock Queue
         mock_queue = Mock()
         mock_queue.get = Mock(return_value=None)
+        mock_queue.targets = []
         mock_queue_class.return_value = mock_queue
 
         ditl = QueueDITL(

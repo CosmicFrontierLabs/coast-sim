@@ -22,6 +22,7 @@ from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
+from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
 from .telemetry import SolarArrayDriveAngle, Telemetry
@@ -215,6 +216,21 @@ class DITLMixin:
         """Current run's fault evaluator/report, shared with the ACS."""
         return self.acs.fault_management
 
+    def _report_momentum_failure(self, error: MomentumLimitError) -> None:
+        # A rejected command can use ACS fault recovery. If advancing the
+        # installed physical trajectory itself fails, terminate the run:
+        # freezing attitude or disabling the guard cannot provide a safehold.
+        executor = self.acs._executor
+        self.fault_management.report_fault(
+            utime=executor.state.utime
+            if executor is not None
+            else self.begin.timestamp(),
+            name="attitude_execution",
+            cause=str(error),
+            metadata={"momentum_capacity": True},
+            acs=self.acs,
+        )
+
     def _begin_fault_run(self) -> None:
         """Start an independent fault interval, retaining all earlier reports.
 
@@ -277,6 +293,10 @@ class DITLMixin:
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
         momentum_config = getattr(attitude_control, "stored_momentum", None)
+        if getattr(momentum_config, "capacity_enabled", False) is True:
+            # Enforcement owns integration at actual trajectory boundaries,
+            # independently of housekeeping cadence. Do not integrate twice.
+            return None
         if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
             return None
         assert momentum_config is not None
@@ -321,6 +341,14 @@ class DITLMixin:
         attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
     ) -> MomentumSample | None:
         """Advance the tracker using values already computed for housekeeping."""
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            budget = self.acs.momentum_budget
+            if budget is None:
+                raise ValueError("Momentum enforcement has not been initialized")
+            return budget.current.sample
         if self._stored_momentum_tracker is None:
             return None
         return self._stored_momentum_tracker.update(

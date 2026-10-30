@@ -1,4 +1,4 @@
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from copy import copy, deepcopy
 from dataclasses import dataclass
@@ -43,6 +43,8 @@ from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
+from ..simulation.momentum_budget import MomentumLimitError
+from ..simulation.momentum_planning import MomentumObservationPlanner
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
@@ -64,6 +66,20 @@ _ROOM_BISECTIONS = 40
 """Halvings of the room's search: 20 Gb to a fraction of a kilobit."""
 """What dispatch keeps the recorder below its planning limit by, as the
 schedulers' ledger does: the recorder's red alert fires at the threshold."""
+
+
+@dataclass(frozen=True)
+class _ObservationRequest:
+    start: float
+    requested: float
+    recorder_room: float | Mapping[str, float] | None
+
+
+@dataclass(frozen=True)
+class _ScienceWindow:
+    deadline: float
+    requested: float
+    collection_begin: float
 
 
 class _PendingCommandStatus(TypedDict):
@@ -148,6 +164,7 @@ class _CommittedTOO:
     interrupted: Pointing
     value: MeritBreakdown
     dispatch_time: float
+    momentum_recovery: Slew | None = None
 
 
 class QueueDITL(DITLMixin, DITLStats):
@@ -279,6 +296,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self._temporary_rejected_ppts: list[tuple[Pointing, bool]] | None = None
         self._retry_ppt_fetch_requested = False
+        self._momentum_recovery: Slew | None = None
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
         # Set True when the queue is empty or all candidates are rejected; False on
@@ -767,7 +785,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # The value admission settled on, over the collection it admitted.
         admitted = preview.ppt.merit_breakdown or value
         return _CommittedTOO(
-            too, target, preview.ppt, slew, self.ppt, admitted, dispatch_time
+            too,
+            target,
+            preview.ppt,
+            slew,
+            self.ppt,
+            admitted,
+            dispatch_time,
+            preview._momentum_recovery,
         )
 
     def _dispatch_committed_too(self, utime: float) -> bool:
@@ -793,6 +818,7 @@ class QueueDITL(DITLMixin, DITLStats):
             "roll",
             "spacecraft_attitude",
             "instrument_name",
+            "slew_rate_fraction",
             "collection_begin",
             "collection_end",
             "merit",
@@ -817,6 +843,7 @@ class QueueDITL(DITLMixin, DITLStats):
             mark_done=False,
         )
         self.ppt = target
+        self._momentum_recovery = commitment.momentum_recovery
         self.acs.slew_dists.append(commitment.slew.slewdist)
         self.acs.enqueue_command(
             ACSCommand(
@@ -870,6 +897,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
 
     def calc(self) -> bool:
+        """Run the simulation; an unexecutable momentum state fails diagnostically."""
+        try:
+            return self._calc()
+        except MomentumLimitError as exc:
+            self._report_momentum_failure(exc)
+            return False
+
+    def _calc(self) -> bool:
         """
         Run the DITL (Day In The Life) simulation.
 
@@ -893,6 +928,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._synced_executed_slew_count = 0
             self._ppt_unavailable = None
         self._ppt_optimum_roll_cache.clear()
+        self._momentum_recovery = None
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -936,14 +972,14 @@ class QueueDITL(DITLMixin, DITLStats):
             self._track_ppt_in_timeline()
 
             # Get current pointing and mode from ACS
-            ra, dec, roll, obsid = self.acs.pointing(utime)
+            ra, dec, roll, obsid = self._pointing(utime)
             self._sync_acs_slew_metadata()
             mode = self.acs.get_mode(utime)
 
             # Check pass timing and manage passes
             pass_command_due = self._check_and_manage_passes(utime, ra, dec, roll)
             if pass_command_due:
-                ra, dec, roll, obsid = self.acs.pointing(utime)
+                ra, dec, roll, obsid = self._pointing(utime)
                 self._sync_acs_slew_metadata()
                 mode = self.acs.get_mode(utime)
 
@@ -985,6 +1021,13 @@ class QueueDITL(DITLMixin, DITLStats):
             self._handle_fault_management(utime, hk)
 
         # Make sure an active PPT ends at the simulation boundary.
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            # Include the last interval, even when no housekeeping tick lands
+            # on the simulation end. No optimistic unvalidated tail.
+            self.acs._advance_attitude(self.uend)
         if self.plan and self.ppt is not None:
             self._close_last_plan_entry(self.uend)
 
@@ -1082,11 +1125,15 @@ class QueueDITL(DITLMixin, DITLStats):
                 "Recharge interrupts observation before its cleanup/handoff budget "
                 "can be reserved; no executable observation timeline can be exported"
             )
+        previous_collection_end = self.ppt.collection_end
         self.ppt.end = deadline
         self.ppt.set_collection_window(timing)
+        assert self.ppt.collection_end is not None
+        self.ppt.collection_end = min(self.ppt.collection_end, previous_collection_end)
         if self.plan and self.plan[-1].begin == self.ppt.begin:
             self.plan[-1].end = deadline
-            self.plan[-1].set_collection_window(timing)
+            self.plan[-1].collection_begin = self.ppt.collection_begin
+            self.plan[-1].collection_end = self.ppt.collection_end
 
     def _handle_fault_management(
         self, utime: float, hk: Housekeeping | None = None
@@ -1199,17 +1246,20 @@ class QueueDITL(DITLMixin, DITLStats):
         roll: float,
         utime: float,
         mode: ACSMode,
+        *,
+        target: PlanEntry | None = None,
     ) -> tuple[str, str] | None:
         """Return the violated constraint name and scope label for one attitude."""
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
+        science_target = target if target is not None else self.ppt
         mounted_science = (
             mode == ACSMode.SCIENCE
-            and self.ppt is not None
-            and self.ppt.uses_mounted_attitude() is True
+            and science_target is not None
+            and science_target.uses_mounted_attitude() is True
         )
         if mounted_science:
-            assert self.ppt is not None
-            names = self.ppt.attitude_constraint_names(
+            assert science_target is not None
+            names = science_target.attitude_constraint_names(
                 scopes,
                 (ra, dec, roll),
                 utime,
@@ -1512,6 +1562,17 @@ class QueueDITL(DITLMixin, DITLStats):
                 if momentum_sample is not None
                 else None
             ),
+            actuator_momentum_body_n_m_s=(
+                list(momentum_sample.actuator_momentum_body_n_m_s)
+                if momentum_sample is not None
+                and momentum_sample.actuator_momentum_body_n_m_s is not None
+                else None
+            ),
+            actuator_momentum_norm_n_m_s=(
+                momentum_sample.actuator_momentum_norm_n_m_s
+                if momentum_sample is not None
+                else None
+            ),
         )
 
     def _track_ppt_in_timeline(self) -> None:
@@ -1549,7 +1610,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if self.acs.command_queue[0].execution_time > utime:
             return None
 
-        pointing = self.acs.pointing(utime)
+        pointing = self._pointing(utime)
         self._sync_acs_slew_metadata()
         self._clear_canceled_ppt(utime)
         self._track_ppt_in_timeline()
@@ -1613,6 +1674,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """Copy executed slew timing and physical attitude onto a plan entry."""
         entry.begin = int(slew.slewstart)
         entry.slewtime = int(round(slew.slewtime))
+        entry.slew_rate_fraction = slew.rate_fraction
         entry.slewdist = float(slew.slewdist)
         entry.slewpath = slew.slewpath
         if entry.uses_mounted_attitude():
@@ -1632,6 +1694,24 @@ class QueueDITL(DITLMixin, DITLStats):
         if entry.config is not None:
             timing = entry.config.payload.observation_timing
             entry.set_collection_window(timing)
+            if slew._momentum_collection_begin is not None:
+                assert (
+                    entry.collection_begin is not None
+                    and entry.collection_end is not None
+                )
+                entry.collection_begin = max(
+                    entry.collection_begin,
+                    min(entry.collection_end, slew._momentum_collection_begin),
+                )
+            if slew._momentum_collection_end is not None:
+                assert (
+                    entry.collection_end is not None
+                    and entry.collection_begin is not None
+                )
+                entry.collection_end = max(
+                    entry.collection_begin,
+                    min(entry.collection_end, slew._momentum_collection_end),
+                )
 
     @staticmethod
     def _entry_matches_science_slew(entry: PlanEntry, slew: Slew) -> bool:
@@ -1738,7 +1818,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if mode == previous_mode and not self._has_due_acs_command(utime):
             return ra, dec, roll, obsid, mode
 
-        ra, dec, roll, obsid = self.acs.pointing(utime)
+        ra, dec, roll, obsid = self._pointing(utime)
         self._sync_acs_slew_metadata()
         return ra, dec, roll, obsid, self.acs.get_mode(utime)
 
@@ -1785,8 +1865,105 @@ class QueueDITL(DITLMixin, DITLStats):
             if self.ppt is None:
                 self._schedule_idle_recovery(utime)
 
+    def _pointing(self, utime: float) -> tuple[float, float, float, int]:
+        """Complete command dispatch before handling scheduler decisions."""
+        result = self.acs.pointing(utime)
+        if self.acs.readmission_requests:
+            self._resolve_momentum_readmissions(utime)
+            result = self.acs.pointing(utime)
+        return result
+
+    def _resolve_momentum_readmissions(self, utime: float) -> None:
+        requests, self.acs.readmission_requests = self.acs.readmission_requests, []
+        for slew in requests:
+            replacement = self._readmit_momentum_slew(slew, utime)
+            if replacement is not None:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=replacement.slewstart,
+                        slew=replacement,
+                    )
+                )
+
+    def _readmit_momentum_slew(self, slew: Slew, utime: float) -> Slew | None:
+        """Re-run admission after an intervening maneuver or delayed command."""
+        planner = MomentumObservationPlanner(self)
+        if slew.obstype != ObsType.PPT:
+            return planner.idle_recovery(utime)
+        target = self.ppt
+        if target is None or slew.at is not target:
+            return None
+        # Dispatch queues this request only after reaching rest. The interrupted
+        # slew's nominal end no longer describes the physical readiness time.
+        admitted = planner.observation(target, utime, ready_time=utime)
+        pending = next(
+            (
+                entry
+                for entry in reversed(self.plan.entries)
+                if entry.obsid == target.obsid and entry.begin == slew.slewstart
+            ),
+            None,
+        )
+        self._momentum_recovery = None
+        if admitted is None:
+            self._terminate_ppt(
+                utime, "Delayed slew no longer admissible, cancelling observation"
+            )
+            if pending is not None:
+                self.plan.entries[:] = [
+                    entry for entry in self.plan if entry is not pending
+                ]
+            self._ppt_unavailable = None
+            return None
+        target.end = admitted.end
+        self._apply_slew_metadata(target, admitted.slew)
+        if pending is not None:
+            pending.end = admitted.end
+            self._apply_slew_metadata(pending, admitted.slew)
+        self._momentum_recovery = admitted.recovery
+        return admitted.slew
+
+    def _validate_idle_slew(self, slew: Slew, hold_end: float) -> bool:
+        """The same pass, motion and hold geometry for every idle recovery."""
+        destination = (slew.endra, slew.enddec, slew.endroll)
+        next_pass = self.acs.passrequests.next_pass(slew.slewstart)
+        if next_pass is not None and any(
+            slew.slewend >= deadline
+            for _, deadline in next_pass.tracking_profile_slew_deadlines(
+                slew.slewstart, *destination, for_admission=True
+            )
+        ):
+            return False
+        return (
+            self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING) is None
+            and self._check_attitude_hold_window(
+                slew.slewend, hold_end, destination, ACSMode.IDLE
+            )
+            is None
+        )
+
     def _schedule_idle_recovery(self, utime: float) -> None:
         """Reserve and command a safe inertial hold before the current one expires."""
+        if (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+            is True
+        ):
+            if self.acs.get_mode(utime) not in (ACSMode.IDLE, ACSMode.SAA):
+                return
+            recovery = self._momentum_recovery
+            self._momentum_recovery = None
+            if recovery is None or recovery.slewstart != utime:
+                recovery = MomentumObservationPlanner(self).idle_recovery(utime)
+            if recovery is not None:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=utime,
+                        slew=recovery,
+                    )
+                )
+            return
         planner = self._idle_safety
         if planner is None or self.acs.get_mode(utime) not in (
             ACSMode.IDLE,
@@ -1831,20 +2008,14 @@ class QueueDITL(DITLMixin, DITLStats):
                     or slew.slewend >= self._simulation_end_deadline()
                 ):
                     continue
-                next_pass = self.acs.passrequests.next_pass(utime)
-                if next_pass is not None and any(
-                    slew.slewend >= deadline
-                    for _, deadline in next_pass.tracking_profile_slew_deadlines(
-                        utime, ra, dec, roll, for_admission=True
-                    )
-                ):
-                    continue
-                if not planner.hold_is_safe((ra, dec, roll), slew.slewend):
-                    continue
-                if (
-                    self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
-                    is not None
-                ):
+                hold_end = min(
+                    self._simulation_end_deadline(),
+                    slew.slewend
+                    + planner.reserve
+                    + self.config.spacecraft_bus.attitude_control.idle_min_hold_s
+                    + self.step_size,
+                )
+                if not self._validate_idle_slew(slew, hold_end):
                     continue
                 self.acs.enqueue_command(
                     ACSCommand(
@@ -2545,27 +2716,41 @@ class QueueDITL(DITLMixin, DITLStats):
         obs_start_time: float,
         obs_val_end: float,
         spacecraft_attitude: tuple[float, float, float],
+        *,
+        target: Pointing | None = None,
     ) -> tuple[float, str, str] | None:
         """Check grid samples bracketing the entire locked-attitude window."""
-        assert self.ppt is not None
-        ephem = self.acs.ephem
-        begin_idx = max(0, ephem.index(dtutcfromtimestamp(obs_start_time)))
-        # Include the upper bracket of a fractional end. Otherwise the last
-        # partial cell can cross a constraint before the next scheduler tick.
-        end_idx = min(
-            len(ephem.timestamp), bisect_left(self._ephem_utimes(), obs_val_end) + 1
+        return self._check_attitude_hold_window(
+            obs_start_time,
+            obs_val_end,
+            spacecraft_attitude,
+            ACSMode.SCIENCE,
+            target=target,
         )
-        for t in ephem.timestamp[begin_idx:end_idx]:
-            t_unix = self._ephem_timestamp_to_utime(t)
-            violation = self._constraint_name_for_science_attitude(
-                spacecraft_attitude[0],
-                spacecraft_attitude[1],
-                spacecraft_attitude[2],
-                t_unix,
+
+    def _check_attitude_hold_window(
+        self,
+        start: float,
+        end: float,
+        attitude: tuple[float, float, float],
+        mode: ACSMode,
+        *,
+        target: Pointing | None = None,
+    ) -> tuple[float, str, str] | None:
+        """Shared rest-hold geometry on the bracketing ephemeris grid."""
+        times = self._ephem_utimes()
+        first = max(0, bisect_right(times, start) - 1)
+        last = min(len(times), bisect_left(times, end) + 1)
+        for time in times[first:last]:
+            violation = (
+                self._constraint_name_for_science_attitude(*attitude, time)
+                if mode == ACSMode.SCIENCE and target is None
+                else self._attitude_constraint_name_for_attitude(
+                    *attitude, time, mode, target=target
+                )
             )
             if violation is not None:
-                constraint_name, scope_label = violation
-                return t_unix, constraint_name, scope_label
+                return time, *violation
         return None
 
     def _terminate_ppt(
@@ -2653,6 +2838,54 @@ class QueueDITL(DITLMixin, DITLStats):
                 return window[1]
         return slew_end
 
+    def _pending_attitude_violation(self, now: float, end: float) -> float | None:
+        """Validate pending motion as SLEWING and its subsequent hold as IDLE."""
+        executor = self.acs._executor
+        trajectory = executor._trajectory if executor is not None else None
+        hold_start = max(
+            now,
+            trajectory.end
+            if trajectory is not None
+            else self._ppt_slew_execution_time(now),
+        )
+        motion_end = min(end, hold_start)
+        if trajectory is not None and motion_end > now:
+            step = (
+                executor.momentum.step
+                if executor is not None and executor.momentum is not None
+                else self.step_size
+            )
+            times = sorted(
+                set(
+                    np.linspace(
+                        now, motion_end, max(1, ceil((motion_end - now) / step)) + 1
+                    )
+                )
+                | {t for t in trajectory.boundaries if now <= t < motion_end}
+            )
+            for time in times:
+                if time >= hold_start:
+                    break
+                if (
+                    self._attitude_constraint_name_for_attitude(
+                        *self.acs.predicted_attitude(float(time)),
+                        float(time),
+                        ACSMode.SLEWING,
+                    )
+                    is not None
+                ):
+                    return float(time)
+        if hold_start > end:
+            return None
+        attitude = self.acs.predicted_attitude(end)
+        if self._idle_safety is not None:
+            violation = self._idle_safety.first_violation(attitude, hold_start)
+            return violation if violation - self._idle_safety.step < end else None
+        violation_details = self._check_attitude_hold_window(
+            hold_start, end, attitude, ACSMode.IDLE
+        )
+        return violation_details[0] if violation_details is not None else None
+
     def _slew_attitude_constraint_violation(
         self, slew: Slew, mode: ACSMode
     ) -> tuple[float, str, str] | None:
@@ -2660,7 +2893,22 @@ class QueueDITL(DITLMixin, DITLStats):
         if slew.slewtime <= 0:
             return None
 
-        for sample_utime in self._ephem_utimes():
+        times = self._ephem_utimes()
+        if slew._momentum_trajectory is not None:
+            budget = self.acs.momentum_budget
+            assert budget is not None
+            times = sorted(
+                set(times)
+                | set(
+                    np.linspace(
+                        slew.slewstart,
+                        slew.slewend,
+                        max(1, ceil(slew.slewtime / budget.step)) + 1,
+                    )
+                )
+                | set(slew._momentum_trajectory.boundaries)
+            )
+        for sample_utime in times:
             if sample_utime < slew.slewstart:
                 continue
             if sample_utime >= slew.slewend:
@@ -2673,6 +2921,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 float(sample_roll),
                 sample_utime,
                 mode,
+                target=slew.at if isinstance(slew.at, Pointing) else None,
             )
             if violation is not None:
                 constraint_name, scope_label = violation
@@ -2874,13 +3123,16 @@ class QueueDITL(DITLMixin, DITLStats):
         target: Pointing,
         utime: float,
         execution_time: float,
+        *,
+        instrument_roll: float | None = None,
     ) -> None:
         """Fill in a PPT slew's start attitude, end roll, and computed slew time."""
         slew.slewstart = execution_time
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
         )
-        instrument_roll = self._ppt_optimum_roll(target, execution_time)
+        if instrument_roll is None:
+            instrument_roll = self._ppt_optimum_roll(target, execution_time)
         slew.endra, slew.enddec, slew.endroll = self._target_body_attitude(
             target, instrument_roll
         )
@@ -3026,51 +3278,6 @@ class QueueDITL(DITLMixin, DITLStats):
             self._fetch_new_ppt(utime, ra, dec)
         finally:
             rejected_ppt.done = was_done
-
-    def _reject_current_ppt_if_insufficient_collect_time(
-        self,
-        slew_end: float,
-        utime: float,
-        ra: float,
-        dec: float,
-        target_roll: float,
-    ) -> bool:
-        """Check if the current PPT has enough time to collect before the next
-        science deadline."""
-        assert self.ppt is not None
-        if self.ppt.ss_min <= 0:
-            return False
-
-        # Check if there's enough time to collect before the next science
-        # deadline (visibility window end, next pass, or simulation end)
-        deadline, reason = self._next_science_deadline(
-            slew_end,
-            current_time=utime,
-            target_roll=target_roll,
-        )
-        available_collect_time = (
-            deadline - slew_end - self.config.payload.observation_timing.total_seconds
-        )
-        if available_collect_time >= self.ppt.ss_min:
-            return False
-
-        # If not enough time to collect, reject this target and try fetching
-        # another one
-        ss_min = self.ppt.ss_min
-        obsid = self.ppt.obsid
-        self.log.log_event(
-            utime=utime,
-            event_type="QUEUE",
-            description=(
-                f"Target {obsid} rejected - only "
-                f"{available_collect_time:.0f}s available before {reason} "
-                f"(need {ss_min:.0f}s)"
-            ),
-            obsid=obsid,
-            acs_mode=self.acs.acsmode,
-        )
-        self._retry_fetch_without_current_ppt(utime, ra, dec)
-        return True
 
     def _fetch_new_ppt(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
@@ -3275,6 +3482,261 @@ class QueueDITL(DITLMixin, DITLStats):
         self.acs.enqueue_command(command)
         self._ppt_unavailable = False
 
+    def _observation_request(
+        self,
+        target: Pointing,
+        utime: float,
+        recorder_room: float | Mapping[str, float] | None,
+        *,
+        ready_time: float | None = None,
+    ) -> _ObservationRequest | None:
+        """Resolve shared visibility, waiting, roll feasibility and visit limits."""
+        requested = min(
+            target.ss_max,
+            target.exptime if target.exptime is not None else target.ss_max,
+        )
+        limit = getattr(target, "collection_limit", None)
+        if isinstance(limit, (int, float)):
+            requested = min(requested, float(limit))
+        if requested < target.ss_min:
+            return None
+        # Check if target is visible
+        visstart = target.next_vis(utime)
+        if not visstart:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description="Slew rejected - target not visible",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return None
+
+        # Calculate slew timing
+        hold_start = (
+            self._ppt_slew_execution_time(utime) if ready_time is None else ready_time
+        )
+        execution_time = hold_start
+
+        # Wait for current slew to finish if in progress
+        if execution_time > utime:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description=f"Slewing - delaying next slew until {unixtime2date(execution_time)}",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+
+        # Wait for target visibility if constrained
+        if visstart and visstart > execution_time:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description=f"Slew delayed by {visstart - execution_time:.1f}s",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            execution_time = visstart
+
+        # Commands execute only on scheduler ticks. Validate the same epoch
+        # that ACS will execute, including any hold after an active slew.
+        execution_time = (
+            utime + ceil((execution_time - utime) / self.step_size) * self.step_size
+        )
+        if execution_time >= self._simulation_end_deadline():
+            return None
+        if self._pending_attitude_violation(utime, execution_time) is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+                description="Slew rejected - unsafe pending motion or idle wait",
+            )
+            return None
+
+        # When ignore_roll=True, verify that a valid roll exists before slewing.
+        # Roll optimization falls back to the unconstrained solar roll when
+        # roll_range() is empty (no roll satisfies all constraints), which
+        # would put star trackers into a constraint zone.  Skip the target
+        # instead so a better one can be selected.
+        mounted_telescope = (
+            issubclass(type(target), PlanEntry) and target.uses_mounted_attitude()
+        )
+        if self.config.constraint.ignore_roll and not mounted_telescope:
+            _constraint_obj = self.config.constraint.constraint
+            if _constraint_obj is not None:
+                # Snap to the nearest ephemeris timestamp — roll_range() requires
+                # an exact match and execution_time may be between grid points.
+                _snapped_dt = self.acs.ephem.timestamp[
+                    self.acs.ephem.index(dtutcfromtimestamp(execution_time))
+                ]
+                _valid_ranges = _constraint_obj.roll_range(
+                    time=_snapped_dt,
+                    ephemeris=self.acs.ephem,
+                    target_ra=target.ra,
+                    target_dec=target.dec,
+                )
+                if not _valid_ranges:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        description=f"Target {target.obsid} skipped — no valid roll satisfies all constraints at this time",
+                        obsid=target.obsid,
+                        acs_mode=self.acs.acsmode,
+                    )
+                    return None
+
+        return _ObservationRequest(execution_time, requested, recorder_room)
+
+    def _validate_ppt_slew(
+        self, target: Pointing, slew: Slew, utime: float, request: _ObservationRequest
+    ) -> _ScienceWindow | None:
+        """Apply the common geometry, pass, deadline and recorder admission checks.
+
+        Updates only the supplied candidate and returns its latest physical hold
+        boundary. Queue policy handles every rejection outside this validator.
+        """
+        # Queue selection checks the deadline against an estimated slew;
+        # enforce it again against the slew that will actually execute,
+        # and the time science is actually available (e.g. after SAA exit).
+        slew_end = slew.slewend
+        collection_start = self._earliest_science_start(
+            slew_end,
+            slew_end + self.config.payload.observation_timing.setup_seconds,
+        )
+        if target.deadline is not None and collection_start > target.deadline:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=(
+                    f"Target {target.obsid} skipped - collection would start "
+                    f"{collection_start - target.deadline:.0f}s after its deadline"
+                ),
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return None
+
+        violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+        if violation is not None:
+            violation_time, constraint_name, scope_label = violation
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                description=(
+                    f"Target {target.obsid} skipped - slew path violates "
+                    f"{constraint_name} ({scope_label}) at "
+                    f"{unixtime2date(violation_time)}"
+                ),
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return None
+
+        # Verify slew won't overlap with a pass - check both start and end
+        slew_end = slew.slewend
+        if self.acs.passrequests.current_pass(slew.slewstart) is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description="Slew rejected - execution time falls during a pass",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return None
+        if self.acs.passrequests.current_pass(slew_end) is not None:
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                description="Slew rejected - would complete during a pass",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+            return None
+
+        if any(
+            p.begin <= slew.slewend and p.end >= slew.slewstart
+            for p in self.acs.passrequests.passes
+        ):
+            self.log.log_event(
+                utime=utime,
+                event_type="SLEW",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+                description="Slew rejected - would overlap a pass",
+            )
+            return None
+
+        timing = self.config.payload.observation_timing
+        deadline, reason = self._next_science_deadline(
+            slew_end, current_time=utime, target_roll=slew.endroll, target=target
+        )
+        available = deadline - collection_start - timing.post_collection_seconds
+        if available < target.ss_min:
+            self.log.log_event(
+                utime=utime,
+                event_type="QUEUE",
+                obsid=target.obsid,
+                acs_mode=self.acs.acsmode,
+                description=(
+                    f"Target {target.obsid} rejected - only {available:.0f}s "
+                    f"available before {reason} (need {target.ss_min:.0f}s)"
+                ),
+            )
+            return None
+        proposed_end = min(
+            deadline,
+            collection_start + timing.post_collection_seconds + request.requested,
+        )
+        violation = self._check_locked_roll_window(
+            slew_end,
+            min(
+                deadline,
+                utime + ceil((proposed_end - utime) / self.step_size) * self.step_size,
+            ),
+            (slew.endra, slew.enddec, slew.endroll),
+            target=target,
+        )
+        if violation is not None:
+            violation_time, constraint_name, scope_label = violation
+            deadline = min(deadline, violation_time - self.step_size)
+            if (
+                deadline
+                < collection_start + target.ss_min + timing.post_collection_seconds
+            ):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    obsid=target.obsid,
+                    acs_mode=self.acs.acsmode,
+                    description=(
+                        f"Target {target.obsid} skipped — locked roll {slew.endroll:.1f}° "
+                        f"violates {constraint_name} ({scope_label}) within minimum "
+                        f"observation window (at t+{violation_time - slew_end:.0f}s)"
+                    ),
+                )
+                return None
+        self._apply_slew_metadata(target, slew, update_end=True)
+        remaining = request.requested
+        within = getattr(self.queue, "collection_within", None)
+        if callable(within) and request.recorder_room is not None:
+            fits = float(within(target, request.recorder_room))
+            if fits < remaining:
+                remaining = max(0.0, floor(fits))
+        target.end = min(
+            deadline, collection_start + timing.post_collection_seconds + remaining
+        )
+        target.set_collection_window(timing)
+        target.collection_begin = min(target.end, collection_start)
+        target.collection_end = max(
+            target.collection_begin, target.end - timing.post_collection_seconds
+        )
+        if target.collection_end - target.collection_begin < target.ss_min:
+            return None
+        return _ScienceWindow(deadline, remaining, collection_start)
+
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
     ) -> Slew | None:
@@ -3346,6 +3808,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 deadline_inputs=deadline_inputs,
             )[0]
 
+        recorder_room = self._recorder_room_gb(utime, ra, dec, self.acs.roll)
         self.ppt = self.queue.get(
             ra,
             dec,
@@ -3353,249 +3816,43 @@ class QueueDITL(DITLMixin, DITLStats):
             collection_deadline=collection_deadline,
             slew_estimator=lambda target: self._estimate_ppt_slew(target, utime),
             roll=self.acs.roll,
-            recorder_room_gb=self._recorder_room_gb(utime, ra, dec, self.acs.roll),
+            recorder_room_gb=recorder_room,
         )
 
         if self.ppt is not None:
-            slew = self._new_ppt_slew(self.ppt, utime)
-
-            # Check if target is visible
-            visstart = self.ppt.next_vis(utime)
-            if not visstart and slew.obstype == ObsType.PPT:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description="Slew rejected - target not visible",
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self._ppt_unavailable = True
+            request = self._observation_request(self.ppt, utime, recorder_room)
+            if request is None:
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
                 return None
-
-            # Calculate slew timing
-            hold_start = self._ppt_slew_execution_time(utime)
-            execution_time = hold_start
-
-            # Wait for current slew to finish if in progress
-            if execution_time > utime:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description=f"Slewing - delaying next slew until {unixtime2date(execution_time)}",
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-
-            # Wait for target visibility if constrained
-            if visstart and visstart > execution_time and slew.obstype == ObsType.PPT:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description=f"Slew delayed by {visstart - execution_time:.1f}s",
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                execution_time = visstart
-
-            # Commands execute only on scheduler ticks. Validate the same epoch
-            # that ACS will execute, including any hold after an active slew.
-            execution_time = (
-                utime + ceil((execution_time - utime) / self.step_size) * self.step_size
-            )
             if (
-                self._idle_safety is not None
-                and self._idle_safety.first_violation(
-                    self._expected_slew_start_attitude(utime, execution_time),
-                    hold_start,
-                )
-                - self._idle_safety.step
-                < execution_time
+                self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
+                is True
             ):
-                # Leave no later than the last safe sample, not the first bad one.
-                self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return None
-
-            # When ignore_roll=True, verify that a valid roll exists before slewing.
-            # Roll optimization falls back to the unconstrained solar roll when
-            # roll_range() is empty (no roll satisfies all constraints), which
-            # would put star trackers into a constraint zone.  Skip the target
-            # instead so a better one can be selected.
-            mounted_telescope = (
-                issubclass(type(self.ppt), PlanEntry)
-                and self.ppt.uses_mounted_attitude()
-            )
-            if self.config.constraint.ignore_roll and not mounted_telescope:
-                _constraint_obj = self.config.constraint.constraint
-                if _constraint_obj is not None:
-                    # Snap to the nearest ephemeris timestamp — roll_range() requires
-                    # an exact match and execution_time may be between grid points.
-                    _snapped_dt = self.acs.ephem.timestamp[
-                        self.acs.ephem.index(dtutcfromtimestamp(execution_time))
-                    ]
-                    _valid_ranges = _constraint_obj.roll_range(
-                        time=_snapped_dt,
-                        ephemeris=self.acs.ephem,
-                        target_ra=self.ppt.ra,
-                        target_dec=self.ppt.dec,
+                admitted = MomentumObservationPlanner(self).observation(
+                    self.ppt, utime, request=request
+                )
+                if admitted is None:
+                    self.log.log_event(
+                        utime=utime,
+                        event_type="QUEUE",
+                        obsid=self.ppt.obsid,
+                        acs_mode=self.acs.acsmode,
+                        description="Target rejected: no momentum- and geometry-valid observation with recovery",
                     )
-                    if not _valid_ranges:
-                        self.log.log_event(
-                            utime=utime,
-                            event_type="QUEUE",
-                            description=f"Target {self.ppt.obsid} skipped — no valid roll satisfies all constraints at this time",
-                            obsid=self.ppt.obsid,
-                            acs_mode=self.acs.acsmode,
-                        )
-                        self._retry_fetch_without_current_ppt(utime, ra, dec)
-                        return None
-
-            self._complete_ppt_slew(slew, self.ppt, utime, execution_time)
-
-            # Queue selection checks the deadline against an estimated slew;
-            # enforce it again against the slew that will actually execute,
-            # and the time science is actually available (e.g. after SAA exit).
-            slew_end = execution_time + slew.slewtime
-            collection_start = self._earliest_science_start(
-                slew_end,
-                slew_end + self.config.payload.observation_timing.setup_seconds,
-            )
-            if self.ppt.deadline is not None and collection_start > self.ppt.deadline:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="QUEUE",
-                    description=(
-                        f"Target {self.ppt.obsid} skipped - collection would start "
-                        f"{collection_start - self.ppt.deadline:.0f}s after its deadline"
-                    ),
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return None
-
-            violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
-            if violation is not None:
-                violation_time, constraint_name, scope_label = violation
-                self.log.log_event(
-                    utime=utime,
-                    event_type="QUEUE",
-                    description=(
-                        f"Target {self.ppt.obsid} skipped - slew path violates "
-                        f"{constraint_name} ({scope_label}) at "
-                        f"{unixtime2date(violation_time)}"
-                    ),
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return None
-
-            # Validate that the locked roll satisfies constraints for at least
-            # ss_min seconds after slew completion.  The ACS holds roll constant
-            # during observations, so a roll that is immediately constrained
-            # would cause the observation to be terminated before any science
-            # is collected.  Skip the target now rather than wasting a slew.
-            obs_start_time = execution_time + slew.slewtime
-            ephem = self.acs.ephem
-            ephem_end = self._ephem_timestamp_to_utime(ephem.timestamp[-1])
-            obs_val_end = min(
-                obs_start_time
-                + self.ppt.ss_min
-                + self.config.payload.observation_timing.total_seconds,
-                ephem_end,
-            )
-            violation = self._check_locked_roll_window(
-                obs_start_time,
-                obs_val_end,
-                (slew.endra, slew.enddec, slew.endroll),
-            )
-            if violation is not None:
-                t_unix, constraint_name, scope_label = violation
-                self.log.log_event(
-                    utime=utime,
-                    event_type="QUEUE",
-                    description=(
-                        f"Target {self.ppt.obsid} skipped — locked roll "
-                        f"{slew.endroll:.1f}° violates {constraint_name} "
-                        f"({scope_label}) within minimum observation window "
-                        f"(at t+{t_unix - obs_start_time:.0f}s)"
-                    ),
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return None
-
-            # Verify slew won't overlap with a pass - check both start and end
-            slew_end = execution_time + slew.slewtime
-            if self.acs.passrequests.current_pass(execution_time) is not None:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description="Slew rejected - execution time falls during a pass",
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self.ppt = None
-                self._ppt_unavailable = True
-                return None
-            if self.acs.passrequests.current_pass(slew_end) is not None:
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description="Slew rejected - would complete during a pass",
-                    obsid=self.ppt.obsid,
-                    acs_mode=self.acs.acsmode,
-                )
-                self.ppt = None
-                self._ppt_unavailable = True
-                return None
-
-            if self._reject_current_ppt_if_insufficient_collect_time(
-                slew_end,
-                utime,
-                ra,
-                dec,
-                target_roll=slew.endroll,
-            ):
-                return None
-
-            self._apply_slew_metadata(self.ppt, slew, update_end=True)
-            timing = self.config.payload.observation_timing
-            deadline, _ = self._next_science_deadline(
-                slew_end, current_time=utime, target_roll=slew.endroll
-            )
-            remaining = min(
-                self.ppt.ss_max,
-                self.ppt.exptime if self.ppt.exptime is not None else self.ppt.ss_max,
-            )
-            # What the queue let the visit collect, where the recorder holds
-            # less than the whole snapshot. (A test double has no number.)
-            collection_limit = getattr(self.ppt, "collection_limit", None)
-            if isinstance(collection_limit, (int, float)):
-                remaining = min(remaining, float(collection_limit))
-            # The slew flown can take a step more than the one the queue
-            # charged: what the recorder holds is asked again with it.
-            within = getattr(self.queue, "collection_within", None)
-            room = self._recorder_room_gb(utime, ra, dec, self.acs.roll)
-            if callable(within) and room is not None:
-                fits = float(within(self.ppt, room))
-                if fits < remaining:
-                    remaining = max(0.0, floor(fits))
-            self.ppt.end = min(deadline, slew_end + timing.total_seconds + remaining)
-            violation = self._check_locked_roll_window(
-                slew_end, self.ppt.end, (slew.endra, slew.enddec, slew.endroll)
-            )
-            if violation is not None:
-                # Leave from a still-valid sample, with teardown already over.
-                self.ppt.end = min(self.ppt.end, violation[0] - self.step_size)
-            self.ppt.set_collection_window(timing)
-            if self.ppt.exposure < self.ppt.ss_min:
-                self._retry_fetch_without_current_ppt(utime, ra, dec)
-                return None
-            if not enqueue_slew:
-                return slew
-            self._command_ppt_slew(utime, slew)
+                    self._retry_fetch_without_current_ppt(utime, ra, dec)
+                    return None
+                slew = admitted.slew
+                self.ppt.end = admitted.end
+                self._apply_slew_metadata(self.ppt, slew)
+                self._momentum_recovery = admitted.recovery
+            else:
+                slew = self._new_ppt_slew(self.ppt, utime)
+                self._complete_ppt_slew(slew, self.ppt, utime, request.start)
+                if self._validate_ppt_slew(self.ppt, slew, utime, request) is None:
+                    self._retry_fetch_without_current_ppt(utime, ra, dec)
+                    return None
+            if enqueue_slew:
+                self._command_ppt_slew(utime, slew)
             return slew
         else:
             self.log.log_event(

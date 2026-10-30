@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 
 import numpy as np
@@ -69,6 +70,8 @@ class MomentumSample:
     gravity_gradient_torque_body_n_m: tuple[float, float, float]
     stored_momentum_body_n_m_s: tuple[float, float, float]
     stored_momentum_norm_n_m_s: float
+    actuator_momentum_body_n_m_s: tuple[float, float, float] | None = None
+    actuator_momentum_norm_n_m_s: float | None = None
 
 
 class StoredMomentumTracker:
@@ -87,6 +90,7 @@ class StoredMomentumTracker:
         initial_momentum_body_n_m_s: npt.ArrayLike = (0.0, 0.0, 0.0),
         *,
         max_sample_interval_s: float = 10.0,
+        gravity_gradient_enabled: bool = True,
     ) -> None:
         if (
             not np.isfinite(max_sample_interval_s)
@@ -96,6 +100,7 @@ class StoredMomentumTracker:
                 "max_sample_interval_s must be finite, positive, and <= 10 s"
             )
         self.max_sample_interval_s = float(max_sample_interval_s)
+        self.gravity_gradient_enabled = gravity_gradient_enabled
         self.inertia_tensor_body_kg_m2 = _finite_matrix3(
             inertia_tensor_body_kg_m2, name="inertia_tensor_body_kg_m2"
         )
@@ -109,6 +114,14 @@ class StoredMomentumTracker:
         self._momentum_eci_n_m_s: npt.NDArray[np.float64] | None = None
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
+
+    def copy(self) -> StoredMomentumTracker:
+        """Independent speculative state; immutable inputs may be shared."""
+        result = copy(self)
+        for name in ("_momentum_eci_n_m_s", "_previous_torque_eci_n_m"):
+            value = getattr(self, name)
+            setattr(result, name, None if value is None else value.copy())
+        return result
 
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state."""
@@ -127,6 +140,8 @@ class StoredMomentumTracker:
         utime: float,
         position_eci_km: npt.ArrayLike,
         attitude_quaternion_eci_to_body: npt.ArrayLike,
+        angular_velocity_body_rad_s: npt.ArrayLike | None = None,
+        torque_eci_n_m: npt.ArrayLike | None = None,
     ) -> MomentumSample:
         """Advance to one attitude sample using trapezoidal torque integration."""
         if not np.isfinite(utime):
@@ -145,16 +160,31 @@ class StoredMomentumTracker:
         rotation_eci_to_body = quaternion_to_rotation_matrix(
             attitude_quaternion_eci_to_body
         )
-        torque_body = gravity_gradient_torque_body(
-            position_eci_km,
-            attitude_quaternion_eci_to_body,
-            self.inertia_tensor_body_kg_m2,
+        torque_body = (
+            gravity_gradient_torque_body(
+                position_eci_km,
+                attitude_quaternion_eci_to_body,
+                self.inertia_tensor_body_kg_m2,
+            )
+            if self.gravity_gradient_enabled
+            else np.zeros(3)
         )
         torque_eci = rotation_eci_to_body.T @ torque_body
+        if torque_eci_n_m is not None:
+            # A trajectory forecast can evaluate a partial integration cell
+            # using the same linearly interpolated torque as its full cell.
+            torque_eci = _finite_vector3(torque_eci_n_m, name="torque_eci_n_m")
+            torque_body = rotation_eci_to_body @ torque_eci
+        body_momentum = (
+            np.zeros(3)
+            if angular_velocity_body_rad_s is None
+            else self.inertia_tensor_body_kg_m2
+            @ _finite_vector3(angular_velocity_body_rad_s, name="angular velocity")
+        )
 
         if self._previous_utime is None:
-            self._momentum_eci_n_m_s = (
-                rotation_eci_to_body.T @ self.initial_momentum_body_n_m_s
+            self._momentum_eci_n_m_s = rotation_eci_to_body.T @ (
+                self.initial_momentum_body_n_m_s + body_momentum
             )
         else:
             assert self._momentum_eci_n_m_s is not None
@@ -167,6 +197,7 @@ class StoredMomentumTracker:
         self._previous_torque_eci_n_m = torque_eci
         assert self._momentum_eci_n_m_s is not None
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
+        actuator = momentum_body - body_momentum
 
         return MomentumSample(
             gravity_gradient_torque_body_n_m=(
@@ -180,4 +211,14 @@ class StoredMomentumTracker:
                 float(momentum_body[2]),
             ),
             stored_momentum_norm_n_m_s=float(np.linalg.norm(self._momentum_eci_n_m_s)),
+            actuator_momentum_body_n_m_s=(
+                float(actuator[0]),
+                float(actuator[1]),
+                float(actuator[2]),
+            )
+            if angular_velocity_body_rad_s is not None
+            else None,
+            actuator_momentum_norm_n_m_s=float(np.linalg.norm(actuator))
+            if angular_velocity_body_rad_s is not None
+            else None,
         )

@@ -146,11 +146,14 @@ def recovery_queue(queue_ditl, monkeypatch):
     ditl.acs._idle_safe_attitude_candidates = Mock(return_value=[(20.0, 0.0)])
     ditl.acs._idle_safe_roll_candidates = Mock(return_value=[0.0])
     ditl._idle_safety = SimpleNamespace(
+        reserve=914,
+        step=2,
         departure_deadline=lambda *args: start,
         first_violation=lambda *args: start + 900,
         hold_is_safe=Mock(return_value=True),
     )
     ditl._slew_attitude_constraint_violation = Mock(return_value=None)
+    ditl._check_attitude_hold_window = Mock(return_value=None)
     monkeypatch.setattr(
         "conops.ditl.queue_ditl.optimum_body_roll", lambda *args, **kwargs: 0.0
     )
@@ -191,7 +194,11 @@ def test_recovery_failure_reports_fault_instead_of_raising(recovery_queue, failu
             "hardware_safety",
         )
     elif failure == "hold":
-        ditl._idle_safety.hold_is_safe.return_value = False
+        ditl._check_attitude_hold_window.return_value = (
+            start + 200,
+            "keepout",
+            "hardware_safety",
+        )
     else:
         ditl._idle_safety.first_violation = lambda *args: start
     ditl._schedule_idle_recovery(start)
