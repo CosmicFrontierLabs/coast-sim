@@ -113,10 +113,9 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
             for the steps that start in it. None counts spans exactly.
         origin: A time the step grid passes through; ``begin`` if None.
         coverage: Link coverage for passes without spacecraft tracking.
-            Downlink is credited at the end of each simulation step or link
-            span, with science split across those boundaries. The peak before each
-            credit conservatively counts that step's incoming data before
-            its outgoing data. Housekeeping stays at the nominal rate.
+            Production and usable link rates are walked in time order. Solver
+            and retry segments follow contact ends; the exact walk also checks
+            changes within those segments. Housekeeping stays at the nominal rate.
 
     Housekeeping is counted at the nominal rate throughout, and at the
     ``PASS`` rate during spacecraft tracking: the plan does not know when the spacecraft
@@ -163,10 +162,15 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
                 DataFlow(p.begin, p.end, -p.rate_mbps * (p.end - p.begin) / 1000.0)
                 for p in spans
             )
-            # Coarse solver/retry boundaries follow link changes. The exact
+            # Coarse solver/retry boundaries follow contact ends. The exact
             # sweep below also includes every science production boundary.
             amounts: dict[float, float] = {}
-            for span in spans:
+            contacts_in_horizon = (
+                coverage.recorder_spans(config, self.grid_step(begin), end)
+                if isinstance(config, RecorderView)
+                else coverage.spans(self.grid_step(begin), end)
+            )
+            for span in contacts_in_horizon:
                 amounts[span.end] = (
                     amounts.get(span.end, 0.0)
                     + span.rate_mbps * (span.end - span.begin) / 1000.0
@@ -375,7 +379,7 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
     def level_at(self, planned: Sequence[RecorderAmount], time: float) -> float:
         if self._timed_science:
             return self._walk(planned, time)[1][-1]
-        if time >= self.bounds[-1]:
+        if time >= self._end:
             return self.levels(planned)[-1]
         first = self.segment(time)
         return (
@@ -383,6 +387,41 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
             - self.accrual[first]
             - amount_total(planned[first])
         )
+
+    def model_vectors(
+        self, planned: Sequence[RecorderAmount], time: float
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Future solver terms, excluding data already produced or transmitted."""
+        first = self.segment(time)
+        accrual = list(self.accrual[first:])
+        fixed = [amount_total(a) for a in planned[first:]]
+        removal = list(self.removal[first:])
+        if self._timed_science:
+            fixed = []
+            for amount in planned[first:]:
+                volume = 0.0
+                if not isinstance(amount, (int, float)):
+                    for flow in amount:
+                        if flow.begin == flow.end:
+                            volume += flow.volume if flow.begin > time else 0.0
+                        else:
+                            share = max(0.0, flow.end - max(flow.begin, time)) / (
+                                flow.end - flow.begin
+                            )
+                            volume += flow.volume * share
+                fixed.append(volume)
+            accrual[0] = self.config.housekeeping_generated(
+                self.bounds[first + 1] - time
+            )
+            if len(removal) > 1:
+                stop = self.bounds[first + 1]
+                removal[1] = -sum(
+                    f.volume
+                    * max(0.0, min(stop, f.end) - max(time, f.begin))
+                    / (f.end - f.begin)
+                    for f in self._link_flows
+                )
+        return accrual, fixed, removal
 
     def add(
         self, planned: Sequence[RecorderAmount], segment: int, extra: RecorderAmount
@@ -454,7 +493,7 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
 
 
 class RecorderLedgers:
-    """Independent scalar ledgers stored in one flat planning-state tuple.
+    """Independent recorder ledgers stored in one flat planning-state tuple.
 
     Offsets identify stores; capacity and downlink credit never cross them.
     """

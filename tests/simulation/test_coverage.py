@@ -58,6 +58,17 @@ class TestForConfig:
                 assert np.shares_memory(rates, passes._rates[station.code])
         assert len(passes._geometry) == len(config.ground_stations.stations)
         assert len(passes._rates) == len(config.ground_stations.stations)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        for j, station in enumerate(coverage.stations):
+            assert np.shares_memory(
+                coverage._to_station[j],
+                coverage.pass_times._geometry[station.code].to_station,
+            )
+            assert np.shares_memory(
+                coverage.rate_steps[j], coverage.pass_times._rates[station.code]
+            )
 
     def test_none_without_a_communications_system(self) -> None:
         """The legacy behaviour: a body-fixed antenna, which downlinks in passes."""

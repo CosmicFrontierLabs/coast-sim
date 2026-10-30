@@ -373,6 +373,7 @@ class TestPlanning:
         coverage.repoints = []
         coverage.scheduled_passes = [ContactSpan(T0, T0 + hours * HOUR, "MAL", 1e-5)]
         coverage.rate_spans.return_value = coverage.scheduled_passes
+        coverage.spans.return_value = coverage.scheduled_passes
         target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
         scheduler = PriorityScheduler(
             config,

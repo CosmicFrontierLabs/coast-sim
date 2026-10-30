@@ -35,9 +35,6 @@ from .priority_scheduler import (
 )
 from .recorder import RecorderAmount, amounts_equal, combine_amounts
 
-_VOLUME_TOLERANCE_GB = 1e-9
-"""Within which two ledgers' volumes are the same, allowing for rounding."""
-
 
 class _Snapshot(BaseModel):
     """One snapshot in the sequence: its request, length and release time."""
@@ -68,7 +65,7 @@ class _State(BaseModel):
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
     volumes: tuple[RecorderAmount, ...]
-    """Science volume planned in each segment of the recorder ledger."""
+    """Science production planned in each segment of the recorder ledger."""
     energy: tuple[Additions, ...]
     """What the plan draws from the battery, by segment of the battery ledger."""
     allocated_left: dict[tuple[int, int], float]
