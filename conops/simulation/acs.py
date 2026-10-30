@@ -37,6 +37,7 @@ from .attitude import (
     AttitudeTrajectory,
 )
 from .emergency_charging import EmergencyCharging
+from .momentum import StoredMomentumTracker
 from .momentum_budget import MomentumBudget
 from .passes import Pass
 from .slew import Slew
@@ -96,6 +97,10 @@ class ACS:
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
+        self.momentum_tracker: StoredMomentumTracker | None = None
+        """The simulation's stored-momentum tracker, which capacity
+        enforcement integrates into where it is on; set by the simulation
+        before the run."""
         self.readmission_requests: list[Slew] = []
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
         self._attitude_guidance_disabled = False
@@ -219,7 +224,10 @@ class ACS:
                 is True
             ):
                 executor.momentum = MomentumBudget(
-                    self.config, self.ephem, executor.state
+                    self.config,
+                    self.ephem,
+                    executor.state,
+                    tracker=self.momentum_tracker,
                 )
             # Failed initialization must not leave an unguarded executor behind.
             self._executor = executor
