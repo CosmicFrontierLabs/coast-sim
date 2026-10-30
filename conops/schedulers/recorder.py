@@ -65,10 +65,10 @@ class RecorderLedger(ConsumableLedger[float, float]):
             for the steps that start in it. None counts spans exactly.
         origin: A time the step grid passes through; ``begin`` if None.
         coverage: Link coverage for passes without spacecraft tracking.
-            Its spans of contact in the horizon downlink at their station's
-            rate; the spacecraft stays in whatever mode it is in, so
-            housekeeping is at the nominal rate throughout. These passes
-            have no spacecraft tracking entries.
+            Downlink is credited at the end of each simulation step or link
+            span, with science split across those boundaries. The peak before each
+            credit conservatively counts that step's incoming data before
+            its outgoing data. Housekeeping stays at the nominal rate.
 
     Housekeeping is counted at the nominal rate throughout, and at the
     ``PASS`` rate during spacecraft tracking: the plan does not know when the spacecraft
@@ -97,33 +97,39 @@ class RecorderLedger(ConsumableLedger[float, float]):
         self.config = config
         self.step_size = float(step_size) if step_size is not None else None
         self.origin = float(begin if origin is None else origin)
-        removals = []
+        self._timed_science = coverage is not None
+        self._end = float(end)
+        removals: list[Removal] = []
         tails: list[tuple[float, float]] = []
         """Where each contact's removal starts, and what the step its link
         ends in generates after the link, at the PASS rate, beyond the
         nominal rate the segment counts it at."""
         if coverage is not None:
-            spans = (
-                coverage.recorder_spans(config, begin, end)
-                if isinstance(config, RecorderView)
-                else coverage.spans(begin, end)
-            )
-            for span in spans:
-                seconds = span.end - span.begin
-                # The spacecraft stays in its mode, so the steps in contact
-                # generate at the nominal rate; the link's own length sets
-                # what it downlinks.
-                first = self.grid_step(span.begin)
-                if span.end <= first:
-                    continue
-                removals.append(
-                    Removal(
-                        first,
-                        span.end,
-                        span.rate_mbps * seconds / 1000.0,
-                        config.housekeeping_generated(span.end - first),
+            # Credit only the data sent by a completed step. A single removal
+            # at acquisition would make the rest of the contact's capacity
+            # available before the spacecraft has transmitted anything.
+            step = self.step_size or coverage.step_size
+            amounts: dict[float, float] = {}
+            for span in coverage.spans(self.grid_step(begin), end):
+                cursor = span.begin
+                while cursor < span.end:
+                    tick = (
+                        self.origin
+                        + (math.floor((cursor - self.origin) / step + 1e-9) + 1) * step
                     )
-                )
+                    stop = min(tick, span.end)
+                    pieces = (
+                        coverage.recorder_spans(config, cursor, stop)
+                        if isinstance(config, RecorderView)
+                        else coverage.spans(cursor, stop)
+                    )
+                    amount = sum(
+                        p.rate_mbps * (p.end - p.begin) / 1000.0 for p in pieces
+                    )
+                    if amount > 0.0:
+                        amounts[stop] = amounts.get(stop, 0.0) + amount
+                    cursor = stop
+            removals.extend(Removal(t, t, amount) for t, amount in amounts.items())
         for entry in contacts:
             if (
                 entry.station is None
@@ -212,6 +218,63 @@ class RecorderLedger(ConsumableLedger[float, float]):
         """What a snapshot of ``entry`` collecting for some seconds generates."""
         return self.config.science_generated(collection_seconds, entry.science_data)
 
+    def science_additions(
+        self,
+        entry: PlanEntry,
+        seconds: float,
+        time: float,
+        *,
+        include_fixed: bool = True,
+    ) -> list[tuple[int, float]]:
+        """Science where it is collected, without downlinking future data.
+
+        Tracking passes cannot overlap science, so their existing scalar
+        accounting suffices. Flexible antennas need each part of a snapshot
+        on the recorder before the corresponding step's downlink is credited.
+        """
+        fixed = self.science_volume(entry, 0.0)
+        if not self._timed_science:
+            volume = self.science_volume(entry, seconds)
+            return [(self.segment(time), volume if include_fixed else volume - fixed)]
+        additions: dict[int, float] = {}
+
+        def spread(begin: float, end: float, volume: float) -> None:
+            for k in range(self.segment(begin), self.segments):
+                lo, hi = max(begin, self.bounds[k]), min(end, self.bounds[k + 1])
+                if hi > lo:
+                    additions[k] = additions.get(k, 0.0) + volume * (hi - lo) / (
+                        end - begin
+                    )
+                if self.bounds[k + 1] >= end:
+                    break
+
+        if seconds <= 0.0:
+            return []
+        if self.step_size is None:
+            spread(time, time + seconds, self.science_volume(entry, seconds) - fixed)
+            if include_fixed:
+                k = self.segment(time)
+                additions[k] = additions.get(k, 0.0) + fixed
+        else:
+            # DITL spreads each step's generation uniformly through that step,
+            # including a snapshot's fixed amount in its first collecting step.
+            # Use the same distribution at acquisitions and repoints that split
+            # a step, so a link cannot transmit the data generated after it ends.
+            step = self.step_size
+            cursor = self.origin + math.floor((time - self.origin) / step) * step
+            while cursor < time + seconds and cursor < self._end:
+                stop = min(cursor + step, self._end)
+                lo, hi = max(time, cursor), min(time + seconds, stop)
+                volume = self.science_volume(entry, hi - time)
+                if lo > time:
+                    volume -= self.science_volume(entry, lo - time)
+                elif not include_fixed:
+                    volume -= fixed
+                if hi > lo:
+                    spread(cursor, stop, volume)
+                cursor = stop
+        return list(additions.items())
+
     def ingress_volume(
         self,
         entry: PlanEntry,
@@ -264,8 +327,10 @@ class RecorderLedger(ConsumableLedger[float, float]):
             seconds = float(entry.collection_end) - float(entry.collection_begin)
             if seconds <= 0.0:
                 continue
-            segment = self.segment(float(entry.collection_begin))
-            volumes[segment] += self.science_volume(entry, seconds)
+            for segment, volume in self.science_additions(
+                entry, seconds, float(entry.collection_begin)
+            ):
+                volumes[segment] += volume
         return tuple(volumes)
 
 
@@ -374,8 +439,9 @@ class RecorderLedgers:
         self, entry: PlanEntry, seconds: float, time: float
     ) -> list[tuple[int, float]]:
         return [
-            (offset + ledger.segment(time), ledger.science_volume(entry, seconds))
+            (offset + segment, volume)
             for _, ledger, offset in self.members
+            for segment, volume in ledger.science_additions(entry, seconds, time)
         ]
 
     def ingress_additions(

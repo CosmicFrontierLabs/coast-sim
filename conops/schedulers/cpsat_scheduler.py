@@ -1171,8 +1171,17 @@ class CpSatScheduler(LocalSearchScheduler):
         for snapshot in later:
             assert snapshot.release is not None
             target = self._by_obsid[snapshot.obsid].target
-            segment = ledger.segment(snapshot.release)
-            volumes[segment] += ledger.science_volume(target, snapshot.seconds)
+            block = next(
+                b
+                for b in self._greedy_timeline
+                if int(b.entry.obsid) == snapshot.obsid
+                and float(b.entry.begin) == snapshot.release
+            )
+            assert block.entry.collection_begin is not None
+            for segment, volume in ledger.science_additions(
+                target, snapshot.seconds, float(block.entry.collection_begin)
+            ):
+                volumes[segment] += volume
         first = ledger.segment(origin_time)
         levels = ledger.peaks(volumes)
         entering = levels[first] - ledger.accrual[first] - volumes[first]

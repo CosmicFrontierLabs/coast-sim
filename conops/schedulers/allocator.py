@@ -486,12 +486,11 @@ class LongRangeAllocator:
         """The MILP solver's status for each stage of the last allocation,
         or "OPTIMAL" if every stage was solved to optimality."""
         self._previous: Allocation | None = None
-        self.ctx = SchedulingContext(config, begin, end, coverage=coverage)
+        self.ctx = SchedulingContext(
+            config, begin, end, passes=passes, coverage=coverage
+        )
         self.merit_model = MeritModel(config)
         self._windows: dict[int, list[tuple[float, float]]] = {}
-        self.passes: list[Pass] | None = list(passes) if passes is not None else None
-        """The run's predicted ground passes, once given or predicted; a caller
-        that predicts them for the run sets them here before allocating."""
         length = bin_length.total_seconds()
         ustart, uend = begin.timestamp(), end.timestamp()
         count = max(1, int(-(-(uend - ustart) // length)))
@@ -499,6 +498,17 @@ class LongRangeAllocator:
             (ustart + k * length, min(ustart + (k + 1) * length, uend))
             for k in range(count)
         ]
+
+    @property
+    def passes(self) -> list[Pass] | None:
+        """The run's bookings, shared with the context's link coverage."""
+        return self.ctx.passes
+
+    @passes.setter
+    def passes(self, passes: Sequence[Pass] | None) -> None:
+        self.ctx.passes = passes
+        # Visibility windows can include cuts for the old coverage's repoints.
+        self._windows.clear()
 
     def allocate(
         self,

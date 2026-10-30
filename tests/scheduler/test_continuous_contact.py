@@ -1,7 +1,7 @@
 """Scheduled ground-station passes during science, with consistent recorder
 forecasts, allocation budgets and dispatch."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -341,6 +341,31 @@ class TestDispatchRoom:
 
 
 class TestPlanning:
+    def test_science_during_a_contact_cannot_spend_future_downlink(self):
+        config = _recorder_config()
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        config.recorder.current_volume_gb = 17.0
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        first = coverage.spans(T0, T0 + HOURS * HOUR)[0]
+        begin = datetime.fromtimestamp(first.begin, timezone.utc)
+        end = datetime.fromtimestamp(first.end + 5 * MIN, timezone.utc)
+        target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
+        scheduler = PriorityScheduler(
+            config, [target], begin, end, coverage=coverage, include_passes=False
+        )
+        plan = scheduler.schedule()
+        assert _science(plan)
+        ditl = DITL(config, plan=plan, begin=begin, end=end)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        assert max(ditl.recorder_volume_gb) < LIMIT
+        assert (
+            max(ditl.recorder_volume_gb)
+            <= max(scheduler._ledger.peaks(scheduler._volumes)) + 1e-6
+        )
+
     @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
     @pytest.mark.parametrize("probability", [0.0, 0.5])
     def test_bookings_survive_saved_plan_replay_without_a_seed(
@@ -402,14 +427,14 @@ class TestPlanning:
             config, T0, end, [], start_volume_gb=0.0, coverage=coverage
         )
         spans = coverage.spans(T0, end)
-        assert ledger.segments == len(spans) + 1
+        assert ledger.segments > len(spans) + 1
         assert sum(ledger.downlink_gb) == pytest.approx(
             _planned_downlink(coverage, T0, end)
         )
         # Housekeeping at the nominal rate throughout: in contact as well.
-        assert sum(ledger.contact_housekeeping_gb) == pytest.approx(
-            config.housekeeping_generated(sum(s.end - s.begin for s in spans))
-        )
+        assert sum(ledger.housekeeping_gb) + sum(
+            ledger.contact_housekeeping_gb
+        ) == pytest.approx(config.housekeeping_generated(end - T0))
         assert RecorderLedger(config, T0, end, [], start_volume_gb=0.0).segments == 1
 
     def test_the_plan_stays_within_the_limit_and_executes(self) -> None:
@@ -419,7 +444,7 @@ class TestPlanning:
         assert not any(entry.obstype == ObsType.GSP for entry in plan)
         assert (
             scheduler._ledger.segments
-            == len(scheduler.ctx.coverage.spans(T0, T0 + HOURS * HOUR)) + 1
+            > len(scheduler.ctx.coverage.spans(T0, T0 + HOURS * HOUR)) + 1
         )
         assert all(
             peak <= LIMIT + 1e-6 for peak in scheduler._ledger.peaks(scheduler._volumes)
@@ -503,6 +528,36 @@ class TestRollingHorizon:
 
 
 class TestAllocator:
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_supplied_bookings_govern_the_budget(self, antenna_type):
+        config = _recorder_config(antenna_type, gimbal_range_deg=180.0)
+        booked = PassTimes(config).predict()[:1]
+        assert booked
+        allocator = LongRangeAllocator(
+            config,
+            BEGIN,
+            BEGIN + timedelta(hours=HOURS),
+            passes=[],
+            solver="greedy",
+        )
+        targets = _targets(config)
+        assert sum(allocator.allocate(targets, T0).downlink) == 0.0
+        # Set bookings after coverage has already been constructed: callers
+        # such as rolling replanning supply their run's bookings this way.
+        allocator.passes = booked
+        allocation = allocator.allocate(targets, T0)
+        coverage = allocator.ctx.coverage
+        assert coverage is not None
+        assert [(p.begin, p.end, p.station) for p in coverage.pass_times.passes] == [
+            (p.begin, p.end, p.station) for p in booked
+        ]
+        assert sum(allocation.downlink) == pytest.approx(
+            coverage.downlink_gb(T0, T0 + HOURS * HOUR)
+        )
+        assert sum(allocation.downlink) > 0.0
+        allocator.passes = []
+        assert sum(allocator.allocate(targets, T0).downlink) == 0.0
+
     def test_dispatch_shares_its_bookings_with_the_allocator(self) -> None:
         config = _recorder_config()
         config.random_seed = None
