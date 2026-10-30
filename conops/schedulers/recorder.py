@@ -22,7 +22,7 @@ from ..config.data_storage import RecorderView
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
-from ..targets.plan_entry import instrument_modes_of
+from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .consumable import ConsumableLedger, Removal
 
 
@@ -263,9 +263,25 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
 
     def science_volume(self, entry: PlanEntry, collection_seconds: float) -> float:
         """What a snapshot of ``entry`` collecting for some seconds generates."""
-        return self.config.science_generated(
-            collection_seconds, entry.science_data, instrument_modes_of(entry)
+        science = (
+            0.0
+            if entry.calibration
+            else self.config.science_generated(
+                collection_seconds, entry.science_data, instrument_modes_of(entry)
+            )
         )
+        return science + extra_data_gb(entry, self.config)
+
+    def activity_additions(self, entry: PlanEntry) -> list[tuple[int, RecorderAmount]]:
+        """An activity's frames, stored at its start in this recorder."""
+        fixed = extra_data_gb(entry, self.config)
+        if fixed <= 0.0:
+            return []
+        begin = float(entry.begin)
+        amount: RecorderAmount = (
+            (DataFlow(begin, begin, fixed),) if self._timed_science else fixed
+        )
+        return [(self.segment(begin), amount)]
 
     def science_additions(
         self,
@@ -596,6 +612,9 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
                 # Negative where the PASS rate is below the nominal one.
                 k = self.ingress_segment(entry)
                 volumes[k] = combine_amounts(volumes[k], ingress)
+            if entry_obstype(entry) == ObsType.ACTIVITY:
+                for segment, volume in self.activity_additions(entry):
+                    volumes[segment] = combine_amounts(volumes[segment], volume)
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             seconds = float(entry.collection_end) - float(entry.collection_begin)

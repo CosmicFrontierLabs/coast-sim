@@ -36,7 +36,11 @@ from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
-from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
+from ..targets.plan_entry import (
+    extra_data_gb,
+    instrument_modes_of,
+    snapshot_min_seconds,
+)
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
@@ -157,6 +161,8 @@ class _PlannedSnapshot(NamedTuple):
     """When its slew ends."""
     seconds: float
     """Its collection length."""
+    visit: int | None = None
+    """Its visit window, for a target with visit windows."""
 
 
 class _TaskHint(NamedTuple):
@@ -199,9 +205,13 @@ class _Task:
         data: tuple[int, int] = (0, 0),
         power: tuple[int, int] = (0, 0),
         spans: Sequence[_Span] = (),
+        visit: int | None = None,
     ) -> None:
         self.key = key
         """Request and window of a candidate snapshot; None for the start and passes."""
+        self.visit = visit
+        """The visit window of a candidate of a target with visit windows:
+        at most one of a window's candidates is taken."""
         self.copy = copy
         """Which of the window's snapshots of the request this is, from 0."""
         self.spacing = spacing
@@ -323,6 +333,7 @@ class _ChunkModel:
         """The latest any slew can start."""
         self._add_snapshot_constraints()
         self._add_cadence_spacing()
+        self._add_visit_windows()
         self._add_circuit()
         self._add_objective(budget)
         self.recorder_variables = [
@@ -354,6 +365,18 @@ class _ChunkModel:
                 model.add(
                     arrival[k] >= arrival[k - 1] + task.overhead + collection[k - 1]
                 ).only_enforce_if(present[k])
+
+    def _add_visit_windows(self) -> None:
+        """Take at most one candidate per visit window of a target with visit
+        windows: a window that spans two visibility windows has a candidate
+        in each."""
+        by_visit: dict[tuple[int, int], list[int]] = {}
+        for k, task in enumerate(self.tasks):
+            if task.visit is not None and task.obsid is not None:
+                by_visit.setdefault((task.obsid, task.visit), []).append(k)
+        for candidates in by_visit.values():
+            if len(candidates) > 1:
+                self.model.add(sum(self.present[k] for k in candidates) <= 1)
 
     def _add_cadence_spacing(self) -> None:
         """Keep a cadence request's visits at least its cadence apart, and
@@ -1389,7 +1412,7 @@ class CpSatScheduler(LocalSearchScheduler):
             for w0, w1 in self._by_obsid[obsid].windows:
                 if w0 <= arrival < w1:
                     planned.setdefault((obsid, w0), []).append(
-                        _PlannedSnapshot(arrival, seconds)
+                        _PlannedSnapshot(arrival, seconds, entry.visit)
                     )
                     break
         return planned
@@ -1433,94 +1456,133 @@ class CpSatScheduler(LocalSearchScheduler):
             if request.cadence is not None:
                 spacing = int(np.ceil(setup + request.cadence))
                 cadence = int(np.ceil(request.cadence))
-            for w0, w1 in request.windows:
-                if w1 <= opens or w0 >= chunk_end:
-                    continue
-                window = (
-                    int(np.ceil(max(w0, slews_from) - origin_time)),
-                    int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
-                )
-                # The slew may start before the earliest start, which bounds
-                # only the arrival.
-                earliest = int(np.ceil(max(w0, opens) - origin_time))
-                # The slew must start in the chunk (see _ChunkModel); the
-                # snapshot may arrive after it ends.
-                latest = window[1] - overhead - shortest
-                if target.deadline is not None:
-                    latest = min(latest, int(target.deadline - origin_time - setup))
-                if latest < earliest or window[0] >= chunk_end - origin_time:
-                    continue
-                attitude = target.target_body_attitude(
-                    ctx.instrument_roll(target, max(w0, origin_time))
-                )
-                attitudes = (attitude, attitude)
-                task_overhead = overhead
-                if target.sequence is not None:
-                    # A visit runs whole: its calibration, the slews between
-                    # its steps and any step setup are part of its length,
-                    # and it leaves the spacecraft at its last step.
-                    when = max(w0, origin_time)
-                    first = target.step_pointing(0)
-                    last = target.step_pointing(len(target.sequence.steps) - 1)
-                    attitudes = (
-                        first.target_body_attitude(ctx.instrument_roll(first, when)),
-                        last.target_body_attitude(ctx.instrument_roll(last, when)),
+            # One slot of snapshots per request, or one per visit window
+            # still to come for a target with visit windows, each with its
+            # own earliest arrival and collection deadline.
+            slots: list[tuple[float, float | None, int | None]] = [
+                (opens, target.deadline, None)
+            ]
+            if request.timed:
+                slots = [
+                    (
+                        max(opens, target.visit_windows[k].start - setup),
+                        target.visit_windows[k].deadline,
+                        k,
                     )
-                    task_overhead = overhead + int(
-                        np.ceil(
-                            target.sequence_overhead_seconds(
-                                self.config.spacecraft_bus.attitude_control,
-                                self.config.payload.observation_timing,
+                    for k in request.open_visits(
+                        state.last_visit.get(obsid), origin_time
+                    )
+                ]
+            for w0, w1 in request.windows:
+                if w0 >= chunk_end:
+                    continue
+                window_key = (obsid, w0)
+                copy = 0
+                for slot_opens, slot_deadline, visit in slots:
+                    if w1 <= slot_opens:
+                        continue
+                    window = (
+                        int(np.ceil(max(w0, slews_from) - origin_time)),
+                        int(np.floor(min(w1, ctx.uend, finish) - origin_time)),
+                    )
+                    # The slew may start before the earliest start, which
+                    # bounds only the arrival.
+                    earliest = int(np.ceil(max(w0, slot_opens) - origin_time))
+                    # The slew must start in the chunk (see _ChunkModel); the
+                    # snapshot may arrive after it ends.
+                    latest = window[1] - overhead - shortest
+                    if slot_deadline is not None:
+                        latest = min(latest, int(slot_deadline - origin_time - setup))
+                    if latest < earliest or window[0] >= chunk_end - origin_time:
+                        continue
+                    attitude = target.target_body_attitude(
+                        ctx.instrument_roll(target, max(w0, origin_time))
+                    )
+                    attitudes = (attitude, attitude)
+                    task_overhead = overhead
+                    if target.sequence is not None:
+                        # A visit runs whole: its calibration, the slews
+                        # between its steps and any step setup are part of
+                        # its length, and it leaves the spacecraft at its
+                        # last step.
+                        when = max(w0, origin_time)
+                        first = target.step_pointing(0)
+                        last_step = target.step_pointing(len(target.sequence.steps) - 1)
+                        attitudes = (
+                            first.target_body_attitude(
+                                ctx.instrument_roll(first, when)
+                            ),
+                            last_step.target_body_attitude(
+                                ctx.instrument_roll(last_step, when)
+                            ),
+                        )
+                        task_overhead = overhead + int(
+                            np.ceil(
+                                target.sequence_overhead_seconds(
+                                    self.config.spacecraft_bus.attitude_control,
+                                    self.config.payload.observation_timing,
+                                )
                             )
                         )
+                    bounds = (
+                        (slot_opens + setup, slot_deadline)
+                        if visit is not None
+                        else (target.earliest_start, target.deadline)
                     )
-                rate, earliness, offset, late = self._candidate_value(
-                    request, shares, origin_time
-                )
-                data = self._candidate_data(target)
-                power = self._candidate_power(target, max(w0, origin_time))
-                # Allocated time is worth allocation_bonus more, beyond the rate.
-                spans = self._spans(
-                    state,
-                    obsid,
-                    origin_time,
-                    (earliest, latest),
-                    (self._allocated_factor - 1.0) * self._value(request, shares),
-                )
-                # As many snapshots as the exposure needs and the window holds.
-                copies = min(
-                    int(np.ceil(remaining / longest)),
-                    max(1, (window[1] - earliest) // (overhead + shortest)),
-                )
-                if spacing is not None:
-                    copies = min(copies, 1 + (window[1] - earliest) // spacing)
-                # A fixed task in the window can split the exposure into more,
-                # shorter snapshots; keep at least those of the priority-first
-                # plan, so the hint can reproduce it.
-                copies = max(copies, len(planned.get((obsid, w0), ())))
-                priority = 0 if (obsid, w0) in planned else 1
-                for copy in range(copies):
-                    task = _Task(
-                        (obsid, w0),
-                        attitudes,
+                    rate, earliness, offset, late = self._candidate_value(
+                        request, shares, origin_time, bounds
+                    )
+                    # Allocated time is worth allocation_bonus more, beyond the rate.
+                    spans = self._spans(
+                        state,
+                        obsid,
+                        origin_time,
                         (earliest, latest),
-                        copy=copy,
-                        spacing=spacing,
-                        overhead=task_overhead,
-                        setup=int(np.ceil(setup)),
-                        collection=(shortest, longest),
-                        window=window,
-                        rate=rate,
-                        earliness=earliness,
-                        offset=offset,
-                        late=late,
-                        due=int(np.ceil(opens - origin_time)),
-                        cadence=cadence or 0,
-                        data=data,
-                        power=power,
-                        spans=spans,
+                        (self._allocated_factor - 1.0) * self._value(request, shares),
                     )
-                    candidates.append((priority, rank, task))
+                    data = self._candidate_data(target)
+                    power = self._candidate_power(target, max(w0, origin_time))
+                    if visit is not None:
+                        # One visit per window.
+                        copies = 1
+                    else:
+                        # As many snapshots as the exposure needs and the
+                        # window holds.
+                        copies = min(
+                            int(np.ceil(remaining / longest)),
+                            max(1, (window[1] - earliest) // (overhead + shortest)),
+                        )
+                        if spacing is not None:
+                            copies = min(copies, 1 + (window[1] - earliest) // spacing)
+                        # A fixed task in the window can split the exposure
+                        # into more, shorter snapshots; keep at least those of
+                        # the priority-first plan, so the hint can reproduce it.
+                        copies = max(copies, len(planned.get(window_key, ())))
+                    priority = 0 if window_key in planned else 1
+                    for _ in range(copies):
+                        task = _Task(
+                            window_key,
+                            attitudes,
+                            (earliest, latest),
+                            copy=copy,
+                            spacing=spacing,
+                            overhead=task_overhead,
+                            setup=int(np.ceil(setup)),
+                            collection=(shortest, longest),
+                            window=window,
+                            rate=rate,
+                            earliness=earliness,
+                            offset=offset,
+                            late=late,
+                            due=int(np.ceil(opens - origin_time)),
+                            cadence=cadence or 0,
+                            spans=spans,
+                            data=data,
+                            power=power,
+                            visit=visit,
+                        )
+                        copy += 1
+                        candidates.append((priority, rank, task))
         # Stable, so a window's snapshots stay together and in order.
         candidates.sort(key=lambda item: (item[0], item[1]))
         return [task for _, _, task in candidates[: self.max_candidates]]
@@ -1538,7 +1600,9 @@ class CpSatScheduler(LocalSearchScheduler):
         if not self._ledger.active:
             return (0, 0)
         modes = instrument_modes_of(target)
-        once = self.config.science_generated(0.0, target.science_data, modes)
+        once = self.config.science_generated(
+            0.0, target.science_data, modes
+        ) + extra_data_gb(target)
         per_second = (
             self.config.science_generated(1.0, target.science_data, modes) - once
         )
@@ -1572,6 +1636,7 @@ class CpSatScheduler(LocalSearchScheduler):
         request: _Request,
         shares: dict[str, float],
         origin_time: float,
+        bounds: tuple[float | None, float | None] | None = None,
     ) -> tuple[float, float, float, float]:
         """A candidate's objective terms per second of collection: its rate,
         earliness, offset and lateness discount (see :class:`_Task`).
@@ -1586,9 +1651,12 @@ class CpSatScheduler(LocalSearchScheduler):
         setup = ctx.setup_for(int(target.obsid))
         rate = self._value(request, shares)
         earliness = offset = late = 0.0
-        if target.deadline is not None and self.earliness_weight > 0.0:
-            released = max(ctx.ustart, target.earliest_start or ctx.ustart)
-            available = target.deadline - released
+        earliest_start, deadline = (
+            bounds if bounds is not None else (target.earliest_start, target.deadline)
+        )
+        if deadline is not None and self.earliness_weight > 0.0:
+            released = max(ctx.ustart, earliest_start or ctx.ustart)
+            available = deadline - released
             if available > 0:
                 # Delay counts from the horizon start, or the earliest
                 # start if later, at collection start, as in local search.
@@ -1624,8 +1692,17 @@ class CpSatScheduler(LocalSearchScheduler):
         wanted: dict[int, _PlannedSnapshot] = {}
         for k, task in enumerate(tasks):
             snapshots = planned.get(task.key) if task.key is not None else None
-            if snapshots is not None and task.copy < len(snapshots):
-                arrival, seconds = snapshots[task.copy]
+            if snapshots is None:
+                continue
+            if task.visit is not None:
+                # A visit's candidate takes the plan's snapshot in its window.
+                match = next((s for s in snapshots if s.visit == task.visit), None)
+                if match is not None:
+                    wanted[k] = _PlannedSnapshot(
+                        match.arrival - origin_time, match.seconds, match.visit
+                    )
+            elif task.copy < len(snapshots):
+                arrival, seconds, _ = snapshots[task.copy]
                 wanted[k] = _PlannedSnapshot(arrival - origin_time, seconds)
         passes = [k for k, task in enumerate(tasks) if k and not task.optional]
         order = sorted(

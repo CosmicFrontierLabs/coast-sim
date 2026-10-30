@@ -317,12 +317,11 @@ class LocalSearchScheduler(PriorityScheduler):
         """
         entry = block.entry
         worth = value * _collection_seconds(block)
-        target = request.target
-        deadline = target.deadline
+        deadline = request.deadline
         if deadline is None or self.earliness_weight == 0.0:
             return worth
         # Lateness counts from when the request could first start.
-        opens = max(self.ctx.ustart, target.earliest_start or self.ctx.ustart)
+        opens = max(self.ctx.ustart, request.earliest_start or self.ctx.ustart)
         available = deadline - opens
         if available <= 0.0 or entry.collection_begin is None:
             return worth
@@ -381,12 +380,27 @@ class LocalSearchScheduler(PriorityScheduler):
         if request.cadence is not None and last is not None:
             due = last + request.cadence
             not_before = due if not_before is None else max(not_before, due)
+        if request.timed:
+            # The next window still open where the decoding has got to.
+            cursor_time = (
+                state.timeline[state.cursor - 1].end
+                if state.cursor > 0
+                else self.ctx.ustart
+            )
+            request.select_visit(
+                request.next_visit(last, max(cursor_time, not_before or cursor_time)),
+                self.ctx,
+            )
+            if request.visit is None:
+                return state
 
         timeline = state.timeline
         for index in range(state.cursor, len(timeline) + 1):
             pred = timeline[index - 1] if index > 0 else self._origin
             succ = timeline[index] if index < len(timeline) else None
-            fit = self._fit_in_gap(request, pred, succ, not_before)
+            fit = self._fit_in_gap(
+                request, pred, succ, not_before, beyond=timeline[index + 1 :]
+            )
             if fit is None:
                 continue
             # Only where the battery stays above its planning level, charging
@@ -406,15 +420,13 @@ class LocalSearchScheduler(PriorityScheduler):
             if not self._ledger.fits_all(state.volumes, additions):
                 continue
 
-            # Put the snapshot in place, reconnecting the fixed block after it.
+            # Put the snapshot in place, reconnecting the fixed block after
+            # it, with the chain it leads where it follows.
             self._apply_slew(block, slew)
             placed = [*timeline[:index], block]
             if succ is not None:
                 assert succ_slew is not None
-                moved = self._copy_block(succ)
-                self._apply_slew(moved, succ_slew)
-                placed.append(moved)
-                placed.extend(timeline[index + 1 :])
+                placed.extend(self._reconnected(block, timeline[index:], succ_slew))
 
             # Freeze the value the snapshot has here onto its entry, with the
             # allocation's share, as the priority-first scheduler does: a
@@ -430,7 +442,9 @@ class LocalSearchScheduler(PriorityScheduler):
             programs = dict(state.programs)
             self._add_program_seconds(programs, request, block)
             last_visit = state.last_visit
-            if request.cadence is not None and block.entry.collection_end is not None:
+            if (
+                request.cadence is not None or request.timed
+            ) and block.entry.collection_end is not None:
                 last_visit = {**last_visit, obsid: float(block.entry.collection_end)}
             return _State.model_construct(
                 timeline=placed,

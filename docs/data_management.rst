@@ -740,6 +740,12 @@ one active downlink in this model. ``downlinks: []`` explicitly means no downlin
 ``null`` means the path is unresolved. Stations absent from the list provide no
 data removal, though they may still provide uplink contacts.
 
+Calibration and activity frame sizes are fixed amounts. Their named instruments
+route them through ``instrument_science``; a calibration step without its own
+modes inherits the observation's instruments. The instruments must identify one
+store for each fixed amount. Use separate entries or budget steps when frames
+belong to different stores. An activity naming no instrument uses the bus store.
+
 Dispatch, priority, local-search and CP-SAT scheduling check every store's own
 planning limit. Rolling replanning carries a mapping of store names to projected
 volumes. The long-range allocator budgets each store's data within its own
