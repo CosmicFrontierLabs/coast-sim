@@ -739,7 +739,10 @@ data removal, though they may still provide uplink contacts.
 
 Dispatch, priority, local-search and CP-SAT scheduling check every store's own
 planning limit. Rolling replanning carries a mapping of store names to projected
-volumes. Spare capacity and contact credit never move between stores. Execution
+volumes. The long-range allocator budgets each store's data within its own
+planning limit and its own reserved downlink, starting from the volume on each
+store, and reports each store's budget in ``Allocation.recorders[name]``.
+Spare capacity and contact credit never move between stores. Execution
 uses the same source routing and downlink reservations. Per-store telemetry is
 in ``Housekeeping.recorders[name]``, including ``volume_gb``, ``capacity_gb``,
 ``fill_fraction``, ``alert`` and cumulative ``generated_gb``, ``downlinked_gb`` and

@@ -1,6 +1,6 @@
+import math
 import os
 import time
-import math
 from datetime import datetime, timezone
 
 import numpy as np

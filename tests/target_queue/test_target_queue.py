@@ -3,8 +3,8 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import pytest
 
-from conops.common import ACSMode
 from conops import AttitudeControlSystem, Queue, TargetSlewEstimate
+from conops.common import ACSMode
 from conops.config import ObservationTiming
 
 
