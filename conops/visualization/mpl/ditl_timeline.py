@@ -7,9 +7,11 @@ eclipses, and ground station passes.
 
 from datetime import datetime, timezone
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.patches import Patch
 
 from conops.ditl.ditl import DITL
 from conops.ditl.queue_ditl import QueueDITL
@@ -17,6 +19,14 @@ from conops.ditl.queue_ditl import QueueDITL
 from ...common import ACSMode, ObsType
 from ...config import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ...simulation.coverage import StationCoverage
+from ..contacts import (
+    ContactBar,
+    contact_alphas,
+    contact_bars,
+    run_window,
+    station_colors,
+)
 
 # Mapping of matplotlib color names to CSS color names that Plotly accepts
 MATPLOTLIB_TO_PLOTLY_COLORS = {
@@ -308,6 +318,24 @@ def plot_ditl_timeline(
             label="Ground Contact",
         )
 
+    # Usable links during ground-station passes, coloured by station. On
+    # a long run each bar is an hour, as dark as its fraction in contact.
+    contacts = _extract_contacts(ditl, t_start, offset_hours)
+    contact_handles: list[Patch] = []
+    if contacts:
+        colors = station_colors(bar.station for bar in contacts)
+        alphas = dict(zip(contacts, contact_alphas(contacts)))
+        contact_y_pos = row_positions["Ground Contact"]
+        for station, color in colors.items():
+            bars = [bar for bar in contacts if bar.station == station]
+            ax.broken_barh(
+                [(bar.start, bar.duration) for bar in bars],
+                (contact_y_pos, bar_height),
+                facecolors=[mcolors.to_rgba(color, alpha=alphas[bar]) for bar in bars],
+                label="_nolegend_",
+            )
+            contact_handles.append(Patch(color=color, label=f"Contact: {station}"))
+
     # Set up axes with labels and tick positions
     # Y-ticks should be at the center of each bar for the grid lines to cut through
     y_labels = [row[0] for row in timeline_rows]
@@ -328,7 +356,8 @@ def plot_ditl_timeline(
 
     # Add legend and configure it via typed Legend methods to avoid
     # version-specific Axes.legend overload issues in static type checking.
-    legend = ax.legend()
+    handles, _ = ax.get_legend_handles_labels()
+    legend = ax.legend(handles=[*handles, *contact_handles])
     legend.set_loc("upper center")
     legend.set_bbox_to_anchor((0.5, -0.2))
     legend.set_ncols(4)
@@ -565,10 +594,26 @@ def _extract_eclipses(
     return eclipse_segments
 
 
+def _extract_contacts(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[ContactBar]:
+    """Usable link spans for passes without spacecraft tracking.
+
+    Tracking activities are plotted by ``_extract_ground_passes``.
+    """
+    coverage = getattr(ditl, "coverage", None)
+    if not isinstance(coverage, StationCoverage):
+        return []
+    window = run_window(ditl)
+    if window is None:
+        return []
+    return contact_bars(coverage, window[0], window[1], t_start, offset_hours)
+
+
 def _extract_ground_passes(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
-    """Extract ground station pass times from ACS pass list."""
+    """Extract spacecraft tracking intervals from the ACS pass list."""
     if not hasattr(ditl, "acs") or ditl.acs is None:
         return []
 

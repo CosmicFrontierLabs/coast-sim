@@ -21,9 +21,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..common.enums import ACSMode
 from ..config import MissionConfig
+from ..config.data_storage import RecorderView
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .context import SchedulingContext
 from .recorder import contact_downlink_gb
 
@@ -436,6 +439,9 @@ class LongRangeAllocator:
         passes: The run's predicted ground passes, for the data budget, where
             the caller has them; predicted once otherwise, which takes a
             while for a long run.
+        coverage: Link coverage for passes without spacecraft tracking,
+            for the data budget, where the caller has it; built from the
+            configuration otherwise.
 
     Raises:
         ImportError: If ``solver`` is "milp" and OR-Tools is not installed.
@@ -453,6 +459,7 @@ class LongRangeAllocator:
         solver: Literal["milp", "greedy"] = "milp",
         time_limit: float = 10.0,
         passes: Sequence[Pass] | None = None,
+        coverage: StationCoverage | None = None,
     ) -> None:
         if bin_length <= timedelta(0):
             raise ValueError("bin_length must be positive")
@@ -479,11 +486,11 @@ class LongRangeAllocator:
         """The MILP solver's status for each stage of the last allocation,
         or "OPTIMAL" if every stage was solved to optimality."""
         self._previous: Allocation | None = None
-        self.ctx = SchedulingContext(config, begin, end)
+        self.ctx = SchedulingContext(
+            config, begin, end, passes=passes, coverage=coverage
+        )
         self.merit_model = MeritModel(config)
         self._windows: dict[int, list[tuple[float, float]]] = {}
-        self._passes: list[Pass] | None = list(passes) if passes is not None else None
-        """The run's predicted ground passes, once given or predicted."""
         length = bin_length.total_seconds()
         ustart, uend = begin.timestamp(), end.timestamp()
         count = max(1, int(-(-(uend - ustart) // length)))
@@ -491,6 +498,17 @@ class LongRangeAllocator:
             (ustart + k * length, min(ustart + (k + 1) * length, uend))
             for k in range(count)
         ]
+
+    @property
+    def passes(self) -> list[Pass] | None:
+        """The run's bookings, shared with the context's link coverage."""
+        return self.ctx.passes
+
+    @passes.setter
+    def passes(self, passes: Sequence[Pass] | None) -> None:
+        self.ctx.passes = passes
+        # Visibility windows can include cuts for the old coverage's repoints.
+        self._windows.clear()
 
     def allocate(
         self,
@@ -1001,7 +1019,7 @@ class LongRangeAllocator:
         obsid = int(target.obsid)
         exptime = target.exptime if target.exptime is not None else target.ss_max
         remaining = float(exptime) - reserved.get(obsid, 0.0)
-        if target.done or remaining < float(target.ss_min):
+        if target.done or remaining < float(snapshot_min_seconds(target)):
             return None
         windows = self._windows.get(obsid)
         if windows is None:
@@ -1016,7 +1034,7 @@ class LongRangeAllocator:
             if hi <= lo:
                 continue
             seen = sum(max(0.0, min(w1, hi) - max(w0, lo)) for w0, w1 in windows)
-            if seen >= float(target.ss_min):
+            if seen >= float(snapshot_min_seconds(target)):
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start, delivered_shares=shares)
@@ -1029,7 +1047,7 @@ class LongRangeAllocator:
             obsid=obsid,
             value=merit.value,
             remaining=remaining,
-            ss_min=float(target.ss_min),
+            ss_min=float(snapshot_min_seconds(target)),
             deadline=target.deadline,
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
@@ -1077,29 +1095,42 @@ class LongRangeAllocator:
             # No budget: nothing is predicted or counted, as predicting a
             # run's passes is slow.
             return _Budget(stores)
-        if self._passes is None:
-            self._passes = list(self.ctx.predict_passes())
-        # Each bin's contacts, by station and seconds: the time in contact
-        # is the same for every recorder, what it downlinks from each is not.
         contacts: list[list[tuple[str, float]]] = [[] for _ in self.bins]
         contact_seconds = [0.0] * len(self.bins)
-        for gspass in self._passes:
-            for k, (b0, b1) in enumerate(self.bins):
-                lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
-                if hi > lo:
-                    contacts[k].append((gspass.station, hi - lo))
-                    contact_seconds[k] += hi - lo
+        coverage = self.ctx.coverage
+        if coverage is None:
+            if self.passes is None:
+                self.passes = list(self.ctx.predict_passes())
+            for gspass in self.passes:
+                for k, (b0, b1) in enumerate(self.bins):
+                    lo, hi = max(b0, start, gspass.begin), min(b1, gspass.end)
+                    if hi > lo:
+                        contacts[k].append((gspass.station, hi - lo))
+                        contact_seconds[k] += hi - lo
         for name, store in stores.items():
             if not store.active:
                 continue
             view = views[name]
-            downlink = [
-                sum(
-                    contact_downlink_gb(view, station, seconds)
-                    for station, seconds in k
-                )
-                for k in contacts
-            ]
+            if coverage is not None:
+                downlink = [
+                    sum(
+                        span.rate_mbps * (span.end - span.begin) / 1000.0
+                        for span in (
+                            coverage.recorder_spans(view, max(b0, start), b1)
+                            if isinstance(view, RecorderView)
+                            else coverage.spans(max(b0, start), b1)
+                        )
+                    )
+                    for b0, b1 in self.bins
+                ]
+            else:
+                downlink = [
+                    sum(
+                        contact_downlink_gb(view, station, seconds)
+                        for station, seconds in k
+                    )
+                    for k in contacts
+                ]
             housekeeping = []
             for k, (b0, b1) in enumerate(self.bins):
                 seconds = max(0.0, b1 - max(b0, start))

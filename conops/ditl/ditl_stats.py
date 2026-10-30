@@ -7,6 +7,7 @@ from ..common import ChargeState, normalize_acs_mode
 from ..config.config import MissionConfig
 from ..config.data_storage import DataStorage
 from ..simulation.acs import ACS
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import PassTimes
 
 
@@ -30,6 +31,8 @@ class DITLStats:
     data_generated_gb: list[float]
     data_downlinked_gb: list[float]
     executed_passes: PassTimes
+    coverage: StationCoverage | None
+    repoints_in_observations: list[tuple[float, int, str]]
     acs: ACS
 
     def print_statistics(self) -> None:
@@ -326,5 +329,39 @@ class DITLStats:
                 sum((p.end - p.begin) for p in self.executed_passes.passes) / 3600
             )
             print(f"Total Pass Time: {total_pass_time:.2f} hours")
+
+        # Usable links during passes without spacecraft tracking
+        if self.coverage is not None:
+            print("\n" + "-" * 70)
+            print("GROUND STATION PASS STATISTICS")
+            print("-" * 70)
+            begin, end = self.begin.timestamp(), self.end.timestamp()
+            spans = self.coverage.spans(begin, end)
+            in_contact = sum(span.end - span.begin for span in spans) / 3600
+            print(f"Contacts: {len(spans)}")
+            print(f"Handovers: {self.coverage.handovers}")
+            print(
+                f"Time in Contact: {in_contact:.2f} hours "
+                f"({100 * self.coverage.fraction(begin, end):.1f}% of the run)"
+            )
+            repoints = self.coverage.repoints_in(begin, end)
+            kinds = Counter(repoint.kind for repoint in repoints)
+            print(
+                f"Antenna Repoints: {len(repoints)} "
+                f"(acquisition {kinds['acquisition']}, handover {kinds['handover']}, "
+                f"tracking {kinds['tracking']})"
+            )
+            turns = [r.maneuver_deg for r in repoints if r.maneuver_deg is not None]
+            if turns:
+                print(
+                    f"Repoint Maneuver: mean {sum(turns) / len(turns):.1f} deg, "
+                    f"max {max(turns):.1f} deg"
+                )
+            noted = getattr(self, "repoints_in_observations", [])
+            forbidden = sum(1 for _, _, setting in noted if setting == "forbidden")
+            print(
+                f"Repoints During Sensitive Observations: {len(noted)} "
+                f"({forbidden} in observations that forbid them)"
+            )
 
         print("\n" + "=" * 70)

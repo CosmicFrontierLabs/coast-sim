@@ -38,7 +38,11 @@ E = TypeVar("E")
 
 
 class Removal(NamedTuple):
-    """An event that takes some of the consumable off, such as a contact or a dump."""
+    """An event that takes some of the consumable off, such as a contact or a dump.
+
+    Equal begin and end times credit an instantaneous removal at that boundary,
+    including the horizon's final boundary.
+    """
 
     begin: float
     end: float
@@ -87,6 +91,12 @@ class ConsumableLedger(Generic[S, E]):
         what accrues in it. A lead belongs to the segment it starts in, that
         of the removal before it, whether or not its own removal is inside."""
         for removal in sorted(removals, key=lambda r: r.begin):
+            if removal.begin == removal.end:
+                # An instantaneous removal is credited at this boundary, after
+                # the preceding segment's additions and peak have been checked.
+                if begin <= removal.begin <= end:
+                    inside.append(removal)
+                continue
             lead_begin = max(removal.begin - removal.lead, begin)
             lead_end = min(removal.begin, end)
             if removal.lead > 0 and lead_end > lead_begin:

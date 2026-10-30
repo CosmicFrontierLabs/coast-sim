@@ -1,0 +1,787 @@
+"""Usable links during passes that require no spacecraft tracking."""
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from conops.common import AntennaType
+from conops.common.vector import vec2radec
+from conops.config import (
+    AntennaPointing,
+    BandCapability,
+    CommunicationsSystem,
+    GroundStation,
+    MissionConfig,
+)
+from conops.simulation import ContactSpan, PassTimes, StationCoverage, cut_windows
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scheduler"))
+from planning_scenario import HOUR, MIN, T0  # noqa: E402
+from planning_scenario import make_config as _config  # noqa: E402
+
+HOURS = 24
+END = T0 + HOURS * HOUR
+
+
+def _comms(
+    antenna_type: AntennaType, rate_mbps: float = 10.0, **antenna: float
+) -> CommunicationsSystem:
+    return CommunicationsSystem(
+        name="S-band",
+        band_capabilities=[BandCapability(band="S", downlink_rate_mbps=rate_mbps)],
+        antenna_pointing=AntennaPointing(antenna_type=antenna_type, **antenna),
+    )
+
+
+@pytest.fixture(scope="module")
+def omni() -> tuple[MissionConfig, StationCoverage]:
+    config = _config(HOURS, stations=True)
+    config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+    coverage = StationCoverage.for_config(config)
+    assert coverage is not None
+    return config, coverage
+
+
+class TestForConfig:
+    def test_daily_queries_share_one_full_geometry_and_rate_array_per_station(self):
+        config = _config(48, stations=True)
+        passes = PassTimes(config)
+        for station in config.ground_stations.stations:
+            for start in range(0, 48 * 60, 60):
+                geometry = passes.station_geometry(station, start, start + 60)
+                rates = passes.downlink_rates(station, start, start + 60)
+                assert np.shares_memory(
+                    geometry.to_station, passes._geometry[station.code].to_station
+                )
+                assert np.shares_memory(rates, passes._rates[station.code])
+        assert len(passes._geometry) == len(config.ground_stations.stations)
+        assert len(passes._rates) == len(config.ground_stations.stations)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        for j, station in enumerate(coverage.stations):
+            assert np.shares_memory(
+                coverage._to_station[j],
+                coverage.pass_times._geometry[station.code].to_station,
+            )
+            assert np.shares_memory(
+                coverage.rate_steps[j], coverage.pass_times._rates[station.code]
+            )
+
+    def test_none_without_a_communications_system(self) -> None:
+        """The legacy behaviour: a body-fixed antenna, which downlinks in passes."""
+        assert StationCoverage.for_config(_config(2, stations=True)) is None
+
+    def test_none_for_a_body_fixed_antenna(self) -> None:
+        config = _config(2, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.FIXED)
+        assert StationCoverage.for_config(config) is None
+
+    def test_none_without_a_station_that_downlinks(self) -> None:
+        config = _config(2, stations=False)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        assert StationCoverage.for_config(config) is None
+        config = _config(2, stations=True)
+        # The spacecraft has no band in common with the stations.
+        config.spacecraft_bus.communications = CommunicationsSystem(
+            name="X-band",
+            band_capabilities=[BandCapability(band="X", downlink_rate_mbps=100.0)],
+            antenna_pointing=AntennaPointing(antenna_type=AntennaType.OMNI),
+        )
+        assert StationCoverage.for_config(config) is None
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_built_for_an_antenna_that_needs_no_attitude(
+        self, antenna_type: AntennaType
+    ) -> None:
+        config = _config(2, stations=True)
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        assert [s.code for s in coverage.stations] == ["MAL", "HI1", "SGS"]
+        assert coverage.gimballed == (antenna_type == AntennaType.GIMBALED)
+
+    def test_a_station_not_scheduled_for_tracking_still_downlinks(self) -> None:
+        config = _config(2, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        for station in config.ground_stations.stations:
+            station.schedule_for_tracking = False
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        assert len(coverage.stations) == 3
+
+    def test_the_rate_is_the_effective_rate_through_the_bands(self) -> None:
+        config = _config(2, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI, rate_mbps=4.0)
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        assert list(coverage.rates) == [4.0, 4.0, 4.0]
+
+
+class TestSpans:
+    def test_spans_are_above_the_mask_and_within_the_window(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        config, coverage = omni
+        spans = coverage.spans(T0, END)
+        assert len(spans) > 5
+        for span in spans:
+            assert isinstance(span, ContactSpan)
+            assert T0 <= span.begin < span.end <= END
+            assert span.rate_mbps == 10.0
+            station = config.ground_stations.get(span.station)
+            k = coverage.stations.index(station)
+            for step in range(coverage.index(span.begin), coverage.index(span.end)):
+                assert coverage.elevation_deg[k, step] > station.min_elevation_deg
+        # Consecutive spans do not overlap.
+        for earlier, later in zip(spans, spans[1:]):
+            assert earlier.end <= later.begin
+
+    def test_a_low_earth_orbit_contact_is_minutes_long(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        lengths = [span.end - span.begin for span in coverage.spans(T0, END)]
+        assert 8 * MIN <= min(lengths) and max(lengths) <= 15 * MIN
+
+    def test_a_window_clips_the_span_at_its_edges(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        first = coverage.spans(T0, END)[0]
+        middle = (first.begin + first.end) / 2
+        clipped = coverage.spans(middle, first.end - 30)
+        assert clipped == [first._replace(begin=middle, end=first.end - 30)]
+        assert coverage.spans(first.end, first.end + 30) == []
+
+    def test_the_fraction_is_the_time_in_contact(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        spans = coverage.spans(T0, END)
+        covered = sum(span.end - span.begin for span in spans)
+        assert coverage.fraction(T0, END) == pytest.approx(covered / (END - T0))
+        assert 0.02 < coverage.fraction(T0, END) < 0.3
+        assert coverage.fraction(T0, T0) == 0.0
+
+
+class TestPassBookings:
+    @pytest.mark.parametrize("acquisition", [0.0, 25.0])
+    def test_restored_bookings_keep_boundaries_between_samples(self, acquisition):
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.acquisition_seconds = acquisition
+        first = next(
+            p
+            for p in StationCoverage(config).scheduled_passes
+            if p.end - p.begin >= 9 * MIN
+        )
+        booking = (first.begin + 15, first.end - 15, first.station)
+        duration = booking[1] - booking[0]
+        assert duration >= 8 * MIN
+        coverage = StationCoverage(config, scheduled_passes=[booking])
+        assert coverage.contacts == [
+            ContactSpan(booking[0] + acquisition, booking[1], booking[2], 10.0)
+        ]
+        assert coverage.downlink_gb(booking[1], booking[1] + MIN) == 0.0
+        assert coverage.downlink_gb(booking[0], booking[1]) == pytest.approx(
+            (duration - acquisition) * 0.01
+        )
+
+    @pytest.mark.parametrize(
+        "antenna_type", [AntennaType.FIXED, AntennaType.OMNI, AntennaType.GIMBALED]
+    )
+    def test_passtimes_carries_every_antenna_type(self, antenna_type) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        passes = PassTimes(config)
+        passes.get(2025, 305)
+
+        assert passes.passes
+        restored = PassTimes(config)
+        booked = [(p.begin, p.end, p.station) for p in passes.passes]
+        restored.restore_bookings(booked)
+        assert [(p.begin, p.end, p.station) for p in restored.passes] == booked
+        tracking = antenna_type == AntennaType.FIXED
+        for contact in [*passes.passes, *restored.passes]:
+            assert contact.requires_tracking == tracking
+            assert bool(contact.available_tracking_profiles()) == tracking
+            assert contact.station_ra_dec(contact.begin) != (None, None)
+            if not tracking:
+                assert contact.ra_dec(contact.begin) == (None, None)
+                assert contact.downlink_volume_gb > 0.0
+        if not tracking:
+            coverage = StationCoverage(config)
+            assert isinstance(coverage.pass_times, PassTimes)
+            assert [(p.begin, p.end, p.station) for p in passes.passes] == [
+                (p.begin, p.end, p.station) for p in coverage.scheduled_passes
+            ]
+
+    def test_uses_the_fixed_antenna_booking_policy(self, monkeypatch) -> None:
+        config = _config(HOURS, stations=True)
+        config.ground_stations.add(
+            GroundStation(
+                code="KIR",
+                name="Kiruna",
+                latitude_deg=67.86,
+                longitude_deg=20.22,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.5
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        coverage = StationCoverage(config)
+
+        # Compare bookings before spacecraft attitude constraints are applied.
+        monkeypatch.setattr(
+            PassTimes,
+            "_constraint_safe_tracking_attitude_profiles",
+            lambda self, boresight, vectors, times: (
+                [[(0.0, 0.0, 0.0)] * len(times)],
+                True,
+            ),
+        )
+        config.spacecraft_bus.communications = _comms(AntennaType.FIXED)
+        fixed = PassTimes(config)
+        fixed.get(2025, 305)
+        assert coverage.scheduled_passes
+        assert [(p.begin, p.end, p.station) for p in fixed.passes] == [
+            (p.begin, p.end, p.station) for p in coverage.scheduled_passes
+        ]
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_zero_probability_means_no_booked_contacts(self, antenna_type) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        for station in config.ground_stations.stations:
+            station.schedule_probability = 0.0
+        coverage = StationCoverage(config)
+
+        assert coverage.visible.any()
+        assert coverage.scheduled_passes == []
+        assert not coverage.scheduled.any()
+        assert coverage.contacts == []
+        assert coverage.repoints == []
+        assert coverage.downlink_gb(T0, END) == 0.0
+        assert coverage.next_contact(T0) is None
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_probability_books_whole_passes_once_and_repeats_with_seed(
+        self, antenna_type
+    ) -> None:
+        config = _config(HOURS, stations=True)
+        config.ground_stations.stations = [config.ground_stations.get("SGS")]
+        config.spacecraft_bus.communications = _comms(antenna_type)
+        all_passes = StationCoverage(config).scheduled_passes
+        config.ground_stations.stations[0].schedule_probability = 0.5
+        first = StationCoverage(config)
+        second = StationCoverage(config)
+
+        assert first.scheduled_passes == second.scheduled_passes
+        assert first.contacts == second.contacts
+        assert 0 < len(first.scheduled_passes) < len(all_passes)
+        assert all(span in all_passes for span in first.scheduled_passes)
+        # Reads of different planning horizons reuse the accepted windows.
+        middle = (T0 + END) / 2
+        assert first.downlink_gb(T0, middle) + first.downlink_gb(
+            middle, END
+        ) == pytest.approx(first.downlink_gb(T0, END))
+
+
+def _walk(
+    visible: list[list[int]],
+    rates: list[float],
+    *,
+    step: float = 60.0,
+    handover: float = 0.0,
+    acquisition: float = 0.0,
+    directions: np.ndarray | None = None,
+    threshold: float | None = None,
+    table: list[tuple[float, float]] | None = None,
+    repoint_seconds: float = 0.0,
+    repointing: bool = True,
+    scheduled: list[list[int]] | None = None,
+) -> StationCoverage:
+    """A coverage built from a visibility matrix (stations by steps) alone,
+    to test the contact scheduling on its own. ``directions`` are the unit
+    vectors to each station at each step, for tracking repoints."""
+    coverage = StationCoverage.__new__(StationCoverage)
+    steps = len(visible[0])
+    coverage.times = np.arange(steps, dtype=float) * step
+    coverage.step_size = step
+    coverage.handover_seconds = handover
+    coverage.acquisition_seconds = acquisition
+    coverage.stations = [
+        GroundStation(
+            code=f"S{k}",
+            name=f"S{k}",
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+            bands=[BandCapability(band="S", downlink_rate_mbps=rate)],
+        )
+        for k, rate in enumerate(rates)
+    ]
+    coverage.rates = np.array(rates, dtype=float)
+    coverage.visible = np.array(visible, dtype=bool)
+    coverage.scheduled = np.array(
+        visible if scheduled is None else scheduled, dtype=bool
+    )
+    # Whole non-overlapping bookings follow the matrix's selected station.
+    chosen = np.full(steps, -1, dtype=int)
+    current = -1
+    for k in range(steps):
+        if current < 0 or not coverage.scheduled[current, k]:
+            available = np.flatnonzero(coverage.scheduled[:, k])
+            current = int(available[0]) if len(available) else -1
+        chosen[k] = current
+    coverage.scheduled_passes = []
+    start = 0
+    for stop in range(1, steps + 1):
+        if stop == steps or chosen[stop] != chosen[start]:
+            if chosen[start] >= 0:
+                station = int(chosen[start])
+                coverage.scheduled_passes.append(
+                    ContactSpan(
+                        start * step, stop * step, f"S{station}", rates[station]
+                    )
+                )
+            start = stop
+    coverage.rate_steps = np.where(coverage.visible, coverage.rates[:, None], 0.0)
+    coverage._ranged = [False] * len(rates)
+    coverage._cumulative = np.zeros((len(rates), steps + 1))
+    coverage._cumulative[:, 1:] = np.cumsum(coverage.rate_steps * step / 1000.0, axis=1)
+    coverage._to_station = (
+        directions if directions is not None else np.zeros((len(rates), steps, 3))
+    )
+    coverage.earth_range_km = np.full(steps, 7000.0)
+    coverage.repointing = repointing
+    coverage.repoint_threshold_deg = threshold
+    coverage.repoint_table = table
+    coverage.repoint_seconds = repoint_seconds
+    coverage.contacts = []
+    coverage.handovers = 0
+    coverage.acquisitions = 0
+    coverage.repoints = []
+    coverage._last_pointing = None
+    coverage._schedule_contacts()
+    coverage._begins = [span.begin for span in coverage.contacts]
+    return coverage
+
+
+class TestScheduling:
+    """One station is tracked at a time, handed over when it sets."""
+
+    def test_a_contact_stays_with_its_station_until_it_sets(self) -> None:
+        # S1 rises while S0 is still tracked, and stays up after S0 sets.
+        coverage = _walk([[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]], [10.0, 10.0])
+        assert coverage.contacts == [
+            ContactSpan(0.0, 240.0, "S0", 10.0),
+            ContactSpan(240.0, 360.0, "S1", 10.0),
+        ]
+        assert coverage.handovers == 1
+
+    def test_only_booked_stations_are_acquired(self) -> None:
+        # A faster visible station has no booking; a later booked pass is used.
+        coverage = _walk(
+            [[1, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1]],
+            [10.0, 20.0, 10.0],
+            scheduled=[[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]],
+        )
+        assert coverage.contacts == [
+            ContactSpan(0.0, 120.0, "S0", 10.0),
+            ContactSpan(120.0, 240.0, "S2", 10.0),
+        ]
+
+    def test_a_handover_costs_its_latency_but_a_fresh_contact_does_not(
+        self,
+    ) -> None:
+        coverage = _walk(
+            [[1, 1, 0, 0, 0, 0], [0, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 1]],
+            [10.0] * 3,
+            handover=90.0,
+        )
+        assert coverage.contacts == [
+            ContactSpan(0.0, 120.0, "S0", 10.0),
+            # Handed over at 120 s, linked 90 s later.
+            ContactSpan(210.0, 240.0, "S1", 10.0),
+            # Acquired after a gap with nothing in view: no latency.
+            ContactSpan(300.0, 360.0, "S2", 10.0),
+        ]
+        assert coverage.handovers == 1
+
+    def test_every_contact_starts_after_its_acquisition(self) -> None:
+        coverage = _walk(
+            [[1, 1, 0, 0, 0, 0], [0, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 1]],
+            [10.0] * 3,
+            handover=30.0,
+            acquisition=20.0,
+        )
+        assert coverage.contacts == [
+            # Acquired 20 s after S0 came into view.
+            ContactSpan(20.0, 120.0, "S0", 10.0),
+            # Handed over at 120 s: the handover and the acquisition.
+            ContactSpan(170.0, 240.0, "S1", 10.0),
+            # After a gap: the acquisition alone.
+            ContactSpan(320.0, 360.0, "S2", 10.0),
+        ]
+        assert coverage.handovers == 1
+
+    def test_a_handover_longer_than_the_view_downlinks_nothing(self) -> None:
+        coverage = _walk([[1, 1, 0, 0], [0, 1, 1, 0]], [10.0, 10.0], handover=200.0)
+        assert coverage.contacts == [ContactSpan(0.0, 120.0, "S0", 10.0)]
+        assert coverage.handovers == 0
+        assert coverage.repoint_cuts(120, 1000) == []
+
+    def test_acquisition_longer_than_the_booking_creates_no_repoint(self) -> None:
+        coverage = _walk([[1, 1, 0, 0]], [10.0], acquisition=200.0)
+        assert coverage.contacts == []
+        assert coverage.acquisitions == 0
+        assert coverage.repoints == []
+        assert coverage.repoint_cuts(0, 1000) == []
+
+    def test_no_station_no_contacts(self) -> None:
+        assert _walk([[0, 0, 0]], [10.0]).contacts == []
+
+    def test_contacts_never_overlap_and_track_a_visible_station(self) -> None:
+        """With a station near Svalbard the two are often in view together."""
+        config = _config(HOURS, stations=True)
+        config.ground_stations.add(
+            GroundStation(
+                code="KIR",
+                name="Kiruna",
+                latitude_deg=67.86,
+                longitude_deg=20.22,
+                bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+            )
+        )
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.handover_seconds = 120.0
+        config.spacecraft_bus.communications.acquisition_seconds = 30.0
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        assert int((coverage.visible.sum(axis=0) > 1).sum()) > 0
+        assert coverage.dropped_overlapping_passes
+        for earlier, later in zip(
+            coverage.scheduled_passes, coverage.scheduled_passes[1:]
+        ):
+            assert earlier.end <= later.begin
+        step = coverage.step_size
+        codes = [s.code for s in coverage.stations]
+        for earlier, later in zip(coverage.contacts, coverage.contacts[1:]):
+            assert earlier.end <= later.begin
+            if later.begin - earlier.end < 150.0:
+                # Only a handover sits closer than its latencies, and it is
+                # exactly the handover and the acquisition after the station set.
+                assert later.begin - earlier.end == pytest.approx(150.0)
+                assert earlier.station != later.station
+        for span in coverage.contacts:
+            k = codes.index(span.station)
+            # The station came into view at a step, 30 s or 150 s before.
+            rise = span.begin - 30.0
+            if (rise - coverage.times[0]) % step != 0:
+                rise = span.begin - 150.0
+            assert (rise - coverage.times[0]) % step == 0
+            assert coverage.visible[
+                k, coverage.index(rise) : coverage.index(span.end - 1e-6) + 1
+            ].all()
+        # Fewer contacts than rises of stations: the link does not swap
+        # between two stations in view at once.
+        rises = sum(
+            int((np.diff(coverage.visible[k].astype(int)) > 0).sum())
+            for k in range(len(codes))
+        )
+        assert len(coverage.contacts) < rises
+
+
+def _turning(steps: int, degrees_per_step: float) -> np.ndarray:
+    """One station whose direction turns about z by a fixed angle each step."""
+    angles = np.deg2rad(np.arange(steps) * degrees_per_step)
+    return np.stack([np.cos(angles), np.sin(angles), np.zeros(steps)], axis=1)[None]
+
+
+def _rotation(degrees: float) -> np.ndarray:
+    """A rotation about z, to apply to a row vector."""
+    c, s = np.cos(np.deg2rad(degrees)), np.sin(np.deg2rad(degrees))
+    return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+class TestRepoints:
+    def test_acquisitions_and_handovers_are_repoints(self) -> None:
+        coverage = _walk(
+            [[1, 1, 1, 1, 0, 0, 0, 1], [0, 0, 1, 1, 1, 1, 0, 0]],
+            [10.0, 10.0],
+            handover=90.0,
+            acquisition=20.0,
+        )
+        assert [r[:4] for r in coverage.repoints] == [
+            (0.0, 20.0, "S0", "acquisition"),
+            (240.0, 350.0, "S1", "handover"),
+            (420.0, 440.0, "S0", "acquisition"),
+        ]
+        # No station directions here: nothing to point at.
+        assert all(
+            r.pointing is None and r.maneuver_deg is None for r in coverage.repoints
+        )
+        assert (coverage.acquisitions, coverage.handovers) == (2, 1)
+        assert coverage.repoints_in(0.0, 300.0) == coverage.repoints[:2]
+        assert coverage.repoint_cuts(100.0, 430.0) == [(240.0, 350.0), (420.0, 440.0)]
+        assert coverage.next_repoint_cut(0.0) == (0.0, 20.0)
+        assert coverage.next_repoint_cut(20.0) == (240.0, 350.0)
+        assert coverage.next_repoint_cut(500.0) is None
+
+    def test_the_antenna_leads_the_station_across_the_cap(self) -> None:
+        """One degree a step and a 2.5 degree allowance: the antenna points
+        2.5 degrees ahead, the station crosses the cap in six steps, and the
+        one repoint comes where the next step would leave it."""
+        coverage = _walk(
+            [[1] * 10], [10.0], directions=_turning(10, 1.0), threshold=2.5
+        )
+        acquisition, *tracking = coverage.repoints
+        assert acquisition[:4] == (0.0, 0.0, "S0", "acquisition")
+        assert acquisition.pointing == pytest.approx(
+            _turning(1, 0.0)[0, 0] @ _rotation(2.5)
+        )
+        assert acquisition.maneuver_deg is None
+        assert [(r.time, r.end, r.station, r.kind) for r in tracking] == [
+            (360.0, 360.0, "S0", "tracking")
+        ]
+        # The second arc runs from step 6 to the end: its centre is at 7.5 degrees.
+        assert tracking[0].pointing == pytest.approx(
+            _turning(1, 0.0)[0, 0] @ _rotation(7.5)
+        )
+        assert tracking[0].maneuver_deg == pytest.approx(5.0)
+        # Instant repoints leave the contact whole.
+        assert coverage.contacts == [ContactSpan(0.0, 600.0, "S0", 10.0)]
+
+    def test_a_tighter_allowance_repoints_more_often(self) -> None:
+        tight = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=1.5)
+        loose = _walk([[1] * 40], [10.0], directions=_turning(40, 1.0), threshold=4.5)
+        tight_times = [r.time for r in tight.repoints if r.kind == "tracking"]
+        loose_times = [r.time for r in loose.repoints if r.kind == "tracking"]
+        # Four steps fit in a 1.5 degree cap (a 3 degree arc), ten in 4.5.
+        assert tight_times == [240.0 * n for n in range(1, 10)]
+        assert loose_times == [600.0, 1200.0, 1800.0]
+        # Every point of each arc is within the allowance of its pointing.
+        for coverage, allowance in ((tight, 1.5), (loose, 4.5)):
+            edges = [0.0, *(r.time for r in coverage.repoints[1:]), 2400.0]
+            for repoint, (a, b) in zip(coverage.repoints, zip(edges, edges[1:])):
+                assert repoint.pointing is not None
+                arc = coverage._to_station[0, int(a // 60) : int(b // 60)]
+                cosines = np.clip(arc @ np.array(repoint.pointing), -1.0, 1.0)
+                assert np.degrees(np.arccos(cosines)).max() <= allowance + 1e-6
+
+    def test_a_repoint_with_a_duration_splits_the_contact(self) -> None:
+        coverage = _walk(
+            [[1] * 10],
+            [10.0],
+            directions=_turning(10, 1.0),
+            threshold=2.5,
+            repoint_seconds=30.0,
+        )
+        assert coverage.contacts == [
+            ContactSpan(0.0, 360.0, "S0", 10.0),
+            ContactSpan(390.0, 600.0, "S0", 10.0),
+        ]
+        assert coverage.downlink_gb(0.0, 600.0) == pytest.approx(10.0 * 570.0 / 1000.0)
+        assert coverage.repoint_cuts(0.0, 600.0) == [(0.0, 0.0), (360.0, 390.0)]
+
+    def test_an_interval_table_sets_the_repoints(self) -> None:
+        coverage = _walk(
+            [[1] * 10],
+            [10.0],
+            table=[(0.0, 150.0), (10000.0, 300.0)],
+            repoint_seconds=10.0,
+        )
+        # 7000 km is seven tenths of the way between the rows: 255 s.
+        tracking = [r for r in coverage.repoints if r.kind == "tracking"]
+        assert [r.time for r in tracking] == [255.0, 510.0]
+        assert [r.end for r in tracking] == [265.0, 520.0]
+        # The table points the antenna at the station itself.
+        assert all(r.pointing is None for r in coverage.repoints)
+        assert [(c.begin, c.end) for c in coverage.contacts] == [
+            (0.0, 255.0),
+            (265.0, 510.0),
+            (520.0, 600.0),
+        ]
+
+    def test_no_repoints_without_a_threshold_or_a_table(self) -> None:
+        coverage = _walk([[1] * 10], [10.0], directions=_turning(10, 5.0))
+        assert [r.kind for r in coverage.repoints] == ["acquisition"]
+
+    def test_an_omni_antenna_is_never_repointed(self) -> None:
+        coverage = _walk(
+            [[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]],
+            [10.0, 10.0],
+            handover=90.0,
+            acquisition=20.0,
+            repointing=False,
+        )
+        assert coverage.repoints == []
+        assert coverage.handovers == 1
+        config = _config(2, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.acquisition_seconds = 60.0
+        omni = StationCoverage.for_config(config)
+        assert omni is not None
+        assert not omni.repointing and omni.repoints == []
+        assert omni.next_repoint_cut(T0) is None
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.FIXED])
+    def test_repoint_settings_need_a_gimbal(self, antenna_type: AntennaType) -> None:
+        with pytest.raises(ValueError, match="gimballed"):
+            AntennaPointing(antenna_type=antenna_type, repoint_threshold_deg=2.0)
+        with pytest.raises(ValueError, match="gimballed"):
+            AntennaPointing(antenna_type=antenna_type, repoint_seconds=10.0)
+        with pytest.raises(ValueError, match="gimballed"):
+            AntennaPointing(
+                antenna_type=antenna_type, repoint_interval_vs_range_km=[(0.0, 60.0)]
+            )
+        assert AntennaPointing(antenna_type=antenna_type).repoint_seconds == 0.0
+
+    def test_real_geometry_repoints_fall_within_contacts(self) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(
+            AntennaType.GIMBALED,
+            gimbal_range_deg=180.0,
+            repoint_threshold_deg=10.0,
+            repoint_seconds=30.0,
+        )
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        tracking = [r for r in coverage.repoints if r.kind == "tracking"]
+        assert len(tracking) > 10
+        # Each repoint turns the antenna forward along the station's track:
+        # at least the cap's width, and in low Earth orbit, where the track
+        # moves tens of degrees a step, often more.
+        turns = [r.maneuver_deg for r in tracking if r.maneuver_deg is not None]
+        assert turns and 10.0 < np.median(turns) < 90.0
+        spans = coverage.spans(T0, END)
+        for repoint in tracking:
+            before = [s for s in spans if s.end == repoint.time]
+            after = [s for s in spans if s.begin == repoint.end]
+            assert before and after and before[0].station == repoint.station
+        # In low Earth orbit the direction turns fast: repoints minutes apart.
+        gaps = np.diff([r.time for r in tracking if r.station == "SGS"])
+        assert 0 < np.median(gaps[gaps < 1200]) < 600
+
+
+class TestCutWindows:
+    def test_cuts_and_splits(self) -> None:
+        windows = [(0.0, 100.0), (200.0, 300.0)]
+        assert cut_windows(windows, []) == windows
+        assert cut_windows(windows, [(50.0, 50.0)]) == [
+            (0.0, 50.0),
+            (50.0, 100.0),
+            (200.0, 300.0),
+        ]
+        assert cut_windows(windows, [(40.0, 60.0), (290.0, 310.0)]) == [
+            (0.0, 40.0),
+            (60.0, 100.0),
+            (200.0, 290.0),
+        ]
+        assert cut_windows(windows, [(0.0, 100.0)]) == [(200.0, 300.0)]
+        assert cut_windows(windows, [(0.0, 0.0), (100.0, 100.0)]) == windows
+        assert cut_windows(windows, [(150.0, 250.0), (120.0, 130.0)]) == [
+            (0.0, 100.0),
+            (250.0, 300.0),
+        ]
+
+
+class TestContactAt:
+    def test_in_and_out_of_contact(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        first = coverage.spans(T0, END)[0]
+        contact = coverage.contact_at(first.begin + MIN)
+        assert contact is not None
+        assert contact.station == first.station
+        assert contact.rate_mbps == 10.0
+        assert 300.0 < contact.range_km < 3000.0
+        assert coverage.contact_at(first.begin - MIN) is None
+
+    def test_next_contact(self, omni: tuple[MissionConfig, StationCoverage]) -> None:
+        _, coverage = omni
+        spans = coverage.spans(T0, END)
+        first = spans[0]
+        assert coverage.next_contact(T0) == first.begin
+        # In contact, the next contact is now.
+        assert coverage.next_contact(first.begin + MIN) == first.begin + MIN
+        assert coverage.next_contact(first.end) == spans[1].begin
+        assert coverage.next_contact(coverage.times[-1] + MIN) is None
+
+    def test_an_omni_antenna_reaches_the_station_from_any_attitude(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        first = coverage.spans(T0, END)[0]
+        assert coverage.contact_at(first.begin, (0.0, 0.0, 0.0)) is not None
+        assert coverage.contact_at(first.begin, (180.0, -60.0, 90.0)) is not None
+
+    def test_a_gimballed_antenna_reaches_the_station_within_its_range(
+        self,
+    ) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(
+            AntennaType.GIMBALED, gimbal_range_deg=60.0
+        )
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        first = coverage.spans(T0, END)[0]
+        step = coverage.index(first.begin)
+        station = [s.code for s in coverage.stations].index(first.station)
+        ra, dec = np.degrees(vec2radec(coverage._to_station[station, step]))
+        # The boresight is -X in the body frame: the body +X axis pointed
+        # away from the station puts the boresight on it.
+        toward = (float(ra) + 180.0, -float(dec), 0.0)
+        away = (float(ra), float(dec), 0.0)
+        assert coverage.contact_at(first.begin, toward) is not None
+        assert coverage.contact_at(first.begin, away) is None
+        # Without an attitude the station is taken as reachable, as in planning.
+        assert coverage.contact_at(first.begin) is not None
+
+    def test_contact_in_a_step(
+        self, omni: tuple[MissionConfig, StationCoverage]
+    ) -> None:
+        _, coverage = omni
+        first = coverage.spans(T0, END)[0]
+        start, stop, downlinked = coverage.contact_in(first.begin, first.begin + MIN)
+        assert (start, stop) == (first.begin, first.begin + MIN)
+        assert downlinked == pytest.approx(10.0 * MIN / 1000.0)
+        # A step straddling the end of the contact downlinks for the part in it.
+        start, stop, downlinked = coverage.contact_in(first.end - 20, first.end + 40)
+        assert (start, stop) == (first.end - 20, first.end)
+        assert downlinked == pytest.approx(10.0 * 20 / 1000.0)
+        assert coverage.contact_in(first.end, first.end + MIN) == (
+            first.end,
+            first.end,
+            0.0,
+        )
+
+    def test_contact_in_a_step_a_gimballed_antenna_cannot_reach(self) -> None:
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(
+            AntennaType.GIMBALED, gimbal_range_deg=0.0
+        )
+        coverage = StationCoverage.for_config(config)
+        assert coverage is not None
+        first = coverage.spans(T0, END)[0]
+        assert coverage.contact_in(first.begin, first.begin + MIN, (0.0, 0.0, 0.0)) == (
+            first.begin,
+            first.begin,
+            0.0,
+        )
+
+
+def test_the_default_stations_have_a_downlink() -> None:
+    station = GroundStation(
+        code="X",
+        name="X",
+        latitude_deg=0.0,
+        longitude_deg=0.0,
+        bands=[BandCapability(band="S", downlink_rate_mbps=10.0)],
+    )
+    assert station.supports_downlink

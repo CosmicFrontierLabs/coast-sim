@@ -217,7 +217,7 @@ class MomentumObservationPlanner:
                     )
                     * self.sim.step_size
                 )
-                minimum = collection_begin + target.ss_min + teardown
+                minimum = collection_begin + target.snapshot_min_seconds + teardown
                 while end >= minimum:
                     held = self.budget.forecast(
                         trajectory.state, end, trajectory=trajectory, initial=arrival

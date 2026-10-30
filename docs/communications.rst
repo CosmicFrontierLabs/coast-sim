@@ -46,6 +46,16 @@ When only the ``band`` is specified, standard defaults are automatically applied
 UHF has no generic default rate; specify mission-specific uplink and downlink
 rates explicitly. Explicitly specified values override all defaults.
 
+A band's rate can vary with the spacecraft-to-station range:
+``downlink_rate_vs_range_km`` is a table of ``(range_km, rate_mbps)`` rows in
+increasing range, interpolated linearly between rows and held at the end rows
+beyond them. Either side of a link may carry one, and the effective rate at a
+range is the lower of the two sides' rates there, on the best band. The table is
+used where the range is known: the contacts of an omni or gimballed antenna take
+the rate at each step's range, so a contact at low elevation downlinks less than
+one overhead, and each contact span reports its time-weighted mean rate. A
+body-fixed antenna's passes use ``downlink_rate_mbps`` throughout.
+
 AntennaPointing
 ^^^^^^^^^^^^^^^
 
@@ -66,10 +76,94 @@ Defines how the antenna is mounted and pointed.
   ``fixed_boresight_body`` for GSP attitude generation. Nonzero values are accepted
   with a deprecation warning and do not affect generated GSP attitudes.
 * ``gimbal_range_deg``: Angular range for gimbaled antennas (from boresight)
+* ``repoint_threshold_deg``: For a gimballed antenna, the pointing allowance: the
+  radius of the cap about the antenna's pointing that the tracked station is kept in,
+  the antenna being re-pointed ahead of the station where it would leave (default
+  None: no tracking repoints)
+* ``repoint_interval_vs_range_km``: Instead of the threshold, the interval between
+  repoints in seconds against the spacecraft's distance from the Earth's centre, as
+  ``(range_km, seconds)`` rows interpolated at the range at each repoint
+* ``repoint_seconds``: Seconds a repoint takes, during which nothing is downlinked and
+  an observation of a category that forbids repoints cannot collect (default 0)
 
-Only ``FIXED`` antennas currently drive spacecraft attitude during generated
-ground-station-pass profiles. ``OMNI`` and ``GIMBALED`` antennas do not imply a
-body-frame tracking vector.
+The three repoint fields apply to a ``GIMBALED`` antenna only: an omni antenna has no
+direction to re-point and a body-fixed one moves with the spacecraft.
+
+:class:`~conops.simulation.PassTimes` predicts and books ground-station passes
+using station elevation masks, a minimum pass duration of eight minutes,
+one ``schedule_probability`` draw per eligible station pass,
+and selection of whole non-overlapping passes. Overlaps favor the pass with
+the greatest downlink volume, then duration, then earlier start. For omni and
+gimballed antennas, ``PassTimes`` uses the effective link rate, including any
+range-dependent rate table, to estimate that volume. A probability of zero books
+no passes; one accepts every eligible pass before overlap selection.
+``random_seed`` makes bookings reproducible over
+the same ephemeris.
+
+Every booking is a :class:`~conops.simulation.Pass`. Its ``requires_tracking``
+flag is true for fixed antennas: ACS follows the pass's attitude profile in
+``PASS`` mode and science pauses. For omni and gimballed antennas it is false,
+so downlink can continue during science. :class:`~conops.simulation.StationCoverage`
+models usable link spans and outages within these passes, including acquisition
+delays, handovers and antenna repoints. It consumes the bookings from ``PassTimes``.
+
+Bookings are fixed before execution starts. For a daily run, the day's passes
+are therefore scheduled before the day begins; a multi-day run books the whole
+ephemeris upfront. Science dispatch and rolling replanning use these reservations
+without requesting new station time or repeating the scheduling-probability draw.
+
+Station visibility is not guaranteed station access: in LEO, contacts end at
+the station's elevation mask and there is no downlink between booked passes.
+Within link coverage, every contact begins ``acquisition_seconds`` after its
+booked pass begins, and a switch straight from one station to
+another adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
+station acquired after a gap with no booking pays no handover, since the
+antenna can be pointed at it in advance. Each contact downlinks at the effective rate through
+the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
+``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
+the simulation checks at each step; planning takes the station as reachable.
+Every station with a compatible downlink may be booked this way, whether or not
+``schedule_for_tracking`` allows spacecraft-tracking activities; its
+``schedule_probability`` still applies. Planning, the recorder budget and
+execution use these booked contacts, including acquisition and repoint outages.
+Plans preserve tracking activities as ``GSP`` entries and pass windows that need
+no tracking in ``ground_contacts``, including an empty list when no passes were
+booked. Replay keeps those bookings without another probability draw, even
+without a random seed. Older plans without ``ground_contacts`` predict those
+bookings from the configuration.
+
+**Antenna repoints.** A gimballed antenna is re-pointed at each acquisition and
+handover, and within a contact as the spacecraft moves along its orbit; an omni antenna
+is never re-pointed, so it has no repoint events. While an
+attitude is held the station's direction moves in the body frame exactly as it moves
+across the sky. Tracking repoint times are therefore calculated from the station
+geometry from the contact's start. With ``repoint_threshold_deg`` set, the antenna
+leads the station: at each repoint it is pointed at the centre of the longest arc of
+the station's coming track that fits within a cap of that radius, so the station
+enters the cap on one side and leaves on the other, and the next repoint comes where
+the arc no longer fits. Taking each arc as long as it can be gives the fewest repoints
+for the allowance, about half as many as re-pointing at the station each time it
+moves the allowance away. With ``repoint_interval_vs_range_km`` set instead, repoints
+follow the table's interval at the spacecraft's range from the Earth's centre, each
+pointing at the station. Each repoint records the antenna's pointing and how far it
+turned, and ``print_statistics`` reports the mean and largest turn. A repoint takes ``repoint_seconds``, during which nothing is
+downlinked, so a contact is split around it; an acquisition or handover repoint lasts
+its latency. The simulation logs each repoint as an ``ANTENNA`` event with the station
+and the observation in progress, and ``print_statistics`` reports them by kind. An
+observation category's ``antenna_repoints`` setting says what a repoint during one of
+its observations means: ``allowed`` (the default), ``reported`` (counted and logged) or
+``forbidden``, in which case the schedulers cut the category's visibility windows at
+each repoint so snapshots are placed between them, and dispatch neither starts such an
+observation during a repoint nor lets it run into the next one (see :doc:`planning`).
+
+A configuration without a communications system keeps the body-fixed behaviour.
+With coverage, a DITL's ``coverage`` holds the model, its data telemetry shows
+the downlink, and ``print_statistics`` reports the number of contacts and
+handovers and the fraction of the run in contact. The timeline plots show the contacts
+in their ``Ground Contact`` row, coloured by station: one bar per span on a run
+up to two days long, and on a longer run one bar per hour with a contact, as
+dark as the hour's fraction in contact against the run's fullest hour, since a
+span of minutes is narrower than a pixel at that scale.
 
 Polarization
 ^^^^^^^^^^^^
@@ -96,6 +190,11 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
+* ``acquisition_seconds``: Seconds to acquire the link during passes without
+  spacecraft tracking; no data is downlinked during acquisition (default 0)
+* ``handover_seconds``: Seconds to switch the link straight from one ground station to
+  another during passes without spacecraft tracking, on top of acquisition, during which
+  nothing is downlinked (default 0)
 
 **Methods:**
 
@@ -299,8 +398,9 @@ Ground Station Pass (GSP) Plan Entries
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When :class:`~conops.ditl.queue_ditl.QueueDITL` executes a Day-In-The-Life simulation,
-commanded ground station passes are automatically exported as ``GSP`` plan entries in the
-observation plan. These entries capture:
+spacecraft tracking activities for ground-station passes are exported as ``GSP``
+entries in the observation plan. Pass bookings without tracking are stored in
+``ground_contacts``. GSP entries capture:
 
 * **Station identification**: Which ground station is used (``station`` field)
 * **Contact window**: Actual pass start/end times (``contact_begin``, ``contact_end``)

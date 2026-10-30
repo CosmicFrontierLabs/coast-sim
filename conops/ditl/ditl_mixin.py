@@ -21,10 +21,12 @@ from ..config import (
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
+from ..simulation.coverage import StationCoverage
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.momentum_budget import MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..targets import Plan, PlanEntry
+from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
@@ -82,6 +84,8 @@ class DITLMixin:
     """Shared initialization, plotting, and data-management logic for DITL simulations."""
 
     ppt: PlanEntry | None
+    log: DITLLog
+    repoints_in_observations: list[tuple[float, int, str]]
     _data_observation: tuple[int, float] | None
     _data_collected: float
     ra: list[float]
@@ -250,6 +254,7 @@ class DITLMixin:
             self.telemetry = Telemetry()
             self._store_data_totals = {}
             self.executed_passes = PassTimes(config=self.config)
+            self.repoints_in_observations = []
             # Do not concatenate samples from separate runs (possibly covering
             # identical dates) into a single attitude audit or plotting timeline.
             for name in (
@@ -289,6 +294,33 @@ class DITLMixin:
             if isinstance(self.config.data_storage, DataStorage)
             else self.config.recorder
         )
+        self.coverage: StationCoverage | None = StationCoverage.for_config(
+            self.config, scheduled_passes=self.plan.ground_contacts
+        )
+        """Usable links during passes without spacecraft tracking; None
+        when passes require tracking activities."""
+        if self.coverage is not None:
+            self.passes = self.coverage.pass_times
+        self.plan.ground_contacts = self._booked_ground_contacts()
+        self.repoints_in_observations = []
+        """Each antenna repoint that fell in an observation whose category
+        reports or forbids them: when, the observation's obsid, and the
+        category's setting."""
+
+    def _booked_ground_contacts(self) -> list[tuple[float, float, str]] | None:
+        """Station reservations to preserve in the executed plan."""
+        return (
+            [
+                (span.begin, span.end, span.station)
+                for span in self.coverage.scheduled_passes
+            ]
+            if self.coverage is not None
+            else None
+        )
+
+    def _antenna_repoints(self, target: PlanEntry) -> str:
+        """The category setting for antenna repoints during ``target``."""
+        return self.config.observation_categories.antenna_repoints(int(target.obsid))
 
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
@@ -693,6 +725,10 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
+        if self.coverage is not None:
+            self._log_repoints(
+                utime, min(utime + step_size, self.uend), collection_seconds
+            )
         if isinstance(self.config.data_storage, DataStorage):
             observation, collected = self._data_observation, self._data_collected
             generated = downlinked = 0.0
@@ -761,12 +797,38 @@ class DITLMixin:
             self._data_observation = observation
             self._data_collected = after
 
-        # Downlink data during PASS mode, once ACS has acquired the contact:
-        # the ingress slew also reports PASS, but carries no link.
         current_pass = self.acs.current_pass
+        contacts: list[tuple[float, float, float]] = []
         contact_start = contact_stop = utime
         data_to_downlink = 0.0
-        if mode == ACSMode.PASS and current_pass is not None:
+        if self.coverage is not None:
+            # Passes without spacecraft tracking can downlink in any ACS
+            # mode. A gimballed antenna
+            # reaches the station only within its range from the attitude
+            # flown, taken as the attitude at the start of the step.
+            attitude = (
+                (self.acs.ra, self.acs.dec, self.acs.roll)
+                if self.coverage.gimballed
+                else None
+            )
+            spans = self.coverage.rate_spans(
+                utime,
+                utime + interval,
+                config if isinstance(config, RecorderView) else None,
+            )
+            contacts = [
+                (
+                    span.begin,
+                    span.end,
+                    span.rate_mbps * (span.end - span.begin) / 1000.0,
+                )
+                for span in spans
+                if attitude is None
+                or self.coverage.contact_at(span.begin, attitude) is not None
+            ]
+        elif mode == ACSMode.PASS and current_pass is not None:
+            # Downlink data during PASS mode, once ACS has acquired the
+            # contact: the ingress slew also reports PASS, but carries no link.
             # A contact can end partway through a step, and the run can end
             # before the step does; only the time in contact is credited.
             contact_start = max(utime, float(current_pass.begin))
@@ -787,23 +849,25 @@ class DITLMixin:
                         rate_mbps * (contact_stop - contact_start) / 1000.0
                     )
 
-        if data_to_downlink <= 0:
+            if data_to_downlink > 0:
+                contacts.append((contact_start, contact_stop, data_to_downlink))
+
+        if not contacts or interval <= 0:
             if data_generated > 0:
                 recorder.add_data(data_generated)
             return data_generated, data_downlinked
 
-        # Generation runs on through the contact, so the step is taken in
-        # pieces: what is generated before the contact is stored, what is
-        # generated during it meets the downlink at the recorder, and what is
-        # generated after it is stored. The contact never sends data generated
-        # after it ends, and nothing is lost to a full recorder while the link
-        # empties it faster than data arrives.
+        # Walk each usable span and gap in time order: outages can overflow
+        # the recorder even when a later link can send everything it retains.
         rate = data_generated / interval
-        recorder.add_data(rate * (contact_start - utime))
-        data_downlinked = recorder.transfer(
-            rate * (contact_stop - contact_start), data_to_downlink
-        )
-        recorder.add_data(rate * (utime + interval - contact_stop))
+        cursor = utime
+        for contact_start, contact_stop, data_to_downlink in contacts:
+            recorder.add_data(rate * (contact_start - cursor))
+            data_downlinked += recorder.transfer(
+                rate * (contact_stop - contact_start), data_to_downlink
+            )
+            cursor = contact_stop
+        recorder.add_data(rate * (utime + interval - cursor))
         return data_generated, data_downlinked
 
     def _recorder_telemetry(self) -> dict[str, dict[str, float]]:
@@ -821,6 +885,31 @@ class DITLMixin:
             }
             for name, view in self.config.recorder_views().items()
         }
+
+    def _log_repoints(
+        self, begin: float, end: float, collection_seconds: float
+    ) -> None:
+        """Log the antenna repoints in ``[begin, end)``, and note each that
+        falls in an observation whose category reports or forbids them."""
+        assert self.coverage is not None
+        for repoint in self.coverage.repoints_in(begin, end):
+            description = f"Antenna repoint to {repoint.station} ({repoint.kind}"
+            if repoint.maneuver_deg is not None:
+                description += f", {repoint.maneuver_deg:.1f} deg"
+            description += ")"
+            if self.ppt is not None and collection_seconds > 0:
+                setting = self._antenna_repoints(self.ppt)
+                if setting in ("reported", "forbidden"):
+                    obsid = int(self.ppt.obsid)
+                    self.repoints_in_observations.append((repoint.time, obsid, setting))
+                    description += f" during observation {obsid} ({setting})"
+            self.log.log_event(
+                utime=repoint.time,
+                event_type="ANTENNA",
+                description=description,
+                obsid=int(self.ppt.obsid) if self.ppt is not None else None,
+                acs_mode=self.acs.acsmode,
+            )
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:
         """The downlink rate in Mbps the spacecraft gets from ``station``, or None.

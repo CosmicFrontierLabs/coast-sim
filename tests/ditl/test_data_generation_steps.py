@@ -6,7 +6,9 @@ import pytest
 
 from conops.common.enums import ACSMode
 from conops.config import (
+    AntennaPointing,
     BandCapability,
+    CommunicationsSystem,
     DataGeneration,
     GroundStation,
     GroundStationRegistry,
@@ -193,3 +195,40 @@ def test_the_same_contact_in_one_step_or_many_ends_the_same(ditl) -> None:
         )
         results.append((downlinked, ditl.recorder.current_volume_gb))
     assert results[0] == pytest.approx(results[1])
+
+
+@pytest.mark.parametrize("step", [60, 1])
+def test_repoint_gaps_can_overflow_between_contacts(ditl, step) -> None:
+    from conops.common import AntennaType
+    from tests.simulation.test_coverage import _walk
+
+    _contact(ditl, 0, 60, rate_mbps=100.0, hk_gbps=0.01)
+    ditl.recorder = OnboardRecorder(capacity_gb=0.05)
+    coverage = _walk([[1]], [100.0], table=[(7000.0, 20.0)], repoint_seconds=10.0)
+    ditl.config.spacecraft_bus.communications = CommunicationsSystem(
+        antenna_pointing=AntennaPointing(
+            antenna_type=AntennaType.GIMBALED, gimbal_range_deg=180.0
+        )
+    )
+    ditl.acs.ra = ditl.acs.dec = ditl.acs.roll = 0.0
+    coverage.config = ditl.config
+    coverage.range_km = coverage.earth_range_km.reshape(1, -1)
+    coverage._to_station[:] = [1.0, 0.0, 0.0]
+    assert [(p.begin, p.end) for p in coverage.contacts] == [
+        (0.0, 20.0),
+        (30.0, 40.0),
+        (50.0, 60.0),
+    ]
+    ditl.coverage = coverage
+    ditl.log = Mock()
+    generated = downlinked = 0.0
+    for time in range(0, 60, step):
+        incoming, outgoing = ditl._process_data_management(
+            time, ACSMode.SAFE, step, collection_seconds=0
+        )
+        generated += incoming
+        downlinked += outgoing
+    assert generated == pytest.approx(0.6)
+    assert downlinked == pytest.approx(0.5)
+    assert ditl.recorder.current_volume_gb == pytest.approx(0.0)
+    assert generated - downlinked == pytest.approx(0.1)

@@ -22,14 +22,16 @@ from ..config.observation_categories import ObservationCategory
 from ..config.solar_panel import SolarArrayDriveState
 from ..ditl.ditl_log import DITLLog
 from ..ditl.plan_validator import entry_obstype
+from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
 from ..targets.merit import MeritBreakdown, MeritModel
+from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
-from .recorder import RecorderLedgers
+from .recorder import RecorderAmount, RecorderLedgers, combine_amounts
 
 CHARGE_OBSID = 999000
 """Obsid of the first planned charge; the rest follow."""
@@ -122,7 +124,9 @@ class _Request(BaseModel):
     @property
     def wants_more(self) -> bool:
         """Whether enough exposure is left for another snapshot."""
-        return self.remaining > 0 and self.remaining >= float(self.target.ss_min)
+        return self.remaining > 0 and self.remaining >= float(
+            snapshot_min_seconds(self.target)
+        )
 
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
@@ -158,7 +162,7 @@ def _collection_seconds(block: _Block) -> float:
 
 def _usable(request: _Request, seconds: float) -> bool:
     """Whether ``seconds`` of the request's exposure are none or a snapshot's worth."""
-    return seconds <= 0.0 or seconds >= float(request.target.ss_min)
+    return seconds <= 0.0 or seconds >= float(snapshot_min_seconds(request.target))
 
 
 def _long_enough(collection_seconds: float, ss_min: float) -> bool:
@@ -209,7 +213,7 @@ class PriorityScheduler:
         begin: Start of the planning horizon.
         end: End of the planning horizon.
         step_size: Simulation step in seconds; defaults to the ephemeris step.
-        include_passes: Whether to reserve ground-station passes.
+        include_passes: Whether to reserve spacecraft tracking activities for passes.
         locked: Science entries to keep exactly where their collection windows
             are; the slews into them are recomputed.
         log: Event log for placements and rejections.
@@ -281,6 +285,7 @@ class PriorityScheduler:
         passes: Sequence[Pass] | None = None,
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
         allocation_bonus: float = 0.5,
+        coverage: StationCoverage | None = None,
     ) -> None:
         # Revalidate reused configurations before building an ephemeris.
         config.recorder_views(refresh=True)
@@ -300,6 +305,9 @@ class PriorityScheduler:
         self.simulation_end = simulation_end
         self.passes = passes
         """The run's predicted ground passes, where the caller has them."""
+        self.coverage = coverage
+        """Link coverage for passes without spacecraft tracking, where the
+        caller has it; built from the configuration otherwise."""
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
         self.reserved_visits = dict(reserved_visits or {})
@@ -352,6 +360,7 @@ class PriorityScheduler:
             simulation_start=self.simulation_start,
             simulation_end=self.simulation_end,
             passes=self.passes,
+            coverage=self.coverage,
         )
         self._battery = self._battery_ledger()
         self._gap_charges_cache: dict[
@@ -396,7 +405,8 @@ class PriorityScheduler:
                 )
         if self.include_passes:
             for gspass in self.ctx.predict_passes():
-                self._place_pass(gspass)
+                if gspass.requires_tracking:
+                    self._place_pass(gspass)
         self._ledger = self._recorder_ledger()
         self._volumes = self._ledger.initial_volumes(
             [block.entry for block in self.timeline]
@@ -422,6 +432,7 @@ class PriorityScheduler:
             start_volume_gb=self.start_volume_gb,
             step_size=self.ctx.step_size,
             origin=self.ctx.origin,
+            coverage=self.ctx.coverage,
         )
 
     def _ingress_deltas(
@@ -509,7 +520,7 @@ class PriorityScheduler:
         """A timeline's energy with the charges its idle sunlit time holds."""
         return self._timeline_energy(self._charged_timeline(list(timeline)))
 
-    def _block_additions(self, block: _Block) -> list[tuple[int, float]]:
+    def _block_additions(self, block: _Block) -> list[tuple[int, RecorderAmount]]:
         return self._ledger.science_additions(
             block.entry,
             _collection_seconds(block),
@@ -521,6 +532,14 @@ class PriorityScheduler:
         timeline = self._plan_charging(list(timeline))
         self.plan = Plan(
             entries=[block.entry for block in timeline],
+            ground_contacts=(
+                [
+                    (span.begin, span.end, span.station)
+                    for span in self.ctx.coverage.scheduled_passes
+                ]
+                if self.ctx.coverage is not None
+                else None
+            ),
             metadata={
                 "scheduler": self.scheduler_name,
                 "step_size": self.ctx.step_size,
@@ -774,7 +793,7 @@ class PriorityScheduler:
             if (
                 target.done
                 or int(target.obsid) in self.held
-                or remaining < target.ss_min
+                or remaining < snapshot_min_seconds(target)
             ):
                 continue
             category = merit_model.category(target)
@@ -837,7 +856,7 @@ class PriorityScheduler:
         for request in requests:
             rest = request.model_copy()
             left = request.remaining
-            ss_min = float(request.target.ss_min)
+            ss_min = float(snapshot_min_seconds(request.target))
             ss_max = float(request.target.ss_max)
             for span in self.allocated.get(int(request.target.obsid), []):
                 allocated = min(span.seconds, left)
@@ -1234,22 +1253,78 @@ class PriorityScheduler:
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
 
-            # First try the gap as it is.
-            candidate = self._fit_in_gap(request, pred, succ, not_before)
-            if candidate is not None:
+            # A flexible-antenna contact can fall inside this gap. Retry
+            # placements within it as well as after it when the recorder fills.
+            after = not_before
+            while True:
+                candidate = self._fit_in_gap(request, pred, succ, after)
+                if candidate is None:
+                    full = False
+                    break
                 block, slew, succ_slew = candidate
-                # With what the slew into a contact after it comes to.
+                # Include any change to the next tracking pass's ingress.
                 additions = [
                     *self._block_additions(block),
                     *self._ingress_deltas(succ, succ_slew),
                 ]
-                if not self._ledger.fits_all(self._volumes, additions):
-                    # Nothing else in this gap fits either: it is all before
-                    # the same contact. Try the gaps after it.
-                    recorder_full = True
+                if self._ledger.fits_all(self._volumes, additions):
+                    full = False
+                    break
+                recorder_full = full = True
+                next_contact = self._ledger.next_contact(
+                    float(block.entry.collection_begin or block.ready)
+                )
+                if next_contact is None:
+                    break
+                if self.ctx.coverage is not None:
+                    minimum = (
+                        request.remaining
+                        if request.whole
+                        else float(snapshot_min_seconds(request.target))
+                    )
+                    collection_begin = float(
+                        block.entry.collection_begin or block.ready
+                    )
+                    snapshot = min(float(request.target.ss_max), request.remaining)
+                    capacity_end = self._ledger.science_retry_end(
+                        self._volumes,
+                        block.entry,
+                        minimum,
+                        self.ctx.floor_step(collection_begin),
+                        succ.ready if succ is not None else self.ctx.uend,
+                        maximum_seconds=snapshot,
+                    )
+                    if capacity_end is None:
+                        break
+                    # Even the longest snapshot cannot end before capacity_end.
+                    # Allow both partial telemetry steps around its collection.
+                    # Jump only over starts this necessary bound rules out;
+                    # feasibility can turn false again within a variable link.
+                    collection_after = capacity_end - snapshot - 2 * self.ctx.step_size
+                    after = self.ctx.ceil_step(
+                        float(block.entry.begin)
+                        + max(self.ctx.step_size, collection_after - collection_begin)
+                    )
+                    # Slew duration changes with roll. Retain earlier steps
+                    # that could already reach the collection bound.
+                    while (
+                        after - self.ctx.step_size > float(block.entry.begin)
+                        and self._collection_begin_at(
+                            request.target, pred, after - self.ctx.step_size
+                        )
+                        >= collection_after
+                    ):
+                        after -= self.ctx.step_size
                     continue
+                after = next_contact
+                if succ is not None and after >= succ.ready:
+                    break
+            if full:
+                # Nothing before the gap's last contact fits: try later gaps.
+                continue
+            if candidate is not None:
                 charged = self._fit_within_battery(
-                    request, pred, succ, not_before, candidate, self.timeline, index
+                    request, pred, succ, after, candidate, self.timeline, index
                 )
                 if charged is None:
                     # A later gap is after more sunlit idle time, which charges.
@@ -1272,7 +1347,7 @@ class PriorityScheduler:
                 # The snapshot fitted, but only the one after it was then
                 # unreachable: try again with that one, and any packed behind
                 # it, moved later.
-                delayed = self._fit_delaying_successors(request, index, not_before)
+                delayed = self._fit_delaying_successors(request, index, after)
                 if delayed is None:
                     continue
                 block = delayed
@@ -1508,7 +1583,10 @@ class PriorityScheduler:
             *self._ingress_deltas(after, after_slew),
         ]
         for move in moves:
-            additions.extend((s, -v) for s, v in self._block_additions(move.old_block))
+            additions.extend(
+                (s, combine_amounts(0.0, v, -1.0))
+                for s, v in self._block_additions(move.old_block)
+            )
             additions.extend(self._block_additions(move.new_block))
         if not self._ledger.fits_all(self._volumes, additions):
             return None
@@ -1596,7 +1674,9 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
-        ss_min = request.remaining if request.whole else float(target.ss_min)
+        ss_min = (
+            request.remaining if request.whole else float(snapshot_min_seconds(target))
+        )
         earliest = self._earliest_start(pred)
         horizon_end = self.ctx.uend if until is None else min(until, self.ctx.uend)
         gap_end = succ.ready if succ is not None else horizon_end
@@ -1824,7 +1904,7 @@ class PriorityScheduler:
             obsid=target.obsid,
             obstype=target.obstype,
             merit=request.merit.value,
-            ss_min=target.ss_min,
+            ss_min=snapshot_min_seconds(target),
             ss_max=target.ss_max,
         )
         entry.exptime = collection_end - collection_begin

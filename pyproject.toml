@@ -19,7 +19,7 @@ classifiers = [
 description = "COASTSim: ConOps Astronomical Space Telescope Simulator" # Optional
 dynamic = ["version"]
 maintainers = [
-    { name = "Jamie A. Kennea", email = "jamie@cosmicfrontier.org" }, # Optional
+    { name = "Jamie A. Kennea", email = "jamie@pompey.org" }, # Optional
 ]
 name = "coast-sim" # Required
 readme = "README.md" # Optional
@@ -67,7 +67,7 @@ dev = [
     "plotly-stubs>=0.0.6",
     "ortools>=9.15",
 ]
-test = ["pytest>=8", "pytest-cov>=7", "ortools>=9.15"]
+test = ["pytest>=8", "pytest-cov>=7", "pytest-xdist>=3.8", "ortools>=9.15"]
 # The CP-SAT scheduler (CpSatScheduler).
 cpsat = ["ortools>=9.15"]
 docs = [
@@ -101,7 +101,7 @@ write_to = "conops/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-#addopts = "-q"
+addopts = "-n auto --dist=worksteal"
 
 
 [tool.ruff]
