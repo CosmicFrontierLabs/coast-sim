@@ -3780,7 +3780,9 @@ class QueueDITL(DITLMixin, DITLStats):
             deadline = min(deadline, violation_time - self.step_size)
             if (
                 deadline
-                < collection_start + snapshot_min_seconds(target) + timing.post_collection_seconds
+                < collection_start
+                + snapshot_min_seconds(target)
+                + timing.post_collection_seconds
             ):
                 self.log.log_event(
                     utime=utime,
@@ -3814,7 +3816,9 @@ class QueueDITL(DITLMixin, DITLStats):
         target.collection_end = max(
             target.collection_begin, target.end - timing.post_collection_seconds
         )
-        if target.collection_end - target.collection_begin < snapshot_min_seconds(target):
+        if target.collection_end - target.collection_begin < snapshot_min_seconds(
+            target
+        ):
             return None
         return _ScienceWindow(deadline, remaining, collection_start)
 
