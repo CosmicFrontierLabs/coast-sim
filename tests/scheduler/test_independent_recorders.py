@@ -726,7 +726,7 @@ def test_nested_config_also_rejects_ambiguous_storage():
         Wrapped.model_validate({"config": {"recorder": {}, "data_storage": storage()}})
 
 
-def test_coverage_respects_store_shares_and_range_dependent_routed_band():
+def test_coverage_respects_store_shares_and_range_dependent_routed_band(monkeypatch):
     import numpy as np
 
     from conops.simulation.coverage import ContactSpan, StationCoverage
@@ -750,13 +750,29 @@ def test_coverage_respects_store_shares_and_range_dependent_routed_band():
     coverage.range_km = np.array([[1000.0, 2000.0, 2000.0]])
     coverage.contacts = [ContactSpan(0, 20, "GS", 100)]
     coverage._begins = [0.0]
+    queries = []
+    views = c.recorder_views()
+    for view in views.values():
+        original = view.downlink_rate
+
+        def counted_rate(*args, original=original):
+            queries.append(args)
+            return original(*args)
+
+        monkeypatch.setattr(view, "downlink_rate", counted_rate)
     ledgers = RecorderLedgers(c, 0, 20, [], coverage=coverage)
+    computed = len(queries)
+    assert computed > 0
+    for _ in range(10):
+        coverage.recorder_spans(views["payload"], 5, 20)
+    assert len(queries) == computed
     expected = {"payload": 1.05, "bus": 0.35}
     for name, ledger, _ in ledgers.members:
         assert sum(ledger.downlink_gb) == pytest.approx(expected[name])
-    # Capacity becomes available after transmission, at each completed step.
-    assert ledgers.next_contact(-1) == 10
-    assert ledgers.next_contact(0) == 10
+    # Solver/retry boundaries coalesce the link, while the exact walk still
+    # integrates the rate change at 10 seconds inside that segment.
+    assert ledgers.next_contact(-1) == 20
+    assert ledgers.next_contact(0) == 20
     assert ledgers.next_contact(10) == 20
     assert ledgers.next_contact(20) is None
 
