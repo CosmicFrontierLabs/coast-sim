@@ -8,6 +8,7 @@ from matplotlib.font_manager import FontProperties
 from conops.ditl.ditl import DITL
 from conops.ditl.queue_ditl import QueueDITL
 
+from ...config.data_storage import DataStorage
 from ...config.visualization import VisualizationConfig
 
 
@@ -69,43 +70,84 @@ def plot_data_management_telemetry(
     # Convert timestamps to datetime objects (timestamps are already datetime objects)
     times = ditl.telemetry.housekeeping.timestamp
 
-    # Plot 1: Recorder Volume (Gb)
-    axes[0].plot(
-        times, ditl.telemetry.housekeeping.recorder_volume_gb, "b-", linewidth=2
-    )
-    axes[0].set_ylabel("Volume (Gb)", fontsize=label_font_size, fontfamily=font_family)
-    axes[0].set_title("Onboard Recorder Data Volume", fontproperties=title_prop)
-    axes[0].grid(True, alpha=0.3)
-    axes[0].axhline(
-        y=ditl.config.recorder.capacity_gb,
-        color="r",
-        linestyle="--",
-        label=f"Capacity ({ditl.config.recorder.capacity_gb} Gb)",
-    )
-    axes[0].legend(prop={"family": font_family, "size": config.legend_font_size})
+    if isinstance(ditl.config.data_storage, DataStorage):
+        for name, view in ditl.config.recorder_views().items():
+            values = [
+                record.recorders.get(name, {}) for record in ditl.telemetry.housekeeping
+            ]
+            (line,) = axes[0].plot(
+                times,
+                [value.get("volume_gb", float("nan")) for value in values],
+                label=name,
+            )
+            axes[0].axhline(
+                view.recorder.capacity_gb,
+                color=line.get_color(),
+                linestyle="--",
+                label=f"{name} capacity",
+            )
+            axes[1].plot(
+                times,
+                [value.get("fill_fraction", float("nan")) for value in values],
+                color=line.get_color(),
+                label=name,
+            )
+            axes[1].axhline(
+                view.recorder.planning_limit or 1.0,
+                color=line.get_color(),
+                linestyle=":",
+                label=f"{name} planning limit",
+            )
+        for axis, title, label in zip(
+            axes[:2],
+            ["Independent Recorder Volumes", "Independent Recorder Fill Levels"],
+            ["Volume (Gb)", "Fill Fraction"],
+            strict=True,
+        ):
+            axis.set_title(title, fontproperties=title_prop)
+            axis.set_ylabel(label)
+            axis.legend()
+            axis.grid(True, alpha=0.3)
+    else:
+        # Plot 1: Recorder Volume (Gb)
+        axes[0].plot(
+            times, ditl.telemetry.housekeeping.recorder_volume_gb, "b-", linewidth=2
+        )
+        axes[0].set_ylabel(
+            "Volume (Gb)", fontsize=label_font_size, fontfamily=font_family
+        )
+        axes[0].set_title("Onboard Recorder Data Volume", fontproperties=title_prop)
+        axes[0].grid(True, alpha=0.3)
+        axes[0].axhline(
+            y=ditl.config.recorder.capacity_gb,
+            color="r",
+            linestyle="--",
+            label=f"Capacity ({ditl.config.recorder.capacity_gb} Gb)",
+        )
+        axes[0].legend(prop={"family": font_family, "size": config.legend_font_size})
 
-    # Plot 2: Recorder Fill Fraction
-    axes[1].plot(
-        times, ditl.telemetry.housekeeping.recorder_fill_fraction, "g-", linewidth=2
-    )
-    axes[1].axhline(
-        y=ditl.config.recorder.yellow_threshold,
-        color="orange",
-        linestyle="--",
-        label=f"Yellow Threshold ({ditl.config.recorder.yellow_threshold:.0%})",
-    )
-    axes[1].axhline(
-        y=ditl.config.recorder.red_threshold,
-        color="red",
-        linestyle="--",
-        label=f"Red Threshold ({ditl.config.recorder.red_threshold:.0%})",
-    )
-    axes[1].set_ylabel(
-        "Fill Fraction", fontsize=label_font_size, fontfamily=font_family
-    )
-    axes[1].set_title("Recorder Fill Level", fontproperties=title_prop)
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(prop={"family": font_family, "size": config.legend_font_size})
+        # Plot 2: Recorder Fill Fraction
+        axes[1].plot(
+            times, ditl.telemetry.housekeeping.recorder_fill_fraction, "g-", linewidth=2
+        )
+        axes[1].axhline(
+            y=ditl.config.recorder.yellow_threshold,
+            color="orange",
+            linestyle="--",
+            label=f"Yellow Threshold ({ditl.config.recorder.yellow_threshold:.0%})",
+        )
+        axes[1].axhline(
+            y=ditl.config.recorder.red_threshold,
+            color="red",
+            linestyle="--",
+            label=f"Red Threshold ({ditl.config.recorder.red_threshold:.0%})",
+        )
+        axes[1].set_ylabel(
+            "Fill Fraction", fontsize=label_font_size, fontfamily=font_family
+        )
+        axes[1].set_title("Recorder Fill Level", fontproperties=title_prop)
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(prop={"family": font_family, "size": config.legend_font_size})
 
     # Plot 3: Cumulative Data Generated (Gb)
     axes[2].plot(times, ditl.data_generated_gb, "m-", linewidth=2)
@@ -173,7 +215,13 @@ def _print_data_management_summary(ditl: QueueDITL | DITL) -> None:
     print(f"Total Data Downlinked:   {total_downlinked:.2f} Gb")
     print(f"Final Recorder Volume:   {final_volume:.2f} Gb")
     print(f"Max Fill Fraction:       {max_fill:.1%}")
-    print(f"Recorder Capacity:       {ditl.config.recorder.capacity_gb:.2f} Gb")
+    views = (
+        ditl.config.recorder_views()
+        if isinstance(ditl.config.data_storage, DataStorage)
+        else {"default": ditl.config}
+    )
+    for name, view in views.items():
+        print(f"Recorder {name} Capacity: {view.recorder.capacity_gb:.2f} Gb")
 
     if total_generated > 0:
         downlink_efficiency = (total_downlinked / total_generated) * 100

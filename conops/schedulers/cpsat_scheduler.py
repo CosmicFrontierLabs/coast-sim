@@ -21,6 +21,8 @@ chunk is solved from where it leaves the spacecraft. Every plan therefore
 executes as planned.
 """
 
+from __future__ import annotations
+
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
@@ -101,6 +103,8 @@ class _ChunkRecorder(NamedTuple):
     setup: int
     """Seconds from a candidate's arrival to its collection, which places it
     in a segment."""
+    data: list[tuple[int, int]] | None = None
+    """Per-task data for this store; legacy task.data when absent."""
 
 
 class _ChunkBattery(NamedTuple):
@@ -274,14 +278,18 @@ class _ChunkModel:
         step: int,
         chunk_seconds: int,
         budget: dict[int, float],
-        recorder: _ChunkRecorder | None = None,
+        recorder: _ChunkRecorder | list[_ChunkRecorder] | None = None,
         battery: _ChunkBattery | None = None,
         allocated_left: Mapping[SpanKey, float] | None = None,
     ) -> None:
         from ortools.sat.python import cp_model
 
         self.tasks = tasks
-        self.recorder = recorder
+        self.recorders = (
+            recorder
+            if isinstance(recorder, list)
+            else ([] if recorder is None else [recorder])
+        )
         self.battery = battery
         self.slews = slews
         """Seconds of the scheduled slew from each task to each other task."""
@@ -315,7 +323,9 @@ class _ChunkModel:
         self._add_cadence_spacing()
         self._add_circuit()
         self._add_objective(budget)
-        self._add_recorder()
+        self.recorder_variables = [
+            self._add_recorder(recorder) for recorder in self.recorders
+        ]
         self._add_battery()
 
     def _add_snapshot_constraints(self) -> None:
@@ -533,7 +543,9 @@ class _ChunkModel:
                 model.add(sum(seconds_list) <= int(left))
         model.maximize(sum(objective))
 
-    def _add_recorder(self) -> None:
+    def _add_recorder(
+        self, recorder: _ChunkRecorder
+    ) -> tuple[dict[tuple[int, int], cp_model.IntVar], list[cp_model.IntVar]]:
         """Keep the recorder within its limit at the end of every segment.
 
         A candidate's data goes in the segment its collection starts in. Each
@@ -542,23 +554,21 @@ class _ChunkModel:
         over. The carry-over is only bounded below, which is exact here: a
         larger carry-over only tightens the limit on the segments after it.
         """
-        recorder = self.recorder
-        if recorder is None:
-            return
         from ortools.sat.python import cp_model
 
         model, present, counted = self.model, self.present, self.counted
         segments = len(recorder.accrual)
         starts = [-(2**40), *recorder.edges]
         ends = [*recorder.edges, 2**40]
-        self.in_segment: dict[tuple[int, int], cp_model.IntVar] = {}
+        in_segment: dict[tuple[int, int], cp_model.IntVar] = {}
         """Whether a candidate's collection starts in a segment, where it could
         start in more than one."""
         volume: list[list[cp_model.LinearExprT]] = [[] for _ in range(segments)]
         for k, task in enumerate(self.tasks):
-            if not task.optional or task.data == (0, 0):
+            data = task.data if recorder.data is None else recorder.data[k]
+            if not task.optional or data == (0, 0):
                 continue
-            per_second, fixed = task.data
+            per_second, fixed = data
             # The snapshot's data, 0 when it is absent (counted is 0 then).
             total = per_second * counted[k] + fixed * present[k]
             lo = task.arrival[0] + recorder.setup
@@ -570,9 +580,7 @@ class _ChunkModel:
             bound = per_second * task.collection[1] + fixed
             literals = []
             for s in possible:
-                literal = self.in_segment[(k, s)] = model.new_bool_var(
-                    f"segment{k}_{s}"
-                )
+                literal = in_segment[(k, s)] = model.new_bool_var(f"segment{k}_{s}")
                 literals.append(literal)
                 begins = self.arrival[k] + recorder.setup
                 if s > 0:
@@ -584,7 +592,7 @@ class _ChunkModel:
                 model.add(part == 0).only_enforce_if(~literal)
                 volume[s].append(part)
             model.add(sum(literals) == present[k])
-        self.carry: list[cp_model.IntVar] = []
+        carry_vars: list[cp_model.IntVar] = []
         """What each segment after the first starts with, after its contact."""
         level: cp_model.LinearExpr = cp_model.LinearExpr.constant(recorder.entering)
         for s in range(segments):
@@ -595,12 +603,13 @@ class _ChunkModel:
                 model.add(
                     carry >= level + recorder.removal_accrual[s] - recorder.removal[s]
                 )
-                self.carry.append(carry)
+                carry_vars.append(carry)
                 level = carry
             level = cp_model.LinearExpr.sum(
                 [level, recorder.accrual[s] + recorder.fixed[s], *volume[s]]
             )
             model.add(level <= recorder.limit)
+        return in_segment, carry_vars
 
     def _add_battery(self) -> None:
         """Keep the battery above its level at the end of every run.
@@ -828,28 +837,35 @@ class _ChunkModel:
             if k not in hint:
                 model.add_hint(within, False)
                 model.add_hint(self.span_seconds[(k, n)], 0)
-        self._hint_recorder(hint)
+        for recorder, (in_segment, carry) in zip(
+            self.recorders, self.recorder_variables, strict=True
+        ):
+            self._hint_recorder(hint, recorder, in_segment, carry)
         self._hint_battery(hint)
 
-    def _hint_recorder(self, hint: dict[int, _TaskHint]) -> None:
+    def _hint_recorder(
+        self,
+        hint: dict[int, _TaskHint],
+        recorder: _ChunkRecorder,
+        in_segment: dict[tuple[int, int], cp_model.IntVar],
+        carry_vars: list[cp_model.IntVar],
+    ) -> None:
         """Hint the segment and carry-over variables from the hinted snapshots."""
-        recorder = self.recorder
-        if recorder is None:
-            return
         model = self.model
         segments = len(recorder.accrual)
         volume = list(recorder.fixed)
         for k, task in enumerate(self.tasks):
-            if not task.optional or task.data == (0, 0):
+            data = task.data if recorder.data is None else recorder.data[k]
+            if not task.optional or data == (0, 0):
                 continue
             segment = None
             if k in hint:
                 begins = hint[k].arrival + recorder.setup
                 segment = sum(1 for edge in recorder.edges if edge <= begins)
-                per_second, fixed = task.data
+                per_second, fixed = data
                 volume[segment] += per_second * hint[k].collection + fixed
             for s in range(segments):
-                literal = self.in_segment.get((k, s))
+                literal = in_segment.get((k, s))
                 if literal is not None:
                     model.add_hint(literal, s == segment)
         level = recorder.entering
@@ -858,7 +874,7 @@ class _ChunkModel:
                 carry = max(
                     0, level + recorder.removal_accrual[s] - recorder.removal[s]
                 )
-                model.add_hint(self.carry[s - 1], carry)
+                model.add_hint(carry_vars[s - 1], carry)
                 level = carry
             level += recorder.accrual[s] + volume[s]
 
@@ -1106,11 +1122,11 @@ class CpSatScheduler(LocalSearchScheduler):
                 others = [int(x) for i, x in enumerate(slews[:, k]) if i != k]
                 task.slew_in = min(others) if others else 0
         chunk_seconds = int(round(chunk_end - origin_time))
-        recorder = (
-            self._chunk_recorder(state, later, origin_time)
-            if self._ledger.active
-            else None
-        )
+        recorder = [
+            self._chunk_recorder(state, later, origin_time, ledger, offset, tasks)
+            for _, ledger, offset in self._ledger.members
+            if ledger.active
+        ]
         battery = (
             self._chunk_battery(state, later, origin_time, tasks)
             if self._battery.active
@@ -1136,7 +1152,13 @@ class CpSatScheduler(LocalSearchScheduler):
         return snapshots
 
     def _chunk_recorder(
-        self, state: _State, later: Sequence[_Snapshot], origin_time: float
+        self,
+        state: _State,
+        later: Sequence[_Snapshot],
+        origin_time: float,
+        ledger: RecorderLedger,
+        offset: int,
+        tasks: Sequence[_Task],
     ) -> _ChunkRecorder:
         """The recorder from the chunk's segment to the end of the horizon.
 
@@ -1144,8 +1166,7 @@ class CpSatScheduler(LocalSearchScheduler):
         chunk, locked entries, and the priority-first plan's snapshots after
         the chunk, in the segments their slews start in.
         """
-        ledger: RecorderLedger = self._ledger
-        volumes = list(state.volumes)
+        volumes = list(state.volumes[offset : offset + ledger.segments])
         for snapshot in later:
             assert snapshot.release is not None
             target = self._by_obsid[snapshot.obsid].target
@@ -1171,6 +1192,12 @@ class CpSatScheduler(LocalSearchScheduler):
             removal_accrual=[_kb_up(x) for x in ledger.removal_accrual[first:]],
             limit=_kb_down(limit) - 1,
             setup=int(np.ceil(self.ctx.setup_seconds)),
+            data=[
+                self._candidate_store_data(ledger, self._by_obsid[task.key[0]].target)
+                if task.key is not None
+                else (0, 0)
+                for task in tasks
+            ],
         )
 
     # ── Tasks ────────────────────────────────────────────────────────────
@@ -1463,6 +1490,13 @@ class CpSatScheduler(LocalSearchScheduler):
         # Stable, so a window's snapshots stay together and in order.
         candidates.sort(key=lambda item: (item[0], item[1]))
         return [task for _, _, task in candidates[: self.max_candidates]]
+
+    def _candidate_store_data(
+        self, ledger: RecorderLedger, target: Pointing
+    ) -> tuple[int, int]:
+        once = ledger.science_volume(target, 0.0)
+        per_second = ledger.science_volume(target, 1.0) - once
+        return (_kb_up(per_second), _kb_up(once))
 
     def _candidate_data(self, target: Pointing) -> tuple[int, int]:
         """Kilobits a snapshot of ``target`` generates per second, and once,

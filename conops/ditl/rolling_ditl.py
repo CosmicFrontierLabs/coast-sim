@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType
 from ..config import MissionConfig, ScienceData
+from ..config.data_storage import DataStorage, RecorderView
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
@@ -684,14 +685,28 @@ class RollingHorizonDITL(DITL):
 
     def _recorder_volume_at(
         self, utime: float, start: float, committed: Sequence[PlanEntry]
-    ) -> float:
+    ) -> float | dict[str, float]:
         """What is on the recorder when a new plan starts.
 
         The committed activities run on until then, generating data and
         downlinking during their contacts, so the plan starts from what they
         leave rather than from the volume now.
         """
-        now = float(self.recorder.current_volume_gb)
+        if isinstance(self.config.data_storage, DataStorage):
+            return {
+                name: self._project_store_volume(view, utime, start, committed)
+                for name, view in self.config.recorder_views().items()
+            }
+        return self._project_store_volume(self.config, utime, start, committed)
+
+    def _project_store_volume(
+        self,
+        config: MissionConfig | RecorderView,
+        utime: float,
+        start: float,
+        committed: Sequence[PlanEntry],
+    ) -> float:
+        now = float(config.recorder.current_volume_gb)
         if start <= utime:
             return now
         contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
@@ -703,13 +718,13 @@ class RollingHorizonDITL(DITL):
             end = min(float(entry.collection_end), start)
             if end <= begin:
                 continue
-            volume = self.config.science_generated(end - begin, entry.science_data)
+            volume = config.science_generated(end - begin, entry.science_data)
             if float(entry.collection_begin) < utime:
                 # Already collecting: its fixed amount is on the recorder.
-                volume -= self.config.science_generated(0.0, entry.science_data)
+                volume -= config.science_generated(0.0, entry.science_data)
             science.append((begin, volume))
         ledger = RecorderLedger(
-            self.config,
+            config,
             utime,
             start,
             contacts,

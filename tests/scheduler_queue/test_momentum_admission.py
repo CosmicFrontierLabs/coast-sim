@@ -1176,3 +1176,59 @@ def test_capacity_run_rejects_uncovered_end_before_execution(
         sim.calc()
     pointing.assert_not_called()
     assert not sim.telemetry.housekeeping
+
+
+@pytest.mark.parametrize(
+    "payload_used, bus_used, accepted", [(0, 0, True), (600, 0, False), (0, 9, False)]
+)
+def test_momentum_admission_respects_each_computer_store(
+    scenario, payload_used, bus_used, accepted
+):
+    from conops.config import (
+        DataGeneration,
+        DataStorage,
+        DataStore,
+        HousekeepingData,
+        Instrument,
+        OnboardRecorder,
+        ScienceData,
+    )
+
+    sim, target = scenario
+    sim.config.payload.instruments = [
+        Instrument(
+            name="camera",
+            data_generation=DataGeneration(science=ScienceData(rate_gbps=1)),
+        )
+    ]
+    sim.config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0)
+    sim.config.data_storage = DataStorage(
+        stores={
+            "payload": DataStore(
+                owner="payload",
+                recorder=OnboardRecorder(
+                    capacity_gb=1000, current_volume_gb=payload_used, planning_limit=0.8
+                ),
+            ),
+            "bus": DataStore(
+                owner="spacecraft_bus",
+                recorder=OnboardRecorder(
+                    capacity_gb=10, current_volume_gb=bus_used, planning_limit=0.8
+                ),
+            ),
+        },
+        bus_housekeeping="bus",
+        instrument_science={"camera": "payload"},
+        instrument_housekeeping={"camera": "bus"},
+        downlinks=[],
+    )
+    sim._init_subsystems()
+    rooms = sim._recorder_room_gb(sim.ustart, 0, 0, 0)
+    assert set(rooms) == {"payload", "bus"}
+    sim._fetch_new_ppt(sim.ustart, 0, 0)
+    assert (sim.ppt is target) is accepted
+    if accepted:
+        assert target.ss_min <= target.exposure < 800
+        assert sim.acs.command_queue[0].slew.rate_fraction < 1
+    else:
+        assert not sim.acs.command_queue

@@ -41,7 +41,7 @@ class DispatchPolicy(Protocol):
         collection_deadline: Callable[[Pointing, float], float | None] | None = None,
         slew_estimator: Callable[[Pointing], TargetSlewEstimate] | None = None,
         roll: float | None = None,
-        recorder_room_gb: float | None = None,
+        recorder_room_gb: float | Mapping[str, float] | None = None,
     ) -> Pointing | None:
         """Return the target to observe next, or None if nothing can be observed.
 

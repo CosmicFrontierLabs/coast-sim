@@ -12,7 +12,14 @@ from conops.common.enums import ACSMode
 from conops.common.vector import quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
-from ..config import FaultManagementRun, MissionConfig, SolarArrayDriveState
+from ..config import (
+    FaultManagementRun,
+    MissionConfig,
+    OnboardRecorder,
+    SolarArrayDriveState,
+)
+from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
+from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
 from ..simulation.momentum import MomentumSample, StoredMomentumTracker
 from ..simulation.momentum_budget import MomentumLimitError
@@ -99,6 +106,7 @@ class DITLMixin:
     power_bus: list[float]
     power_payload: list[float]
     # Data recorder tracking
+    _store_data_totals: dict[str, dict[str, float]]
     recorder_volume_gb: list[float]
     recorder_fill_fraction: list[float]
     recorder_alert: list[int]
@@ -119,6 +127,8 @@ class DITLMixin:
         calculate_field_of_regard: bool = False,
     ) -> None:
         """Initialize shared DITL state, ephemeris, and subsystems from config."""
+        # Resolve hardware inventory before creating the ephemeris or subsystems.
+        config.recorder_views(refresh=True)
         # Initialize mixin
         self.config = config
         self.calculate_field_of_regard = calculate_field_of_regard
@@ -238,6 +248,7 @@ class DITLMixin:
             self._data_observation = None
             self._data_collected = 0.0
             self.telemetry = Telemetry()
+            self._store_data_totals = {}
             self.executed_passes = PassTimes(config=self.config)
             # Do not concatenate samples from separate runs (possibly covering
             # identical dates) into a single attitude audit or plotting timeline.
@@ -272,7 +283,12 @@ class DITLMixin:
         self.battery = self.config.battery
         self.spacecraft_bus = self.config.spacecraft_bus
         self.payload = self.config.payload
-        self.recorder = self.config.recorder
+        self._store_data_totals = {}
+        self.recorder = (
+            RecorderSummary(self.config.recorder_views())
+            if isinstance(self.config.data_storage, DataStorage)
+            else self.config.recorder
+        )
 
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
@@ -677,11 +693,54 @@ class DITLMixin:
         Returns:
             Tuple of (data_generated, data_downlinked) in Gb for this timestep.
         """
+        if isinstance(self.config.data_storage, DataStorage):
+            observation, collected = self._data_observation, self._data_collected
+            generated = downlinked = 0.0
+            for view in self.config.recorder_views().values():
+                self._data_observation, self._data_collected = observation, collected
+                volume_before = view.recorder.current_volume_gb
+                incoming, outgoing = self._process_store_data(
+                    view, utime, mode, step_size, collection_seconds=collection_seconds
+                )
+                totals = self._store_data_totals.setdefault(
+                    view.name,
+                    {"generated_gb": 0.0, "downlinked_gb": 0.0, "lost_gb": 0.0},
+                )
+                totals["generated_gb"] += incoming
+                totals["downlinked_gb"] += outgoing
+                totals["lost_gb"] += max(
+                    0.0,
+                    volume_before
+                    + incoming
+                    - outgoing
+                    - view.recorder.current_volume_gb,
+                )
+                generated += incoming
+                downlinked += outgoing
+            return generated, downlinked
+        return self._process_store_data(
+            self.config, utime, mode, step_size, collection_seconds=collection_seconds
+        )
+
+    def _process_store_data(
+        self,
+        config: MissionConfig | RecorderView,
+        utime: float,
+        mode: ACSMode,
+        step_size: int,
+        *,
+        collection_seconds: float,
+    ) -> tuple[float, float]:
+        recorder = (
+            config.recorder
+            if isinstance(config, RecorderView)
+            else cast(OnboardRecorder, self.recorder)
+        )
         data_downlinked = 0.0
 
         # Housekeeping data for the whole step, in its ACS mode.
         interval = max(0.0, min(utime + step_size, self.uend) - utime)
-        data_generated = self.config.housekeeping_generated(interval, mode=mode)
+        data_generated = config.housekeeping_generated(interval, mode=mode)
 
         # Science data for the time collected, which can be less than the
         # step: ACS science pointing can include payload setup and cleanup.
@@ -696,9 +755,9 @@ class DITLMixin:
                 self._data_collected if observation == self._data_observation else 0.0
             )
             after = before + collection_seconds
-            data_generated += self.config.science_generated(after, science=science)
+            data_generated += config.science_generated(after, science=science)
             if before > 0:
-                data_generated -= self.config.science_generated(before, science=science)
+                data_generated -= config.science_generated(before, science=science)
             self._data_observation = observation
             self._data_collected = after
 
@@ -715,18 +774,22 @@ class DITLMixin:
                 contact_start,
                 min(utime + step_size, float(current_pass.end), self.uend),
             )
-            station = self.config.ground_stations.get(current_pass.station)
-
-            # Determine actual data rate based on both ground station and spacecraft capabilities
-            effective_rate_mbps = self._get_effective_data_rate(station)
-            if effective_rate_mbps is not None and effective_rate_mbps > 0:
-                # Mbps * seconds = megabits; the recorder counts gigabits.
-                megabits = effective_rate_mbps * (contact_stop - contact_start)
-                data_to_downlink = megabits / 1000.0
+            if isinstance(config, RecorderView):
+                data_to_downlink = contact_downlink_gb(
+                    config, current_pass.station, contact_stop - contact_start
+                )
+            else:
+                rate_mbps = self._get_effective_data_rate(
+                    config.ground_stations.get(current_pass.station)
+                )
+                if rate_mbps is not None and rate_mbps > 0:
+                    data_to_downlink = (
+                        rate_mbps * (contact_stop - contact_start) / 1000.0
+                    )
 
         if data_to_downlink <= 0:
             if data_generated > 0:
-                self.recorder.add_data(data_generated)
+                recorder.add_data(data_generated)
             return data_generated, data_downlinked
 
         # Generation runs on through the contact, so the step is taken in
@@ -736,12 +799,28 @@ class DITLMixin:
         # after it ends, and nothing is lost to a full recorder while the link
         # empties it faster than data arrives.
         rate = data_generated / interval
-        self.recorder.add_data(rate * (contact_start - utime))
-        data_downlinked = self.recorder.transfer(
+        recorder.add_data(rate * (contact_start - utime))
+        data_downlinked = recorder.transfer(
             rate * (contact_stop - contact_start), data_to_downlink
         )
-        self.recorder.add_data(rate * (utime + interval - contact_stop))
+        recorder.add_data(rate * (utime + interval - contact_stop))
         return data_generated, data_downlinked
+
+    def _recorder_telemetry(self) -> dict[str, dict[str, float]]:
+        if not isinstance(self.config.data_storage, DataStorage):
+            return {}
+        return {
+            name: {
+                "volume_gb": view.recorder.current_volume_gb,
+                "capacity_gb": view.recorder.capacity_gb,
+                "fill_fraction": view.recorder.get_fill_fraction(),
+                "alert": float(view.recorder.get_alert_level()),
+                **self._store_data_totals.get(
+                    name, {"generated_gb": 0.0, "downlinked_gb": 0.0, "lost_gb": 0.0}
+                ),
+            }
+            for name, view in self.config.recorder_views().items()
+        }
 
     def _get_effective_data_rate(self, station: GroundStation) -> float | None:
         """The downlink rate in Mbps the spacecraft gets from ``station``, or None.

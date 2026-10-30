@@ -611,6 +611,12 @@ class PassTimes:
         return sched
 
     def _station_downlink_rate_mbps(self, gspass: Pass) -> float:
+        storage = self.config.data_storage
+        if storage is not None:
+            return sum(
+                storage.downlink_rate(self.config, name, gspass.station)
+                for name in storage.stores
+            )
         try:
             rate = self.ground_stations.get(gspass.station).get_overall_max_downlink()
         except KeyError:
