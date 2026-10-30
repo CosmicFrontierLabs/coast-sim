@@ -316,6 +316,7 @@ The :class:`~conops.config.SpacecraftBus` defines the spacecraft bus subsystems.
 * ``data_generation`` (:class:`~conops.config.HousekeepingData`): Data the bus generates at all times, such as housekeeping, by ACS mode; see :doc:`data_management`
 * ``star_trackers`` (:class:`~conops.config.StarTrackerConfiguration`): Optional star tracker configuration
 * ``radiators`` (:class:`~conops.config.RadiatorConfiguration`): Optional body-mounted radiator configuration
+* ``surfaces`` (:class:`~conops.config.SurfaceModel` | None): The spacecraft's surfaces as flat plates about its centre of mass, for the torques of sunlight and drag (see `Stored momentum`_ below); None builds a placeholder from the bus, panels and telescopes when those torques are tracked
 
 **AttitudeControlSystem Configuration:**
 
@@ -365,8 +366,9 @@ uses the same tolerance relative to the largest tensor entry; accepted rounding
 asymmetry is averaged before validation and storage.
 COAST integrates the angular impulse in inertial coordinates, then reports the
 stored-momentum vector in the current body frame. This prevents attitude changes
-alone from appearing to generate momentum. The optional capacity constraint below
-adds maneuver momentum to this model; desaturation scheduling is not implemented.
+alone from appearing to generate momentum. The optional capacity enforcement below
+adds maneuver momentum to this model; the other torque sources, the magnetorquers
+and thruster dumps are described under `Stored momentum`_ and on :doc:`momentum`.
 
 The tracker reloads the inertia, initial momentum, sampling limits, and enable
 flag at the start of every run. Configuration changes between runs therefore
@@ -413,10 +415,13 @@ cadences without replanning the science schedule.
 Momentum-constrained queue scheduling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Set ``stored_momentum.capacity_n_m_s`` to a finite positive spherical actuator
-momentum limit to enable admission and execution checks. The default ``None``
-leaves existing scheduling unchanged. A physical inertia tensor is required,
-even when gravity-gradient torque is disabled.
+Set ``stored_momentum.enforce_capacity`` with a finite positive spherical actuator
+momentum limit in ``stored_momentum.capacity_n_m_s`` to enable admission and
+execution checks. The default leaves existing scheduling unchanged. A physical
+inertia tensor is required, even when gravity-gradient torque is disabled.
+Enforcement integrates the same torque sources the run tracks, into the run's own
+tracker, so it can be combined with thruster dumps: the dumps empty the wheels at
+the planning level and enforcement forecasts on from what they hold.
 
 The executor carries total angular momentum in inertial coordinates. At each
 sample the required actuator momentum in body coordinates is
@@ -448,6 +453,7 @@ fallback: another admitted target can follow directly without returning first.
    stored_momentum:
      gravity_gradient_enabled: true
      capacity_n_m_s: 20.0
+     enforce_capacity: true
      slew_rate_fractions: [1.0, 0.75, 0.5, 0.25, 0.125]
      roll_step_deg: 30
 
@@ -483,8 +489,8 @@ for all idle recovery maneuvers; retain the executed attitude history for auditi
 
 This is a sampled rigid-body feasibility model, not a continuous-time certificate
 or a full actuator simulation. It does not include CMG steering singularities,
-individual actuator limits, magnetorquer unloading, moving-array inertia, or
-disturbances other than the enabled gravity-gradient torque. Check convergence
+individual actuator limits, moving-array inertia, or disturbances other than the
+configured torque sources. Check convergence
 and allow appropriate engineering margin. The bounded roll/speed search and
 return-to-departure fallback are conservative: rejecting a candidate does not
 prove it physically impossible, and the resulting yield is not maximum capacity.
@@ -525,6 +531,33 @@ prove it physically impossible, and the resulting yield is not maximum capacity.
            ),
        ),
    )
+
+.. _Stored momentum:
+
+Stored-momentum tracking is disabled by default; :doc:`momentum` describes the
+model, the dumps and the planners' use of it in full. In short: supplying a
+physical body-frame inertia tensor and enabling one or more torque sources tracks
+the momentum the wheels store, in inertial coordinates, reported in the body frame
+at every sample with each source's torque by name. The sources are the gravity
+gradient (``gravity_gradient_enabled``), sunlight and the atmosphere on the
+spacecraft's surfaces (``solar_radiation_pressure_enabled``,
+``aerodynamic_drag_enabled``, with ``spacecraft_bus.surfaces`` or a placeholder built
+from the bus, panels and telescopes, and the atmosphere ``atmosphere`` selects: the
+built-in table or NRLMSIS through the optional ``pymsis``), the spacecraft's residual
+dipole (``residual_dipole_body_a_m2``) and the magnetorquers' unloading
+(``magnetorquer_max_dipole_a_m2``, ``magnetorquer_time_constant_s``), the last two in
+the ``geomagnetic_field`` selected: the built-in tilted dipole or the IGRF through the
+optional ``ppigrf``. ``capacity_n_m_s``, ``planning_level`` and ``thruster_dump`` give
+the wheels a capacity and the spacecraft thruster dumps, which dispatch calls for
+and the planners reserve where the stored momentum reaches the planning level, held
+in the ``DESAT`` ACS mode; the capacity itself is a red line fault management
+records. ``slew_momentum_enabled`` counts the momentum the body carries while it
+slews against the capacity, which is then the wheels' whole capacity: a slew that
+does not fit the room the stored momentum leaves is flown slower, at the first of
+``slew_rate_fractions`` that fits, by dispatch and by the planners alike. A held
+attitude is sampled at the ephemeris resolution and a slew every
+``max_attitude_step_deg`` of motion, so tracking works at whatever resolution the
+ephemeris has.
 
 solar_panel
 ~~~~~~~~~~~
@@ -1103,7 +1136,7 @@ The :class:`~conops.config.Payload` contains the science instruments.
 
 * ``name`` (str): Instrument identifier
 * ``power_draw`` (:class:`~conops.config.PowerDraw`): Power consumption by ACS mode, for an instrument without modes
-* ``modes`` (list[:class:`~conops.config.InstrumentMode`]): The instrument's operating modes, each a ``name``, a ``power_w`` and an optional ``eclipse_power_w``. With modes, the instrument draws its mode's power and ``power_draw`` is unused. During an observation it is in the mode the request names for it (``instrument_modes`` on the target), or ``SCIENCE`` when the request uses it without naming a mode; a request naming no modes uses the instrument it names, or every instrument with modes, in ``SCIENCE``. Outside the observation, and during an observation that does not use it, the instrument is in ``IDLE``, unless it defines a mode named like the ACS mode (``SAFE``, ``SLEWING``, ``PASS``, ``CHARGING``), which then applies. ``IDLE`` and ``SCIENCE`` must be defined when any mode is; other modes are free to add, and a mode's ``observing`` flag, ``True`` unless set, says whether the instrument counts as observing in it for the payload's concurrency rules. A mode's ``science_data`` is what the instrument generates while collecting in that mode (a full frame against a region of interest, say); a mode without it generates the instrument's ``data_generation`` science data, and an instrument with modes that an observation does not use generates nothing during it
+* ``modes`` (list[:class:`~conops.config.InstrumentMode`]): The instrument's operating modes, each a ``name``, a ``power_w`` and an optional ``eclipse_power_w``. With modes, the instrument draws its mode's power and ``power_draw`` is unused. During an observation it is in the mode the request names for it (``instrument_modes`` on the target), or ``SCIENCE`` when the request uses it without naming a mode; a request naming no modes uses the instrument it names, or every instrument with modes, in ``SCIENCE``. Outside the observation, and during an observation that does not use it, the instrument is in ``IDLE``, unless it defines a mode named like the ACS mode (``SAFE``, ``SLEWING``, ``PASS``, ``CHARGING``, ``DESAT``), which then applies. ``IDLE`` and ``SCIENCE`` must be defined when any mode is; other modes are free to add, and a mode's ``observing`` flag, ``True`` unless set, says whether the instrument counts as observing in it for the payload's concurrency rules. A mode's ``science_data`` is what the instrument generates while collecting in that mode (a full frame against a region of interest, say); a mode without it generates the instrument's ``data_generation`` science data, and an instrument with modes that an observation does not use generates nothing during it
 * ``heater`` (:class:`~conops.config.Heater`): Optional thermal heater, by ACS mode
 * ``data_generation`` (:class:`~conops.config.DataGeneration`): Science data the instrument generates while collecting, and its housekeeping data; targets can set their own science data for it by its ``name``. See :doc:`data_management`
 

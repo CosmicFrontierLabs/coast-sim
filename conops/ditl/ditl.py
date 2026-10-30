@@ -476,7 +476,19 @@ class DITL(DITLMixin, DITLStats):
                 else None
             )
             _q = attitude_to_quat(ra, dec, roll)
-            momentum_sample = self._update_stored_momentum(self.utime[i], _pos, _q)
+            momentum_sample = self._update_stored_momentum(
+                self.utime[i], _pos, _q, index=i
+            )
+            active = self._active_entry
+            self._momentum_at_capacity(
+                self.utime[i],
+                (
+                    int(active.obsid)
+                    if active is not None
+                    and active.obstype not in (ObsType.ACTIVITY, ObsType.GSP)
+                    else None
+                ),
+            )
             drive_angles = self._solar_array_drive_telemetry()
             hk = Housekeeping(
                 timestamp=datetime.fromtimestamp(self.utime[i], tz=timezone.utc),
@@ -546,6 +558,30 @@ class DITL(DITLMixin, DITLStats):
                 ),
                 actuator_momentum_norm_n_m_s=(
                     momentum_sample.actuator_momentum_norm_n_m_s
+                    if momentum_sample is not None
+                    else None
+                ),
+                disturbance_torques_body_n_m=(
+                    {
+                        name: list(torque)
+                        for name, torque in momentum_sample.torques_body_n_m.items()
+                    }
+                    if momentum_sample is not None
+                    else None
+                ),
+                disturbance_torque_body_n_m=(
+                    list(momentum_sample.torque_body_n_m)
+                    if momentum_sample is not None
+                    else None
+                ),
+                geomagnetic_field_body_t=(
+                    list(momentum_sample.geomagnetic_field_body_t)
+                    if momentum_sample is not None
+                    and momentum_sample.geomagnetic_field_body_t is not None
+                    else None
+                ),
+                atmosphere_density_kg_m3=(
+                    momentum_sample.atmosphere_density_kg_m3
                     if momentum_sample is not None
                     else None
                 ),
@@ -801,6 +837,9 @@ class DITL(DITLMixin, DITLStats):
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
+            if entry.desaturation:
+                self.acs.end_desaturation()
+                self._unload_stored_momentum(utime, entry.obsid)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
             self.acs.end_science_observation()
@@ -842,6 +881,8 @@ class DITL(DITLMixin, DITLStats):
         """Hold the entry's attitude in IDLE for the activity, slewing to it
         first where the spacecraft is elsewhere."""
         self.acs.end_science_observation()
+        if entry.desaturation:
+            self.acs.begin_desaturation()
         self._add_activity_data(float(entry.fixed_data_gb), entry)
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
