@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.10.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.9.0...v0.10.0) (2026-10-30)
+
+
+### Features
+
+* add battery constraint to schedulers ([#309](https://github.com/CosmicFrontierLabs/coast-sim/issues/309)) ([268e993](https://github.com/CosmicFrontierLabs/coast-sim/commit/268e9939e3d28fdb96bfea4d8f3504c8271ba50a))
+* add constraint for data recorder fullness when scheduling ([#305](https://github.com/CosmicFrontierLabs/coast-sim/issues/305)) ([7c2cf02](https://github.com/CosmicFrontierLabs/coast-sim/commit/7c2cf020187f23ba54eb12d2348a80039565ee90))
+* add CP-SAT scheduler ([#299](https://github.com/CosmicFrontierLabs/coast-sim/issues/299)) ([d08f400](https://github.com/CosmicFrontierLabs/coast-sim/commit/d08f4009214c285231e14ec2a70ea243602193b3))
+* add dynamic target merit and update too handling ([#262](https://github.com/CosmicFrontierLabs/coast-sim/issues/262)) ([01ab686](https://github.com/CosmicFrontierLabs/coast-sim/commit/01ab68665868da966a74d73e5a0ae4fca0809530))
+* add local search scheduler ([#296](https://github.com/CosmicFrontierLabs/coast-sim/issues/296)) ([82e9525](https://github.com/CosmicFrontierLabs/coast-sim/commit/82e9525cc41cf7abb348809699aa0562fc473620))
+* add long range scheduler ([#302](https://github.com/CosmicFrontierLabs/coast-sim/issues/302)) ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* add recorder constraints to dispatch scheduler ([#310](https://github.com/CosmicFrontierLabs/coast-sim/issues/310)) ([#315](https://github.com/CosmicFrontierLabs/coast-sim/issues/315)) ([17fd841](https://github.com/CosmicFrontierLabs/coast-sim/commit/17fd8418aa454579a483e5d2aea8d59ecdd42f67))
+* add rolling horizon DITL simulator ([#293](https://github.com/CosmicFrontierLabs/coast-sim/issues/293)) ([2efbd3a](https://github.com/CosmicFrontierLabs/coast-sim/commit/2efbd3a9d96823a9778cf216f7379fd40ece7e4f))
+* add scheduler / DITL type to configuration ([#300](https://github.com/CosmicFrontierLabs/coast-sim/issues/300)) ([642980f](https://github.com/CosmicFrontierLabs/coast-sim/commit/642980f94049561432b3c4b9f7d98fcc75756016))
+* add too interruption rules ([#301](https://github.com/CosmicFrontierLabs/coast-sim/issues/301)) ([40ac796](https://github.com/CosmicFrontierLabs/coast-sim/commit/40ac7965b00f88ec088e9a85c7eac25a15db2e10))
+* allocator data budget benchmark ([#317](https://github.com/CosmicFrontierLabs/coast-sim/issues/317)) ([71c682a](https://github.com/CosmicFrontierLabs/coast-sim/commit/71c682a2ff63e4fb38a79c46e5cb5ec69b7b5f1f))
+* enforce momentum capacity during scheduling and execution ([#288](https://github.com/CosmicFrontierLabs/coast-sim/issues/288)) ([2087448](https://github.com/CosmicFrontierLabs/coast-sim/commit/20874489c9138753b5d9f498462ea4dfc0598691))
+* model finite single-axis array drives ([#248](https://github.com/CosmicFrontierLabs/coast-sim/issues/248)) ([a5388a8](https://github.com/CosmicFrontierLabs/coast-sim/commit/a5388a8d6e2317580236a23bb19584f48140facc))
+* model independent computer stores and shared downlink capacity ([#316](https://github.com/CosmicFrontierLabs/coast-sim/issues/316)) ([cdc7051](https://github.com/CosmicFrontierLabs/coast-sim/commit/cdc7051c8ab0e647061632777d3f02fffac94c74))
+* model mounted science-instrument attitudes ([#129](https://github.com/CosmicFrontierLabs/coast-sim/issues/129)) ([26758a5](https://github.com/CosmicFrontierLabs/coast-sim/commit/26758a5320ddf97dec78cdc9f2dfe64c742c9bb8))
+* priority planner follows dynamic merit and fills occultation gaps ([#294](https://github.com/CosmicFrontierLabs/coast-sim/issues/294)) ([fb37653](https://github.com/CosmicFrontierLabs/coast-sim/commit/fb376535521911e8b9a71397826dbe73197981a5))
+* target scheduler refactor ([#290](https://github.com/CosmicFrontierLabs/coast-sim/issues/290)) ([54fa60f](https://github.com/CosmicFrontierLabs/coast-sim/commit/54fa60f45f6d7a61356df4b883ab8faef1b16a39))
+* track gravity-gradient momentum ([#250](https://github.com/CosmicFrontierLabs/coast-sim/issues/250)) ([414ef08](https://github.com/CosmicFrontierLabs/coast-sim/commit/414ef08d5b8af867a10fad7420299134ab7665f7))
+* update how science/housekeeping data generation is modeled ([#304](https://github.com/CosmicFrontierLabs/coast-sim/issues/304)) ([87a33b1](https://github.com/CosmicFrontierLabs/coast-sim/commit/87a33b123cc528b6a2cd50589696a445de661770))
+* use rust-ephem for route calculations ([#325](https://github.com/CosmicFrontierLabs/coast-sim/issues/325)) ([c76e101](https://github.com/CosmicFrontierLabs/coast-sim/commit/c76e101c0c45b2936534e1cc89a43f1e84d938ca))
+
+
+### Bug Fixes
+
+* emergency charging interfering with ground contacts ([#281](https://github.com/CosmicFrontierLabs/coast-sim/issues/281)) ([d441716](https://github.com/CosmicFrontierLabs/coast-sim/commit/d4417169a4de4ded3db06f5a01e2db35dad145c8))
+* enforce continuous attitude execution across ACS modes ([#259](https://github.com/CosmicFrontierLabs/coast-sim/issues/259)) ([4b66c9b](https://github.com/CosmicFrontierLabs/coast-sim/commit/4b66c9bef17d2d9a53853e93c67bc14ff39e0ed6))
+* fixes to non-queue scheduled ditl. Unify validation. Break out schedulers. ([#261](https://github.com/CosmicFrontierLabs/coast-sim/issues/261)) ([60b3b7c](https://github.com/CosmicFrontierLabs/coast-sim/commit/60b3b7c2ed6c9b9be7b89747207d0a5cccecf98e))
+* isolate fault state and preserve per-run reports ([#286](https://github.com/CosmicFrontierLabs/coast-sim/issues/286)) ([78f4d73](https://github.com/CosmicFrontierLabs/coast-sim/commit/78f4d735310532a85ccaba903b31de777e33d9ae))
+* issues with negative merits ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* log noise fixes ([82e9525](https://github.com/CosmicFrontierLabs/coast-sim/commit/82e9525cc41cf7abb348809699aa0562fc473620))
+* more bug fixes ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* more bug fixes ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* more bug fixes ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* more fixes ([270f72c](https://github.com/CosmicFrontierLabs/coast-sim/commit/270f72c587bf81c70f7e56be7986d9cb175e662f))
+* plan predictive idle recovery and handle final-interval crossings ([#257](https://github.com/CosmicFrontierLabs/coast-sim/issues/257)) ([0982190](https://github.com/CosmicFrontierLabs/coast-sim/commit/09821905864182faef0806310b3f8050f15107f8))
+* preserve interrupted target budgets and validate fractional ends ([#289](https://github.com/CosmicFrontierLabs/coast-sim/issues/289)) ([b585177](https://github.com/CosmicFrontierLabs/coast-sim/commit/b585177ac3ea2d13fa6d6217917320c738d7b223))
+* reserve payload cleanup before TOO preemption ([#291](https://github.com/CosmicFrontierLabs/coast-sim/issues/291)) ([045e072](https://github.com/CosmicFrontierLabs/coast-sim/commit/045e07255fa59d8a7d7ec98a085d28a9022cbbe2))
+* roll tie tolerance ([#312](https://github.com/CosmicFrontierLabs/coast-sim/issues/312)) ([7d1b7ec](https://github.com/CosmicFrontierLabs/coast-sim/commit/7d1b7ec1351fd900f510ac6327104b41d6ae7f8b))
+* scheduling cadence issue ([#303](https://github.com/CosmicFrontierLabs/coast-sim/issues/303)) ([7cf3e89](https://github.com/CosmicFrontierLabs/coast-sim/commit/7cf3e89b1ed7f5621372685529063f3b23bbb252))
+* skip ground-pass slew calculations when another deadline already wins ([#284](https://github.com/CosmicFrontierLabs/coast-sim/issues/284)) ([33b6355](https://github.com/CosmicFrontierLabs/coast-sim/commit/33b6355ec320a8dac4d103ecf53de9090947bd5d))
+* update notebook ([82e9525](https://github.com/CosmicFrontierLabs/coast-sim/commit/82e9525cc41cf7abb348809699aa0562fc473620))
+* validate science collection between telemetry ticks ([#292](https://github.com/CosmicFrontierLabs/coast-sim/issues/292)) ([18773b9](https://github.com/CosmicFrontierLabs/coast-sim/commit/18773b948702f3b2fd4d65460cace0a1f4ee4076))
+
+
+### Performance Improvements
+
+* ground pass prediction peformance update ([#314](https://github.com/CosmicFrontierLabs/coast-sim/issues/314)) ([d998d11](https://github.com/CosmicFrontierLabs/coast-sim/commit/d998d11b4fee8e21b5236d70936a1dbeaa634004))
+* predict passes only once in `RollingHorizonDITL` ([#313](https://github.com/CosmicFrontierLabs/coast-sim/issues/313)) ([fd06aae](https://github.com/CosmicFrontierLabs/coast-sim/commit/fd06aae8b05231bfcaff0344d4f5c9d2ba0b71c0))
+* reduce sampled-runtime overhead without changing scheduling results ([#258](https://github.com/CosmicFrontierLabs/coast-sim/issues/258)) ([aac2140](https://github.com/CosmicFrontierLabs/coast-sim/commit/aac214069ad15d3a403b07112c49290a767dadb0))
+* reject score-bound losers before computing deadlines ([#285](https://github.com/CosmicFrontierLabs/coast-sim/issues/285)) ([7e11187](https://github.com/CosmicFrontierLabs/coast-sim/commit/7e11187a802ebcd950e0a564d510a5209ecc2998))
+* select the best body roll without ranking all candidates ([#283](https://github.com/CosmicFrontierLabs/coast-sim/issues/283)) ([7d80e07](https://github.com/CosmicFrontierLabs/coast-sim/commit/7d80e07897b29e7f4fbbecc698ce041a1fd0a457))
+
 ## [0.9.0](https://github.com/CosmicFrontierLabs/coast-sim/compare/v0.8.0...v0.9.0) (2026-08-28)
 
 
