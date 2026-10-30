@@ -9,6 +9,7 @@ import pytest
 import rust_ephem
 
 from conops.common.ephemeris import _position_snapshot, position_vectors
+from conops.simulation.momentum import OrbitTables
 
 
 @pytest.fixture
@@ -66,3 +67,28 @@ def test_mutable_adapters_are_not_cached(mock):
     ephem.gcrs_pv.position = np.ones((1, 3))
     np.testing.assert_array_equal(position_vectors(ephem, "gcrs"), np.ones((1, 3)))
     assert ephem.gcrs_pv.position.flags.writeable
+
+
+@pytest.mark.parametrize("numpy_dates", [False, True])
+def test_orbit_tables_accept_adapter_epochs_without_optional_vectors(
+    numpy_dates: bool,
+) -> None:
+    begin = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    dates = [begin, begin + timedelta(seconds=1, microseconds=125000)]
+    timestamps = (
+        np.array([date.replace(tzinfo=None) for date in dates], dtype="datetime64[us]")
+        if numpy_dates
+        else dates
+    )
+    positions = np.array([[7000.0, 0.0, 0.0], [7000.0, 7.0, 0.0]])
+    ephem = SimpleNamespace(
+        timestamp=timestamps, gcrs_pv=SimpleNamespace(position=positions)
+    )
+
+    orbit = OrbitTables.from_ephem(ephem)
+
+    np.testing.assert_array_equal(orbit.times, [date.timestamp() for date in dates])
+    np.testing.assert_array_equal(orbit.positions_eci_km, positions)
+    assert orbit.velocities_eci_km_s is None
+    assert orbit.positions_ecef_km is None
+    assert orbit.sun_positions_eci_km is None
