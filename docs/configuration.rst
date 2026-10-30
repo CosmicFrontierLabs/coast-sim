@@ -327,6 +327,11 @@ The :class:`~conops.config.AttitudeControlSystem` defines slew performance and p
 * ``max_slew_rate_body`` (tuple[float, float, float] | None): Optional body +X/+Y/+Z slew-rate limits in deg/s
 * ``slew_accuracy`` (float): Pointing accuracy after slew completion in degrees
 * ``settle_time`` (float): Time to settle after slew completion in seconds
+* ``max_roll_from_optimum_deg`` (float, optional): How far a roll a target asks for
+  (``roll_deg`` or ``roll_offset_deg`` on the :class:`~conops.targets.Pointing`) may
+  differ from the power-optimal roll, in degrees either way. An offset beyond it is
+  rejected; a target with an absolute roll beyond it at some time is not observed
+  then. None allows any roll the constraints allow.
 * ``slew_before_visible`` (bool, default False): Whether a slew to a science target that is not visible yet may start before it becomes visible, timed to arrive as it does. If False, ACS waits until the target is visible before starting the slew, so the slew time after the target rises is lost. When True, a slew to a target that is not visible yet is not flown if it would arrive no earlier than the end of its plan entry.
 * ``stored_momentum`` (:class:`~conops.config.momentum.StoredMomentumConfig`): Optional planning-level momentum tracking
 * ``slew_algorithm`` (:class:`~conops.common.enums.SlewAlgorithm`): Algorithm for computing slew paths:
@@ -1151,6 +1156,13 @@ Setup is a generic budget for any pre-collection activity: configuration,
 calibration, acquisition, or another procedure. COAST does not prescribe how
 that time is used.
 
+An observation category can set its own budgets in ``observation_timing``, for
+instruments whose setup differs; a category without them takes the payload's.
+``MissionConfig.observation_timing_for(obsid)`` is the lookup the planners,
+dispatch and execution all use, and a plan entry's ``observation_timing`` is its
+own. Where the observation is not known, the planners bound its overheads by the
+largest of each budget over the payload and every category.
+
 ``QueueDITL`` reserves the budgets before visibility, locked-attitude constraint,
 pass, and simulation deadlines. For a pass with multiple tracking profiles, the
 deadline is the earliest possible ingress trigger across those profiles, not
@@ -1594,6 +1606,9 @@ Each :class:`~conops.config.ObservationCategory` also carries:
   category name
 * ``cadence_seconds`` (float, optional): Desired interval between visits
 * ``time_share`` (float in ``[0, 1]``, optional): Allocated fraction of science time
+* ``observation_timing`` (:class:`~conops.config.ObservationTiming`, optional): The
+  category's own setup, cleanup and handoff budgets, where they differ from
+  ``payload.observation_timing`` (see `Observation Timing Budgets`_)
 * ``antenna_repoints`` (``allowed``, ``reported`` or ``forbidden``, default ``allowed``):
   What an antenna repoint during one of the category's observations means; ``forbidden``
   keeps the category's snapshots between repoints (see :doc:`communications`)

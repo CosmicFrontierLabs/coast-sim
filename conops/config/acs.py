@@ -53,6 +53,15 @@ class AttitudeControlSystem(ConfigModel):
     settle_time: float = Field(
         default=120.0, description="Time to settle after slew completion in seconds"
     )
+    max_roll_from_optimum_deg: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=180.0,
+        description=(
+            "How far a commanded roll may differ from the power-optimal roll, "
+            "in degrees either way; None: any roll the constraints allow"
+        ),
+    )
     slew_before_visible: bool = Field(
         default=False,
         description=(

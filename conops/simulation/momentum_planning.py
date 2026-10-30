@@ -174,8 +174,14 @@ class MomentumObservationPlanner:
         if before.first_violation is not None:
             return None
         preferred = self.sim._ppt_optimum_roll(target, start)
-        rolls = dict.fromkeys([preferred, *range(0, 360, self.settings.roll_step_deg)])
-        timing = self.sim.config.payload.observation_timing
+        if getattr(target, "commands_roll", False) is True:
+            # A commanded roll is the only roll the target is observed at.
+            rolls = dict.fromkeys([preferred])
+        else:
+            rolls = dict.fromkeys(
+                [preferred, *range(0, 360, self.settings.roll_step_deg)]
+            )
+        timing = self.sim._ppt_timing(target)
         best: MomentumObservation | None = None
         best_collection = -1.0
         for roll in rolls:

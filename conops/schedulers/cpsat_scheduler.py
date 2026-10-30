@@ -101,9 +101,6 @@ class _ChunkRecorder(NamedTuple):
     limit: int
     """The planning limit, rounded down and less a kilobit: the recorder is
     kept below the limit, not at it."""
-    setup: int
-    """Seconds from a candidate's arrival to its collection, which places it
-    in a segment."""
     data: list[tuple[int, int]] | None = None
     """Per-task data for this store; legacy task.data when absent."""
 
@@ -190,6 +187,7 @@ class _Task:
         spacing: int | None = None,
         duration: int = 0,
         overhead: int = 0,
+        setup: int = 0,
         collection: tuple[int, int] = (0, 0),
         window: tuple[int, int] = (0, 0),
         rate: float = 0.0,
@@ -216,6 +214,9 @@ class _Task:
         """Seconds from arrival to the end of a fixed task."""
         self.overhead = overhead
         """Setup, cleanup and handoff seconds of a candidate snapshot."""
+        self.setup = setup
+        """Seconds from a candidate's arrival to its collection, which places
+        its data in a recorder segment."""
         self.collection = collection
         """Shortest and longest collection of a candidate snapshot, in seconds."""
         self.window = window
@@ -572,8 +573,8 @@ class _ChunkModel:
             per_second, fixed = data
             # The snapshot's data, 0 when it is absent (counted is 0 then).
             total = per_second * counted[k] + fixed * present[k]
-            lo = task.arrival[0] + recorder.setup
-            hi = task.arrival[1] + recorder.setup
+            lo = task.arrival[0] + task.setup
+            hi = task.arrival[1] + task.setup
             possible = [s for s in range(segments) if starts[s] <= hi and lo < ends[s]]
             if len(possible) == 1:
                 volume[possible[0]].append(total)
@@ -583,7 +584,7 @@ class _ChunkModel:
             for s in possible:
                 literal = in_segment[(k, s)] = model.new_bool_var(f"segment{k}_{s}")
                 literals.append(literal)
-                begins = self.arrival[k] + recorder.setup
+                begins = self.arrival[k] + task.setup
                 if s > 0:
                     model.add(begins >= starts[s]).only_enforce_if(literal)
                 if s < segments - 1:
@@ -861,7 +862,7 @@ class _ChunkModel:
                 continue
             segment = None
             if k in hint:
-                begins = hint[k].arrival + recorder.setup
+                begins = hint[k].arrival + task.setup
                 segment = sum(1 for edge in recorder.edges if edge <= begins)
                 per_second, fixed = data
                 volume[segment] += per_second * hint[k].collection + fixed
@@ -1201,7 +1202,6 @@ class CpSatScheduler(LocalSearchScheduler):
             removal=[_kb_down(x) for x in removal],
             removal_accrual=[_kb_up(x) for x in ledger.removal_accrual[first:]],
             limit=_kb_down(limit) - 1,
-            setup=int(np.ceil(self.ctx.setup_seconds)),
             data=[
                 self._candidate_store_data(ledger, self._by_obsid[task.key[0]].target)
                 if task.key is not None
@@ -1408,8 +1408,6 @@ class CpSatScheduler(LocalSearchScheduler):
         rest, each in priority order, up to ``max_candidates``.
         """
         ctx = self.ctx
-        setup = ctx.setup_seconds
-        overhead = int(np.ceil(setup + ctx.post_collection_seconds))
         shares = program_shares(state.programs) if self._deficit_weight else {}
         ranked = sorted(
             self._by_obsid.values(), key=lambda r: r.merit.value, reverse=True
@@ -1418,6 +1416,9 @@ class CpSatScheduler(LocalSearchScheduler):
         for rank, request in enumerate(ranked):
             target = request.target
             obsid = int(target.obsid)
+            timing = ctx.timing_for(obsid)
+            setup = float(timing.setup_seconds)
+            overhead = int(np.ceil(timing.total_seconds))
             remaining = budget[obsid]
             # A snapshot must collect something, as in the priority-first
             # scheduler, even with an ss_min of zero; this also keeps the
@@ -1451,6 +1452,27 @@ class CpSatScheduler(LocalSearchScheduler):
                 attitude = target.target_body_attitude(
                     ctx.instrument_roll(target, max(w0, origin_time))
                 )
+                attitudes = (attitude, attitude)
+                task_overhead = overhead
+                if target.sequence is not None:
+                    # A visit runs whole: its calibration, the slews between
+                    # its steps and any step setup are part of its length,
+                    # and it leaves the spacecraft at its last step.
+                    when = max(w0, origin_time)
+                    first = target.step_pointing(0)
+                    last = target.step_pointing(len(target.sequence.steps) - 1)
+                    attitudes = (
+                        first.target_body_attitude(ctx.instrument_roll(first, when)),
+                        last.target_body_attitude(ctx.instrument_roll(last, when)),
+                    )
+                    task_overhead = overhead + int(
+                        np.ceil(
+                            target.sequence_overhead_seconds(
+                                self.config.spacecraft_bus.attitude_control,
+                                self.config.payload.observation_timing,
+                            )
+                        )
+                    )
                 rate, earliness, offset, late = self._candidate_value(
                     request, shares, origin_time
                 )
@@ -1479,11 +1501,12 @@ class CpSatScheduler(LocalSearchScheduler):
                 for copy in range(copies):
                     task = _Task(
                         (obsid, w0),
-                        (attitude, attitude),
+                        attitudes,
                         (earliest, latest),
                         copy=copy,
                         spacing=spacing,
-                        overhead=overhead,
+                        overhead=task_overhead,
+                        setup=int(np.ceil(setup)),
                         collection=(shortest, longest),
                         window=window,
                         rate=rate,
@@ -1535,7 +1558,9 @@ class CpSatScheduler(LocalSearchScheduler):
         opens = slews_from
         if target.earliest_start is not None:
             # Collection begins setup after the snapshot arrives.
-            opens = max(opens, target.earliest_start - self.ctx.setup_seconds)
+            opens = max(
+                opens, target.earliest_start - self.ctx.setup_for(int(target.obsid))
+            )
         return slews_from, opens
 
     def _candidate_value(
@@ -1553,8 +1578,8 @@ class CpSatScheduler(LocalSearchScheduler):
         proportion to the collection it gets.
         """
         ctx = self.ctx
-        setup = ctx.setup_seconds
         target = request.target
+        setup = ctx.setup_for(int(target.obsid))
         rate = self._value(request, shares)
         earliness = offset = late = 0.0
         if target.deadline is not None and self.earliness_weight > 0.0:
@@ -1665,7 +1690,7 @@ class CpSatScheduler(LocalSearchScheduler):
         """Spans of allocated time a candidate arriving in ``arrival`` can use."""
         if self.allocated is None or rate <= 0.0:
             return []
-        setup = self.ctx.setup_seconds
+        setup = self.ctx.setup_for(obsid)
         spans = []
         for n, span in enumerate(self.allocated.get(obsid, [])):
             if state.allocated_left.get((obsid, n), 0.0) <= 0.0:

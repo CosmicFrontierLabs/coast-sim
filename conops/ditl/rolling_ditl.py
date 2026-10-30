@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType
-from ..config import MissionConfig, ScienceData
+from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.data_storage import DataStorage, RecorderView
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
@@ -20,7 +20,7 @@ from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderAmount, RecorderLedger, combine_amounts
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing
+from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
 from .ditl import DITL
 from .ditl_log import DITLLog
@@ -160,6 +160,7 @@ class RollingHorizonDITL(DITL):
         allocation: Allocation | None = None,
         allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
             raise ValueError("horizon and replan_interval must be positive")
@@ -176,6 +177,8 @@ class RollingHorizonDITL(DITL):
             calculate_field_of_regard=calculate_field_of_regard,
         )
         self.targets = list(targets)
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities every plan reserves."""
         self.horizon = horizon
         self.replan_interval = replan_interval
         self.commit_lead_time = commit_lead_time
@@ -298,7 +301,10 @@ class RollingHorizonDITL(DITL):
         target = self._target_for(int(entry.obsid))
         if target is None:
             return
-        target.record_collection(stop, stop - start)
+        if entry.calibration:
+            target.record_calibration(stop, stop - start)
+        else:
+            target.record_collection(stop, stop - start)
         self._first_collection.setdefault(int(entry.obsid), start)
         for too in self.too_register:
             if too.obsid == entry.obsid:
@@ -359,7 +365,9 @@ class RollingHorizonDITL(DITL):
             next_effect = (
                 self._plan_start(utime if scheduled else self._next_replan)
                 + Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
-                + self.config.payload.observation_timing.setup_seconds
+                + ObservationTiming.bound(
+                    self.config.observation_timings()
+                ).setup_seconds
                 + self.step_size
             )
             urgent = [
@@ -616,6 +624,7 @@ class RollingHorizonDITL(DITL):
             start_drive_state=start_drive_state,
             passes=self._run_passes,
             coverage=self.coverage,
+            activities=[a for a in self.activities if a.begin >= start],
             **options,  # type: ignore[arg-type]
         )
         return (
@@ -670,7 +679,7 @@ class RollingHorizonDITL(DITL):
         end = cut
         collection = None
         if entry.collection_begin is not None and entry.collection_end is not None:
-            post = self.config.payload.observation_timing.post_collection_seconds
+            post = self._timing_for(entry).post_collection_seconds
             begin = min(float(entry.collection_begin), cut)
             # Science before ``utime`` is already collected, so collection
             # cannot stop before then; cleanup follows wherever it stops.

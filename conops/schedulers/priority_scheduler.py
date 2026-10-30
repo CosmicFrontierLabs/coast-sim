@@ -25,7 +25,7 @@ from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing
+from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
@@ -60,6 +60,16 @@ class _Block(BaseModel):
     end: float
     slew: Slew | None = None
     gspass: Pass | None = None
+    steps: list[PlanEntry] = Field(default_factory=list)
+    """For a sequence visit, the entries of its steps in order, the first
+    reached by the block's slew; empty for anything else."""
+    step_slews: list[Slew | None] = Field(default_factory=list)
+    """The slew into each step: the block's own for the first, the slew
+    between pointings for a later step, None where it stays put."""
+
+    @property
+    def is_visit(self) -> bool:
+        return bool(self.steps)
 
     @property
     def is_pass(self) -> bool:
@@ -68,6 +78,15 @@ class _Block(BaseModel):
     @property
     def is_charge(self) -> bool:
         return entry_obstype(self.entry) == ObsType.CHARGE
+
+    @property
+    def is_activity(self) -> bool:
+        return entry_obstype(self.entry) == ObsType.ACTIVITY
+
+    @property
+    def is_fixed(self) -> bool:
+        """A pass, a charge or an activity: not science, never moved."""
+        return self.is_pass or self.is_charge or self.is_activity
 
     @property
     def slew_start(self) -> float:
@@ -144,6 +163,17 @@ _BATTERY_RETRIES = 5
 """Later starts tried in a gap for a snapshot the battery refuses."""
 
 
+class _Visit(NamedTuple):
+    """A sequence visit built for one start: its block entry, its steps and
+    their slews, where it leaves the spacecraft and when it ends."""
+
+    entry: PlanEntry
+    steps: list[PlanEntry]
+    slews: list[Slew | None]
+    attitude_out: Attitude
+    end: float
+
+
 class _Move(NamedTuple):
     """A snapshot placed again later, to make room before it."""
 
@@ -156,7 +186,13 @@ class _Move(NamedTuple):
 
 
 def _collection_seconds(block: _Block) -> float:
-    """Return the science a block collects."""
+    """Return the science a block collects: a visit's science steps' collection."""
+    if block.steps:
+        return sum(
+            step.collection_seconds_between(step.begin, step.end)
+            for step in block.steps
+            if not step.calibration
+        )
     return block.entry.collection_seconds_between(block.entry.begin, block.entry.end)
 
 
@@ -286,11 +322,14 @@ class PriorityScheduler:
         allocated: Mapping[int, Sequence[AllocatedTime]] | None = None,
         allocation_bonus: float = 0.5,
         coverage: StationCoverage | None = None,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         # Revalidate reused configurations before building an ephemeris.
         config.recorder_views(refresh=True)
         self.config = config
         self.targets = list(targets)
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities to reserve, in time order."""
         self.held = frozenset(int(obsid) for obsid in held)
         self.start_drive_state = start_drive_state
         """Where the solar-array drive is when the horizon starts; its
@@ -407,6 +446,9 @@ class PriorityScheduler:
             for gspass in self.ctx.predict_passes():
                 if gspass.requires_tracking:
                     self._place_pass(gspass)
+        for activity in self.activities:
+            if self.ctx.ustart <= activity.begin < self.ctx.uend:
+                self._place_activity(activity)
         self._ledger = self._recorder_ledger()
         self._volumes = self._ledger.initial_volumes(
             [block.entry for block in self.timeline]
@@ -502,6 +544,18 @@ class PriorityScheduler:
         contact's tracking profile. A contact goes on drawing until the
         spacecraft is at rest after it."""
         slew = block.slew
+        if block.steps:
+            addition = self._battery.visit_addition(
+                block.steps,
+                block.step_slews,
+                (
+                    (float(slew.startra), float(slew.startdec), float(slew.startroll))
+                    if slew is not None
+                    else None
+                ),
+            )
+            assert addition is not None
+            return addition
         addition = self._battery.addition(
             block.entry,
             rest=block.end if block.is_pass else None,
@@ -521,6 +575,18 @@ class PriorityScheduler:
         return self._timeline_energy(self._charged_timeline(list(timeline)))
 
     def _block_additions(self, block: _Block) -> list[tuple[int, RecorderAmount]]:
+        """Each science step's data in its store and contact segment."""
+        if block.steps:
+            return [
+                addition
+                for step in block.steps
+                if not step.calibration
+                for addition in self._ledger.science_additions(
+                    step,
+                    step.collection_seconds_between(step.begin, step.end),
+                    float(step.collection_begin or step.begin),
+                )
+            ]
         return self._ledger.science_additions(
             block.entry,
             _collection_seconds(block),
@@ -531,7 +597,9 @@ class PriorityScheduler:
         """Record and return the plan for a finished timeline, with its charging."""
         timeline = self._plan_charging(list(timeline))
         self.plan = Plan(
-            entries=[block.entry for block in timeline],
+            entries=[
+                step for block in timeline for step in (block.steps or [block.entry])
+            ],
             ground_contacts=(
                 [
                     (span.begin, span.end, span.station)
@@ -580,9 +648,7 @@ class PriorityScheduler:
                 # as dispatch does: a Target of Opportunity must beat it to
                 # interrupt the observation.
                 block.entry.merit = self._value(request, shares)
-                collected = block.entry.collection_seconds_between(
-                    block.entry.begin, block.entry.end
-                )
+                collected = _collection_seconds(block)
                 request.remaining -= collected
                 placed[id(request)] += 1
                 self._record_visit(request, block)
@@ -913,7 +979,7 @@ class PriorityScheduler:
         """Return the collection seconds accepted locks already hold per request."""
         reserved: dict[int, float] = defaultdict(float)
         for block in self.timeline:
-            if block.is_pass or block.is_charge:
+            if block.is_fixed:
                 continue
             entry = block.entry
             reserved[int(entry.obsid)] += entry.collection_seconds_between(
@@ -970,6 +1036,8 @@ class PriorityScheduler:
             obstype = ObsType.GSP
         elif block.is_charge:
             obstype = ObsType.CHARGE
+        elif block.is_activity:
+            obstype = ObsType.IDLE
         else:
             obstype = ObsType.PPT
         idle_limit = self._idle_limit(pred, earliest, block.ready)
@@ -1016,7 +1084,7 @@ class PriorityScheduler:
                 self.ctx.ceil_step(block.ready),
                 ACSMode.IDLE,
             )
-        elif block.is_charge:
+        elif block.is_charge or block.is_activity:
             wait_violation = self.ctx.first_hold_violation(
                 target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
             )
@@ -1082,10 +1150,13 @@ class PriorityScheduler:
     def _apply_slew(block: _Block, slew: Slew) -> None:
         """Record a block's incoming slew on the block and its plan entry."""
         block.slew = slew
-        entry = block.entry
-        entry.begin = float(slew.slewstart)
-        entry.slewtime = int(slew.slewtime)
-        entry.slewdist = float(slew.slewdist)
+        entries = [block.entry, *block.steps[:1]]
+        for entry in entries:
+            entry.begin = float(slew.slewstart)
+            entry.slewtime = int(slew.slewtime)
+            entry.slewdist = float(slew.slewdist)
+        if block.step_slews:
+            block.step_slews[0] = slew
 
     # ── Locked entries and passes ────────────────────────────────────────
 
@@ -1106,9 +1177,9 @@ class PriorityScheduler:
                 entry.obsid,
             )
             return
-        if float(entry.collection_end) + self.ctx.post_collection_seconds > float(
-            entry.end
-        ):
+        if float(entry.collection_end) + self.ctx.post_collection_for(
+            int(entry.obsid)
+        ) > float(entry.end):
             self._log(
                 float(entry.begin),
                 f"Locked entry {entry.obsid} does not reserve its post-collection "
@@ -1122,7 +1193,7 @@ class PriorityScheduler:
             entry=entry,
             attitude_in=attitude,
             attitude_out=attitude,
-            ready=float(entry.collection_begin) - self.ctx.setup_seconds,
+            ready=float(entry.collection_begin) - self.ctx.setup_for(int(entry.obsid)),
             end=float(entry.end),
         )
         entry.visibility()
@@ -1144,6 +1215,50 @@ class PriorityScheduler:
                 float(entry.begin),
                 f"Locked entry {entry.obsid} cannot be reached; leaving it out",
                 entry.obsid,
+            )
+
+    def _place_activity(self, activity: ScheduledActivity) -> None:
+        """Reserve an activity as a fixed block in IDLE mode.
+
+        It holds the attitude the timeline has when it starts, as reserved:
+        the block before it, or the start attitude. An attitude IDLE cannot
+        hold for the activity's length is not used; the plan then leaves
+        the activity out and says so.
+        """
+        before = [b for b in self.timeline if b.end <= activity.begin]
+        attitude = (
+            before[-1].attitude_out
+            if before
+            else (
+                self._origin.attitude_out
+                if self._origin is not None
+                else self.ctx.initial_attitude(self.ctx.ustart)
+            )
+        )
+        violation = self.ctx.first_hold_violation(
+            attitude, activity.begin, self.ctx.ceil_step(activity.end), ACSMode.IDLE
+        )
+        if violation is not None:
+            self._log(
+                activity.begin,
+                f"Activity {activity.name} cannot hold its attitude in IDLE at "
+                f"{unixtime2date(violation)}; leaving it out",
+                activity.obsid,
+            )
+            return
+        entry = activity.plan_entry(self.config, attitude)
+        block = _Block(
+            entry=entry,
+            attitude_in=attitude,
+            attitude_out=attitude,
+            ready=activity.begin,
+            end=activity.end,
+        )
+        if not self._insert_fixed(block):
+            self._log(
+                activity.begin,
+                f"Activity {activity.name} cannot be reached; leaving it out",
+                activity.obsid,
             )
 
     def _place_pass(self, gspass: Pass) -> None:
@@ -1408,8 +1523,7 @@ class PriorityScheduler:
         latest = self.ctx.floor_step(
             until
             - snapshot
-            - self.ctx.setup_seconds
-            - self.ctx.post_collection_seconds
+            - self.ctx.timing_for(int(target.obsid)).total_seconds
             - self._battery.slew_allowance
         )
         for _ in range(_BATTERY_RETRIES + 1):
@@ -1674,6 +1788,7 @@ class PriorityScheduler:
         """
         self._successor_blocked = False
         target = request.target
+        timing = self.ctx.timing_for(int(target.obsid))
         ss_min = (
             request.remaining if request.whole else float(snapshot_min_seconds(target))
         )
@@ -1691,9 +1806,19 @@ class PriorityScheduler:
         unreachable = 0
         search_end = min(idle_limit, gap_end)
 
+        # A visit arrives at its first step, which may point elsewhere than
+        # the target and ask for its own roll.
+        arrival_pointing = (
+            target.step_pointing(0) if target.sequence is not None else target
+        )
         while start <= search_end:
-            instrument_roll = self.ctx.instrument_roll(target, start)
-            attitude = target.target_body_attitude(instrument_roll)
+            if not self.ctx.roll_allowed(arrival_pointing, start):
+                # The roll the target asks for is beyond the ACS limit from
+                # the power-optimal roll now; it may be within it later.
+                start += self.ctx.step_size
+                continue
+            instrument_roll = self.ctx.instrument_roll(arrival_pointing, start)
+            attitude = arrival_pointing.target_body_attitude(instrument_roll)
             slew = self.ctx.slew(
                 self._start_attitude(pred, start),
                 attitude,
@@ -1717,7 +1842,7 @@ class PriorityScheduler:
                 )
                 continue
 
-            collection_begin = float(slew.slewend) + self.ctx.setup_seconds
+            collection_begin = float(slew.slewend) + timing.setup_seconds
             if (
                 target.earliest_start is not None
                 and collection_begin < target.earliest_start
@@ -1751,19 +1876,65 @@ class PriorityScheduler:
             if target.deadline is not None and collection_begin > target.deadline:
                 return None
 
+            visit: _Visit | None = None
+            departure = attitude
+            if target.sequence is not None:
+                visit = self._visit(
+                    request, slew, attitude, instrument_roll, collection_begin
+                )
+                if visit is None:
+                    # A step cannot be observed from this start; try later.
+                    start += self.ctx.step_size
+                    continue
+                departure = visit.attitude_out
+
             latest_end = min(window[1], horizon_end)
             succ_slewtime = 0.0
             if succ is not None:
                 succ_slewtime = self.ctx.slew(
-                    attitude, succ.attitude_in, collection_begin
+                    departure, succ.attitude_in, collection_begin
                 ).slewtime
                 # The successor's slew must start on a step after this ends.
                 latest_end = min(
                     latest_end, self.ctx.floor_step(succ.ready - succ_slewtime)
                 )
+            if visit is not None:
+                # A visit runs whole or not at all.
+                if visit.end > latest_end:
+                    if succ is not None and latest_end < window[1]:
+                        return None
+                    start += self.ctx.step_size
+                    continue
+                block = _Block(
+                    entry=visit.entry,
+                    attitude_in=attitude,
+                    attitude_out=visit.attitude_out,
+                    ready=collection_begin - self.ctx.setup_seconds,
+                    end=visit.end,
+                    steps=visit.steps,
+                    step_slews=visit.slews,
+                )
+                fitted = self._check_snapshot(block, slew, ss_min)
+                if fitted is not None:
+                    succ_slew = None
+                    if succ is not None:
+                        succ_slew = self._connect(
+                            fitted, succ, self.ctx.ceil_step(fitted.end)
+                        )
+                    if succ is None or succ_slew is not None:
+                        return fitted, slew, succ_slew
+                    unreachable += 1
+                    self._successor_blocked = True
+                    if (
+                        self.successor_retries is not None
+                        and unreachable > self.successor_retries
+                    ):
+                        return None
+                start += self.ctx.step_size
+                continue
             collection_end = min(
                 collection_begin + snapshot,
-                latest_end - self.ctx.post_collection_seconds,
+                latest_end - timing.post_collection_seconds,
             )
 
             # A cadence visit before a locked visit of its target must end a
@@ -1802,7 +1973,7 @@ class PriorityScheduler:
                 entry=entry,
                 attitude_in=attitude,
                 attitude_out=attitude,
-                ready=collection_begin - self.ctx.setup_seconds,
+                ready=collection_begin - timing.setup_seconds,
                 end=float(entry.end),
             )
             fitted = self._check_snapshot(block, slew, ss_min)
@@ -1833,7 +2004,7 @@ class PriorityScheduler:
         slew = self.ctx.slew(
             self._start_attitude(pred, start), attitude, start, obsid=target.obsid
         )
-        return float(slew.slewend) + self.ctx.setup_seconds
+        return float(slew.slewend) + self.ctx.setup_for(int(target.obsid))
 
     def _visibility_needed_at(self, slew: Slew) -> float:
         """When a science target must be visible for ACS to fly ``slew`` to it.
@@ -1857,6 +2028,9 @@ class PriorityScheduler:
         needed = self._visibility_needed_at(slew)
         if not entry.visible(needed, needed):
             return None
+        if block.steps:
+            # Each step's hold was checked when the visit was built.
+            return block
         violation = self.ctx.first_science_violation(
             entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(block.end)
         )
@@ -1864,13 +2038,149 @@ class PriorityScheduler:
             return block
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
-        collection_end = violation - self.ctx.post_collection_seconds
+        collection_end = violation - self.ctx.post_collection_for(int(entry.obsid))
         if not _long_enough(collection_end - entry.collection_begin, ss_min):
             return None
         entry.collection_end = collection_end
         entry.end = violation
         block.end = violation
         return block
+
+    def _visit(
+        self,
+        request: _Request,
+        slew: Slew,
+        attitude: Attitude,
+        instrument_roll: float,
+        collection_begin: float,
+    ) -> "_Visit | None":
+        """Build a visit of a sequence target whose first step's collection
+        begins at ``collection_begin``, after ``slew``.
+
+        Each later step follows the one before: a slew where it points
+        elsewhere, the setup budget where the step asks, then its duration;
+        cleanup and handoff after the last. Each step must be visible and
+        allowed throughout, and each slew between steps allowed, else None.
+        """
+        target = request.target
+        assert target.sequence is not None
+        sequence = target.sequence
+        steps: list[PlanEntry] = []
+        slews: list[Slew | None] = []
+        cursor = collection_begin
+        previous = attitude
+        previous_roll = instrument_roll
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        first_pointing = target.step_pointing(0)
+        previous_optimum = self.ctx.optimum_roll(first_pointing, float(slew.slewstart))
+        step_slew: Slew | None = slew
+        for index, step in enumerate(sequence.steps):
+            pointing = target.step_pointing(index)
+            if index > 0:
+                # A step at the pointing of the one before keeps the
+                # power-optimal roll found there, so its own roll offset is
+                # a roll-only slew and no offset leaves it where it is,
+                # though ACS still settles as for any commanded slew; one
+                # elsewhere slews to its own attitude.
+                same_pointing = sequence.pointing_of(
+                    index, target.ra, target.dec
+                ) == sequence.pointing_of(index - 1, target.ra, target.dec)
+                if not same_pointing:
+                    previous_optimum = self.ctx.optimum_roll(pointing, cursor)
+                requested = pointing.requested_roll(previous_optimum, limit)
+                if requested is None:
+                    # The step's roll is beyond the ACS limit now.
+                    return None
+                step_roll = float(requested)
+                step_attitude = (
+                    previous
+                    if same_pointing and abs(step_roll - previous_roll) < 1e-9
+                    else pointing.target_body_attitude(step_roll)
+                )
+                # Commands execute on simulation steps: the slew starts on the
+                # first step after the collection before it ends.
+                slew_begin = self.ctx.ceil_step(cursor)
+                step_slew = self.ctx.slew(
+                    previous, step_attitude, slew_begin, obsid=target.obsid
+                )
+                if self.ctx.first_slew_violation(step_slew, ACSMode.SLEWING):
+                    return None
+                cursor = float(step_slew.slewend)
+                if step.setup:
+                    cursor += self.ctx.setup_seconds
+                begin, slewtime = slew_begin, float(step_slew.slewtime)
+            else:
+                step_attitude = attitude
+                step_roll = instrument_roll
+                begin, slewtime = float(slew.slewstart), float(slew.slewtime)
+            step_begin = cursor
+            step_end = cursor + step.duration_seconds
+            last = index == len(sequence.steps) - 1
+            end = step_end + (self.ctx.post_collection_seconds if last else 0.0)
+            if not pointing.visible(step_begin, step_end):
+                return None
+            if (
+                self.ctx.first_science_violation(
+                    pointing, step_attitude, step_begin, self.ctx.ceil_step(end)
+                )
+                is not None
+            ):
+                return None
+            entry = PlanEntry(
+                config=self.config,
+                name=pointing.name,
+                instrument_name=pointing.instrument_name,
+                science_data=pointing.science_data,
+                ra=pointing.ra,
+                dec=pointing.dec,
+                roll=step_roll,
+                spacecraft_attitude=(
+                    step_attitude if pointing.uses_mounted_attitude() else None
+                ),
+                begin=begin,
+                slewtime=int(slewtime),
+                slewdist=float(step_slew.slewdist) if step_slew is not None else 0.0,
+                end=end,
+                collection_begin=step_begin,
+                collection_end=step_end,
+                obsid=target.obsid,
+                obstype=target.obstype,
+                merit=request.merit.value,
+                ss_min=0,
+                ss_max=step.duration_seconds,
+                step=step.name,
+                calibration=not step.science,
+            )
+            entry.exptime = step.duration_seconds
+            steps.append(entry)
+            slews.append(step_slew)
+            previous = step_attitude
+            previous_roll = step_roll
+            cursor = step_end
+        first = steps[0]
+        visit_entry = PlanEntry(
+            config=self.config,
+            name=target.name,
+            instrument_name=first.instrument_name,
+            science_data=target.science_data,
+            ra=first.ra,
+            dec=first.dec,
+            roll=first.roll,
+            spacecraft_attitude=first.spacecraft_attitude,
+            begin=float(slew.slewstart),
+            slewtime=int(slew.slewtime),
+            slewdist=float(slew.slewdist),
+            end=steps[-1].end,
+            collection_begin=collection_begin,
+            collection_end=steps[-1].collection_end,
+            obsid=target.obsid,
+            obstype=target.obstype,
+            merit=request.merit.value,
+            ss_min=snapshot_min_seconds(target),
+            ss_max=target.ss_max,
+        )
+        visit_entry.exptime = sequence.science_seconds
+        return _Visit(visit_entry, steps, slews, previous, float(steps[-1].end))
 
     def _science_entry(
         self,
@@ -1885,7 +2195,7 @@ class PriorityScheduler:
         target = request.target
         mounted = target.uses_mounted_attitude()
         telescope = target.science_telescope()
-        end = collection_end + self.ctx.post_collection_seconds
+        end = collection_end + self.ctx.post_collection_for(int(target.obsid))
         entry = PlanEntry(
             config=self.config,
             name=target.name,

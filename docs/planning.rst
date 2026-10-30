@@ -75,6 +75,14 @@ Building and executing a plan
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 
+A target is observed at the power-optimal instrument roll unless it asks for
+another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
+the roll itself. Dispatch and the planners observe the target at that roll where the
+constraints allow it, and the plan entry's ``roll`` records it. The ACS's
+``max_roll_from_optimum_deg`` bounds either: an offset beyond it is a configuration
+error, and a target whose absolute roll is beyond it at a time is not selected or
+placed then, but may be later as the optimal roll moves.
+
 Execute the plan with the same configuration, ephemeris, horizon and step size it
 was built with. The plan can also be saved and loaded (see :doc:`plan_serialization`)
 before execution.
@@ -89,6 +97,17 @@ How a plan is built
    configuration's random seed, so ``DITL`` predicts the same passes when it executes
    the plan. Each pass is reserved on the first tracking profile the spacecraft can
    reach safely. Pass ``include_passes=False`` to plan science only.
+   **Scheduled activities** (the ``activities`` argument, a list of
+   :class:`~conops.targets.ScheduledActivity`) are reserved the same way: each is a
+   fixed block from its start for its duration, in ``IDLE`` mode, holding the attitude
+   the timeline has when it starts as reserved, so no science is placed across it and
+   the slews around it are planned. A maintenance window, a calibration that needs the
+   spacecraft still or an engineering block is an activity; ``DITL`` commands the
+   plan's activity entries, and the plan validator checks that no science, contact or
+   charge ran during one. Dispatch takes the same list: it ends the observation under
+   way when an activity begins, marking it interrupted so it is revisited, holds the
+   attitude it has in ``IDLE`` until the activity ends, and starts no observation that
+   would run into the next activity.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``
@@ -247,6 +266,49 @@ actual volume, so a contact that downlinked less than planned is made up for at
 the next replan. A plan takes effect after the commit lead time, so it starts from
 what the committed activities leave on the recorder by then: what they go on to
 generate, less what a committed contact downlinks.
+
+Observation sequences
+^^^^^^^^^^^^^^^^^^^^^
+
+Some observations are a fixed series of steps rather than one pointing held for a
+time: a reference star, then the target, then the reference again, each for its own
+duration and perhaps with its own instrument, with calibration steps that take time
+but collect no science. A :class:`~conops.targets.ObservationSequence` on a
+:class:`~conops.targets.Pointing` lists the steps (``SequenceStep``: a name, a
+duration, an optional pointing and instrument, whether it collects science, and
+whether it pays the setup budget, and an optional ``roll_offset_deg`` on top of the
+target's own roll), and ``visits`` says how many times the sequence is
+wanted. A sequence target's snapshot is one visit's science, no more and no less, and
+its exposure is its visits' science unless given.
+
+Dispatch observes a visit step by step. The target is selected as any other, with the
+visit's calibration, the slews between steps that point elsewhere and any step setup
+counted in the time it needs; its first step is the observation admitted, paying the
+payload's setup, and when a step's time is up the next starts at once, with a real
+slew where it points elsewhere, no setup unless the step asks for it, and cleanup and
+handoff after the last step only. Nothing is inserted inside a visit: a Target of
+Opportunity waits for it to end. A step that cannot be observed, because its pointing
+is not visible throughout, its attitude or slew is constrained, or a ground pass
+falls in it, cuts the visit short, as does any other termination of a step; the cut
+is recorded on the target, which is revisited for the rest from its first step.
+Each step is its own plan entry with the target's obsid, its ``step`` name and, for
+a calibration step, ``calibration`` set; the target is credited the science steps'
+collection and, separately, the calibration time.
+
+The planners place a visit as one block of steps. The priority-first scheduler
+builds the chain from a candidate start: the first step's collection begins its
+setup after the slew in, each later step follows a slew where it points elsewhere
+and the setup budget where it asks, and cleanup and handoff come after the last;
+every step must be visible and allowed throughout and every slew between steps
+allowed, else the start is tried later. The visit fits before the next activity or
+not at all, the slew to that activity leaves from the last step's attitude, and the
+plan lists the steps as entries. The recorder ledger counts the science steps'
+data and the battery ledger the slews and holds of every step. Local search moves a
+visit as one block, and CP-SAT models it as one task whose length includes the
+calibration, the slews between steps and any step setup, arriving at the first
+step's attitude and leaving from the last's. A rolling run credits each executed
+step to its target, science or calibration, and ``DITL`` commands the steps as it
+commands any science entries.
 
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much the recorder can take

@@ -20,10 +20,15 @@ from conops.config import (
     HousekeepingData,
     Instrument,
     MissionConfig,
+    ObservationTiming,
     OnboardRecorder,
     Payload,
     ScienceData,
     SpacecraftBus,
+)
+from conops.config.observation_categories import (
+    ObservationCategories,
+    ObservationCategory,
 )
 from conops.ditl import QueueDITL, RollingHorizonDITL
 from conops.ditl.ditl_mixin import DITLMixin
@@ -802,3 +807,84 @@ def test_coverage_respects_store_shares_and_range_dependent_routed_band(monkeypa
     )
     assert c.recorder_views()["bus"].recorder.current_volume_gb == pytest.approx(4.87)
     d._log_repoints.assert_called_once_with(0, 20, 0)
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_queue_recorder_room_reserves_category_setup_and_cleanup(named):
+    c = config()
+    if not named:
+        c = MissionConfig(
+            payload=c.payload,
+            spacecraft_bus=c.spacecraft_bus,
+        )
+    c.spacecraft_bus.data_generation = HousekeepingData(
+        rate_gbps=0.01, rate_mode={"SCIENCE": 0.02}
+    )
+    c.observation_categories = ObservationCategories(
+        categories=[
+            ObservationCategory(
+                name="Slow",
+                obsid_min=100,
+                obsid_max=101,
+                observation_timing=ObservationTiming(
+                    setup_seconds=600, cleanup_seconds=120
+                ),
+            )
+        ]
+    )
+    queue = TargetQueue(c)
+    target = Pointing(obsid=100, ra=0, dec=0, slewtime=0)
+    room = {"payload": 12.0, "bus": 8.0} if named else 12.0
+    # Payload: 2 Gb once and 0.1 Gb/s; bus: 0.01 Gb/s beyond waiting.
+    # The category's 720 seconds of overhead consume 7.2 Gb on the bus.
+    expected = 80.0 if named else (12.0 - 2.0 - 7.2) / 0.11
+    assert queue.collection_within(target, room) == pytest.approx(expected)
+
+
+def test_sequence_steps_use_each_stores_contact_segment():
+    from conops.common import ObsType
+    from conops.schedulers.priority_scheduler import _Block
+
+    c = config()
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.75, "bus": 0.25})
+    ]
+    contact = PlanEntry(
+        obstype=ObsType.GSP,
+        station="GS",
+        begin=50,
+        end=60,
+        contact_begin=50,
+        contact_end=60,
+    )
+    ledger = RecorderLedgers(c, 0, 100, [contact])
+    steps = [
+        PlanEntry(
+            begin=begin,
+            end=begin + 10,
+            collection_begin=begin,
+            collection_end=begin + 10,
+            science_data={"camera": ScienceData(rate_gbps=rate, per_observation_gb=1)},
+        )
+        for begin, rate in ((10, 0.1), (70, 0.2))
+    ]
+    calibration = PlanEntry(
+        begin=30,
+        end=40,
+        collection_begin=30,
+        collection_end=40,
+        calibration=True,
+    )
+    block = _Block(
+        entry=steps[0],
+        attitude_in=(0, 0, 0),
+        attitude_out=(0, 0, 0),
+        ready=10,
+        end=80,
+        steps=[steps[0], calibration, steps[1]],
+    )
+    scheduler = object.__new__(PriorityScheduler)
+    scheduler._ledger = ledger
+    volumes = ledger.add_all([0.0] * ledger.segments, scheduler._block_additions(block))
+    # Two payload snapshots, one on either side of contact; no bus science.
+    assert volumes == pytest.approx((2.0, 3.0, 0.0, 0.0))
