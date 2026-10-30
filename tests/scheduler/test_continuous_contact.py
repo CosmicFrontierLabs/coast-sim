@@ -408,22 +408,42 @@ class TestPlanning:
         assert scheduler._ledger.fits_all(scheduler._volumes, [])
 
     @pytest.mark.parametrize(
-        ("housekeeping", "link_mbps", "late_capacity"),
+        (
+            "housekeeping",
+            "link_mbps",
+            "late_capacity",
+            "start_volume",
+            "science_rate",
+            "expected_science",
+        ),
         [
-            (0.0, 1e-5, False),
-            (0.00001, 0.01, False),
-            (0.00002, 0.01, False),
-            (0.00001, 0.01, True),
+            (0.0, 1e-5, False, 17.0, 0.08, False),
+            (0.00001, 0.01, False, 17.0, 0.08, False),
+            (0.00002, 0.01, False, 17.0, 0.08, False),
+            (0.00001, 0.01, True, 17.0, 0.08, True),
+            (0.0, 2.0, False, 0.0, 0.305, False),
+            (0.0, 2.0, False, 0.0, 0.302, True),
+            (0.0, 2.0, True, 0.0, 0.305, True),
         ],
         ids=[
             "tiny-link",
             "housekeeping-balances-link",
             "housekeeping-exceeds-link",
             "capacity-at-end-of-week",
+            "snapshot-exceeds-empty-recorder-and-concurrent-link",
+            "oversized-snapshot-fits-with-concurrent-link",
+            "oversized-snapshot-fits-at-end-of-week",
         ],
     )
     def test_weeklong_omni_contact_does_not_refit_at_every_step(
-        self, monkeypatch, housekeeping, link_mbps, late_capacity
+        self,
+        monkeypatch,
+        housekeeping,
+        link_mbps,
+        late_capacity,
+        start_volume,
+        science_rate,
+        expected_science,
     ):
         hours = 7 * 24
         config = _recorder_config(hours=hours)
@@ -431,7 +451,7 @@ class TestPlanning:
         config.constraint.sun_constraint = None
         config.constraint.earth_constraint = None
         config.constraint.invalidate_combined_constraint_cache()
-        config.recorder.current_volume_gb = 17.0
+        config.recorder.current_volume_gb = start_volume
         # The weak link cannot clear enough room for a snapshot. An optional
         # strong window at the end must be found without scanning 10,080 steps.
         coverage = Mock(spec=StationCoverage)
@@ -447,7 +467,9 @@ class TestPlanning:
                 ContactSpan(T0, T0 + hours * HOUR - 600, "MAL", link_mbps),
                 ContactSpan(T0 + hours * HOUR - 600, T0 + hours * HOUR, "MAL", 100.0),
             ]
-        target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
+        target = _data_target(
+            config, 1, 105.0, 10.0, science_rate, minutes=1, snapshot=1
+        )
         scheduler = PriorityScheduler(
             config,
             [target],
@@ -468,8 +490,8 @@ class TestPlanning:
 
         monkeypatch.setattr(scheduler, "_fit_in_gap", bounded_fit)
         plan = scheduler.schedule()
-        assert bool(_science(plan)) == late_capacity
-        if late_capacity:
+        assert bool(_science(plan)) == expected_science
+        if expected_science:
             assert scheduler._ledger.fits_all(scheduler._volumes, [])
         assert scheduler._ledger.segments <= 3
 

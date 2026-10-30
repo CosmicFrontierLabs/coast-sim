@@ -10,13 +10,20 @@ from conops.simulation import ContactSpan, StationCoverage
 from conops.targets import PlanEntry
 
 
-def _ledger(begin, end, rate, *, start=0.0, horizon=600):
+def _ledger(begin, end, rate, *, start=0.0, horizon=600, contacts=None):
     coverage = Mock(spec=StationCoverage)
     coverage.step_size = 60.0
 
     def spans(lo, hi):
-        left, right = max(begin, lo), min(end, hi)
-        return [ContactSpan(left, right, "TEST", rate)] if right > left else []
+        return [
+            ContactSpan(max(p.begin, lo), min(p.end, hi), p.station, p.rate_mbps)
+            for p in (
+                contacts
+                if contacts is not None
+                else [ContactSpan(begin, end, "TEST", rate)]
+            )
+            if min(p.end, hi) > max(p.begin, lo)
+        ]
 
     coverage.spans.side_effect = spans
     coverage.rate_spans.side_effect = lambda lo, hi, recorder=None: spans(lo, hi)
@@ -128,3 +135,89 @@ def test_retry_bound_finds_capacity_within_a_contact_and_respects_gap_end():
     planned = ledger.initial_volumes([])
     assert ledger.science_capacity_time(planned, 4.8, 0, 600) == pytest.approx(380)
     assert ledger.science_capacity_time(planned, 4.8, 0, 300) is None
+
+
+@pytest.mark.parametrize("rate, fits", [(0.305, False), (0.302, True)])
+def test_retry_bound_limits_downlink_to_the_snapshots_production_window(rate, fits):
+    week = 7 * 86400
+    ledger = _ledger(0, week, 2, horizon=week)
+    planned = ledger.initial_volumes([])
+    # Both snapshots exceed the limit. Only the smaller one can fit using
+    # the 0.24 Gb downlinked across its two modeled production steps.
+    for begin in (44, 3644, week - 136):
+        entry = _science(rate, begin=begin, end=begin + 60)
+        assert ledger.fits_all(ledger.initial_volumes([entry]), []) == fits
+        bound = ledger.science_capacity_time(
+            planned, rate * 60, begin - begin % 60, week, production_seconds=60
+        )
+        assert (bound is not None) == fits
+        if fits:
+            assert bound <= ledger.grid_step(begin + 60)
+        else:
+            assert max(ledger.peaks(ledger.initial_volumes([entry]))) == pytest.approx(
+                18.06
+            )
+
+
+def test_retry_bound_does_not_extend_a_short_link_over_the_production_window():
+    ledger = _ledger(0, 60, 2)
+    planned = ledger.initial_volumes([])
+    # The full modeled window could send 0.24 Gb at this rate, but only
+    # 0.12 Gb of contact exists. A later start cannot reuse that capacity.
+    assert (
+        ledger.science_capacity_time(planned, 18.18, 0, 600, production_seconds=60)
+        is None
+    )
+
+
+def test_retry_bound_cannot_combine_distant_links_in_one_production_window():
+    ledger = _ledger(
+        0,
+        660,
+        2,
+        horizon=1200,
+        contacts=[ContactSpan(0, 60, "TEST", 2), ContactSpan(600, 660, "TEST", 2)],
+    )
+    planned = ledger.initial_volumes([])
+    assert ledger.science_capacity_time(planned, 18.18, 0, 660) == pytest.approx(630)
+    assert (
+        ledger.science_capacity_time(planned, 18.18, 0, 660, production_seconds=60)
+        is None
+    )
+
+
+def test_retry_bound_finds_a_later_production_window_and_respects_the_gap():
+    ledger = _ledger(600, 720, 2, horizon=3600)
+    planned = ledger.initial_volumes([])
+    assert ledger.science_capacity_time(
+        planned, 18.18, 0, 3600, production_seconds=60
+    ) == pytest.approx(690)
+    assert (
+        ledger.science_capacity_time(planned, 18.18, 0, 600, production_seconds=60)
+        is None
+    )
+    entry = _science(18.18 / 60, begin=615, end=675)
+    assert ledger.fits_all(ledger.initial_volumes([entry]), [])
+
+
+def test_retry_bound_uses_the_maximum_modeled_production_duration():
+    ledger = _ledger(0, 600, 100)
+    planned = ledger.initial_volumes([])
+    entry = _science(40 / 540, begin=15, end=555)
+    assert ledger.fits_all(ledger.initial_volumes([entry]), [])
+    assert (
+        ledger.science_capacity_time(planned, 40, 0, 600, production_seconds=60) is None
+    )
+    assert ledger.science_capacity_time(
+        planned, 40, 0, 600, production_seconds=540
+    ) == pytest.approx(220)
+
+
+def test_retry_bound_without_grid_uses_the_exact_production_duration():
+    ledger = _ledger(0, 600, 2)
+    ledger.step_size = None
+    planned = ledger.initial_volumes([])
+    assert (
+        ledger.science_capacity_time(planned, 18.18, 0, 600, production_seconds=60)
+        is None
+    )

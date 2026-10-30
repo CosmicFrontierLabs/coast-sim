@@ -1285,12 +1285,14 @@ class PriorityScheduler:
                     collection_begin = float(
                         block.entry.collection_begin or block.ready
                     )
+                    snapshot = min(float(request.target.ss_max), request.remaining)
                     capacity_end = self._ledger.science_retry_end(
                         self._volumes,
                         block.entry,
                         minimum,
                         self.ctx.floor_step(collection_begin),
                         succ.ready if succ is not None else self.ctx.uend,
+                        maximum_seconds=snapshot,
                     )
                     if capacity_end is None:
                         break
@@ -1298,7 +1300,6 @@ class PriorityScheduler:
                     # Allow both partial telemetry steps around its collection.
                     # Jump only over starts this necessary bound rules out;
                     # feasibility can turn false again within a variable link.
-                    snapshot = min(float(request.target.ss_max), request.remaining)
                     collection_after = capacity_end - snapshot - 2 * self.ctx.step_size
                     after = self.ctx.ceil_step(
                         float(block.entry.begin)

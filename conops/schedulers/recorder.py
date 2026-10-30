@@ -349,6 +349,8 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         volume: float,
         time: float,
         until: float,
+        *,
+        production_seconds: float | None = None,
     ) -> float | None:
         """Earliest end at which a future snapshot could have recorder room.
 
@@ -360,9 +362,17 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         fit at every later peak, including production beyond this gap. None
         rules out every start through ``until``. Exact placement still checks
         intermediate science peaks and capacity wasted at an empty recorder.
+        With ``production_seconds``, also require enough downlink during that
+        maximum production window for even an empty recorder to hold the data.
         """
         if self.limit is None:
             return time
+        window_end = time
+        if production_seconds is not None:
+            bound = self._science_window_end(volume, production_seconds, time, until)
+            if bound is None:
+                return None
+            window_end = bound
         threshold = self.limit - 1e-9 - volume
         events = self._flow_events(planned)
         events.setdefault(time, [0.0, 0.0])
@@ -386,7 +396,58 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
                 earliest = end
             rate += change
             cursor = end
-        return earliest if level < threshold and earliest <= until else None
+        return (
+            max(earliest, window_end)
+            if level < threshold and earliest <= until
+            else None
+        )
+
+    def _science_window_end(
+        self, volume: float, seconds: float, time: float, until: float
+    ) -> float | None:
+        """Earliest production end with enough concurrent link for an empty store.
+
+        Optimistically credit all transmission in a sliding window as long as
+        the largest snapshot's modeled production interval. Ignore other data
+        and any downlink wasted at zero. The minimum volume and maximum
+        duration keep this bound optimistic for every allowed snapshot length.
+        The window's integral changes slope only at link boundaries and those
+        boundaries shifted by its length; no telemetry-step search is needed.
+        """
+        if self.limit is None or volume < self.limit - 1e-9:
+            return time
+        required = volume - self.limit + 1e-9
+        window = seconds
+        if self.step_size is not None:
+            # An unaligned collection can occupy one more step than an
+            # aligned one. Its production stops by the next grid boundary.
+            window = (math.ceil(seconds / self.step_size) + 1) * self.step_size
+            until = self.grid_step(until)
+        until = min(until, self._end)
+        events = {time: 0.0, until: 0.0}
+        for flow in self._link_flows:
+            lo, hi = max(time, flow.begin), min(until, flow.end)
+            if hi <= lo:
+                continue
+            rate = -flow.volume / (flow.end - flow.begin)
+            for boundary, change in (
+                (lo, rate),
+                (hi, -rate),
+                (lo + window, -rate),
+                (hi + window, rate),
+            ):
+                if boundary <= until:
+                    events[boundary] = events.get(boundary, 0.0) + change
+        transmitted = rate = 0.0
+        cursor = time
+        for end, change in sorted(events.items()):
+            next_transmitted = transmitted + rate * (end - cursor)
+            if rate > 0.0 and next_transmitted >= required:
+                return cursor + (required - transmitted) / rate
+            transmitted = next_transmitted
+            rate += change
+            cursor = end
+        return None
 
     def _walk(
         self, planned: Sequence[RecorderAmount], stop: float | None = None
@@ -601,6 +662,8 @@ class RecorderLedgers:
         seconds: float,
         time: float,
         until: float,
+        *,
+        maximum_seconds: float,
     ) -> float | None:
         """An optimistic earliest science end, respecting each store's net link."""
         earliest = time
@@ -610,6 +673,7 @@ class RecorderLedgers:
                 ledger.science_volume(entry, seconds),
                 time,
                 until,
+                production_seconds=maximum_seconds,
             )
             if end is None:
                 return None
