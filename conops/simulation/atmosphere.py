@@ -135,7 +135,7 @@ class MsisAtmosphere:
         version: float = 2.1,
     ) -> None:
         try:
-            import pymsis  # type: ignore[import-untyped]
+            import pymsis
         except ImportError as exc:  # pragma: no cover - exercised without the extra
             raise ImportError(
                 "the 'msis' atmosphere needs the pymsis package: "
