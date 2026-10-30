@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from conops.config import MissionConfig, OnboardRecorder, ScienceData
+from conops.config import HousekeepingData, MissionConfig, OnboardRecorder, ScienceData
 from conops.schedulers.recorder import RecorderLedger, amount_total
 from conops.simulation import ContactSpan, StationCoverage
 from conops.targets import PlanEntry
@@ -84,3 +84,47 @@ def test_weeklong_continuous_contact_coalesces_without_losing_production_timing(
     late = _science(0.001, begin=week - 600, end=week)
     assert ledger.fits_all(ledger.initial_volumes([late]), [])
     assert ledger.levels(ledger.initial_volumes([late]))[-1] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("production", ["housekeeping", "planned-science", "both"])
+def test_retry_bound_deducts_production_that_consumes_the_link(production):
+    week = 7 * 86400
+    ledger = _ledger(0, week, 0.01, start=17, horizon=week)
+    housekeeping = {"housekeeping": 0.00001, "planned-science": 0.0, "both": 0.000005}[
+        production
+    ]
+    ledger.config.spacecraft_bus.data_generation = HousekeepingData(
+        rate_gbps=housekeeping
+    )
+    entries = (
+        []
+        if production == "housekeeping"
+        else [_science(0.00001 - housekeeping, end=week)]
+    )
+    planned = ledger.initial_volumes(entries)
+    assert ledger.science_capacity_time(planned, 4.8, 60, week) is None
+
+
+def test_retry_bound_discards_unused_capacity_before_the_candidate():
+    ledger = _ledger(0, 600, 100, start=17, horizon=3600)
+    planned = ledger.initial_volumes([])
+    # Early downlink empties the recorder. It cannot make a later 24 Gb
+    # snapshot fit in the 18 Gb planning limit after the link has ended.
+    assert ledger.science_capacity_time(planned, 24, 600, 3600) is None
+
+
+def test_retry_bound_reserves_room_for_future_planned_production():
+    ledger = _ledger(0, 600, 10, start=17)
+    planned = ledger.initial_volumes([_science(0.0, fixed=5, begin=540, end=600)])
+    assert ledger.fits_all(planned, [])
+    # By 380 seconds there is room for 4.8 Gb, but the later fixed production
+    # still needs that capacity. This must also bound retries in an earlier gap.
+    assert ledger.science_capacity_time(planned, 4.8, 0, 300) is None
+    assert ledger.science_capacity_time(planned, 4.8, 0, 600) is None
+
+
+def test_retry_bound_finds_capacity_within_a_contact_and_respects_gap_end():
+    ledger = _ledger(0, 600, 10, start=17)
+    planned = ledger.initial_volumes([])
+    assert ledger.science_capacity_time(planned, 4.8, 0, 600) == pytest.approx(380)
+    assert ledger.science_capacity_time(planned, 4.8, 0, 300) is None

@@ -322,13 +322,11 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
                     break
         return list(additions.items())
 
-    def _walk(
-        self, planned: Sequence[RecorderAmount], stop: float | None = None
-    ) -> tuple[list[float], list[float]]:
-        """Sweep rate and production changes in order, reflecting volume at zero."""
+    def _flow_events(
+        self, planned: Sequence[RecorderAmount]
+    ) -> dict[float, list[float]]:
+        """Rate changes and instantaneous production, including planned science."""
         events: dict[float, list[float]] = {t: [0.0, 0.0] for t in self.bounds}
-        end = self.bounds[-1] if stop is None else stop
-        events.setdefault(end, [0.0, 0.0])
         flows = list(self._link_flows)
         for k, amount in enumerate(planned):
             if isinstance(amount, (int, float)):
@@ -343,6 +341,60 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
                 rate = flow.volume / (flow.end - flow.begin)
                 events.setdefault(flow.begin, [0.0, 0.0])[0] += rate
                 events.setdefault(flow.end, [0.0, 0.0])[0] -= rate
+        return events
+
+    def science_capacity_time(
+        self,
+        planned: Sequence[RecorderAmount],
+        volume: float,
+        time: float,
+        until: float,
+    ) -> float | None:
+        """Earliest end at which a future snapshot could have recorder room.
+
+        Walk housekeeping, existing production and links at their rate-change
+        boundaries. Reflect the baseline volume at zero up to ``time``; after
+        that, optimistically let all net downlink make room for the snapshot,
+        even before its science arrives. A snapshot starting no earlier than
+        ``time`` cannot finish before this bound. Its full volume must also
+        fit at every later peak, including production beyond this gap. None
+        rules out every start through ``until``. Exact placement still checks
+        intermediate science peaks and capacity wasted at an empty recorder.
+        """
+        if self.limit is None:
+            return time
+        threshold = self.limit - 1e-9 - volume
+        events = self._flow_events(planned)
+        events.setdefault(time, [0.0, 0.0])
+        level, cursor = self.start, self.bounds[0]
+        rate = self.config.housekeeping_generated(1.0)
+        earliest = time
+        for end, (change, impulse) in sorted(events.items()):
+            if end < cursor:
+                continue
+            if end > self.bounds[-1]:
+                break
+            next_level = level + rate * (end - cursor)
+            if cursor >= time:
+                if next_level >= threshold:
+                    earliest = end
+                elif level >= threshold and rate < 0.0:
+                    earliest = cursor + (level - threshold) / -rate
+            level = max(0.0, next_level) if end <= time else next_level
+            level += impulse
+            if end >= time and level >= threshold:
+                earliest = end
+            rate += change
+            cursor = end
+        return earliest if level < threshold and earliest <= until else None
+
+    def _walk(
+        self, planned: Sequence[RecorderAmount], stop: float | None = None
+    ) -> tuple[list[float], list[float]]:
+        """Sweep rate and production changes in order, reflecting volume at zero."""
+        events = self._flow_events(planned)
+        end = self.bounds[-1] if stop is None else stop
+        events.setdefault(end, [0.0, 0.0])
         level = peak = self.start
         rate = self.config.housekeeping_generated(1.0)
         cursor = self.bounds[0]
@@ -542,23 +594,27 @@ class RecorderLedgers:
             offset += ledger.segments
         self.segments = offset
 
-    def has_science_capacity(self, entry: PlanEntry, seconds: float) -> bool:
-        """An optimistic bound for retrying timed science placements.
-
-        Even spending every link's full capacity over the entire horizon
-        must leave room for the shortest allowed snapshot. Ignore all other
-        production, so failing this bound rules out every possible start.
-        Passing it still requires the exact chronological recorder check.
-        """
-        return all(
-            ledger.limit is None
-            or not ledger._timed_science
-            or ledger.start
-            + ledger.science_volume(entry, seconds)
-            + sum(flow.volume for flow in ledger._link_flows)
-            < ledger.limit - 1e-9
-            for _, ledger, _ in self.members
-        )
+    def science_retry_end(
+        self,
+        planned: Sequence[RecorderAmount],
+        entry: PlanEntry,
+        seconds: float,
+        time: float,
+        until: float,
+    ) -> float | None:
+        """An optimistic earliest science end, respecting each store's net link."""
+        earliest = time
+        for _, ledger, offset in self.members:
+            end = ledger.science_capacity_time(
+                planned[offset : offset + ledger.segments],
+                ledger.science_volume(entry, seconds),
+                time,
+                until,
+            )
+            if end is None:
+                return None
+            earliest = max(earliest, end)
+        return earliest
 
     def next_contact(self, time: float) -> float | None:
         """Next useful link boundary, found by binary lookup."""

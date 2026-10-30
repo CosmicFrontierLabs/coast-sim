@@ -1282,14 +1282,38 @@ class PriorityScheduler:
                         if request.whole
                         else float(snapshot_min_seconds(request.target))
                     )
-                    if not self._ledger.has_science_capacity(block.entry, minimum):
-                        break
-                    # A later start can cross a strong-link window and fail
-                    # again after it. Check starts in order; a failed midpoint
-                    # cannot rule out the earlier half of a variable-rate link.
-                    after = self.ctx.ceil_step(
-                        float(block.entry.begin) + self.ctx.step_size
+                    collection_begin = float(
+                        block.entry.collection_begin or block.ready
                     )
+                    capacity_end = self._ledger.science_retry_end(
+                        self._volumes,
+                        block.entry,
+                        minimum,
+                        self.ctx.floor_step(collection_begin),
+                        succ.ready if succ is not None else self.ctx.uend,
+                    )
+                    if capacity_end is None:
+                        break
+                    # Even the longest snapshot cannot end before capacity_end.
+                    # Allow both partial telemetry steps around its collection.
+                    # Jump only over starts this necessary bound rules out;
+                    # feasibility can turn false again within a variable link.
+                    snapshot = min(float(request.target.ss_max), request.remaining)
+                    collection_after = capacity_end - snapshot - 2 * self.ctx.step_size
+                    after = self.ctx.ceil_step(
+                        float(block.entry.begin)
+                        + max(self.ctx.step_size, collection_after - collection_begin)
+                    )
+                    # Slew duration changes with roll. Retain earlier steps
+                    # that could already reach the collection bound.
+                    while (
+                        after - self.ctx.step_size > float(block.entry.begin)
+                        and self._collection_begin_at(
+                            request.target, pred, after - self.ctx.step_size
+                        )
+                        >= collection_after
+                    ):
+                        after -= self.ctx.step_size
                     continue
                 after = next_contact
                 if succ is not None and after >= succ.ready:

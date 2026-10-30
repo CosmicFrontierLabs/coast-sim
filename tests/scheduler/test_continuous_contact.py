@@ -407,22 +407,46 @@ class TestPlanning:
         assert len(_science(plan)) == 1
         assert scheduler._ledger.fits_all(scheduler._volumes, [])
 
-    def test_weeklong_omni_contact_does_not_refit_at_every_step(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("housekeeping", "link_mbps", "late_capacity"),
+        [
+            (0.0, 1e-5, False),
+            (0.00001, 0.01, False),
+            (0.00002, 0.01, False),
+            (0.00001, 0.01, True),
+        ],
+        ids=[
+            "tiny-link",
+            "housekeeping-balances-link",
+            "housekeeping-exceeds-link",
+            "capacity-at-end-of-week",
+        ],
+    )
+    def test_weeklong_omni_contact_does_not_refit_at_every_step(
+        self, monkeypatch, housekeeping, link_mbps, late_capacity
+    ):
         hours = 7 * 24
         config = _recorder_config(hours=hours)
-        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=housekeeping)
         config.constraint.sun_constraint = None
         config.constraint.earth_constraint = None
         config.constraint.invalidate_combined_constraint_cache()
         config.recorder.current_volume_gb = 17.0
-        # This link cannot clear enough room for a snapshot over the whole
-        # week. Retrying at 10,080 individual credits is both futile and costly.
+        # The weak link cannot clear enough room for a snapshot. An optional
+        # strong window at the end must be found without scanning 10,080 steps.
         coverage = Mock(spec=StationCoverage)
         coverage.step_size = STEP
         coverage.repoints = []
-        coverage.scheduled_passes = [ContactSpan(T0, T0 + hours * HOUR, "MAL", 1e-5)]
+        coverage.scheduled_passes = [
+            ContactSpan(T0, T0 + hours * HOUR, "MAL", link_mbps)
+        ]
         coverage.rate_spans.return_value = coverage.scheduled_passes
         coverage.spans.return_value = coverage.scheduled_passes
+        if late_capacity:
+            coverage.rate_spans.return_value = [
+                ContactSpan(T0, T0 + hours * HOUR - 600, "MAL", link_mbps),
+                ContactSpan(T0 + hours * HOUR - 600, T0 + hours * HOUR, "MAL", 100.0),
+            ]
         target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)
         scheduler = PriorityScheduler(
             config,
@@ -444,7 +468,9 @@ class TestPlanning:
 
         monkeypatch.setattr(scheduler, "_fit_in_gap", bounded_fit)
         plan = scheduler.schedule()
-        assert not _science(plan)
+        assert bool(_science(plan)) == late_capacity
+        if late_capacity:
+            assert scheduler._ledger.fits_all(scheduler._volumes, [])
         assert scheduler._ledger.segments <= 3
 
     @pytest.mark.parametrize(
