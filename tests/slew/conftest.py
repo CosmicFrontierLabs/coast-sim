@@ -24,6 +24,8 @@ def constraint(ephem):
     constraint = Mock()
     constraint.__class__ = Constraint
     constraint.ephem = ephem
+    constraint.constraint = Mock()
+    constraint.constraint.route_around.return_value.waypoint = None
     return constraint
 
 
@@ -31,6 +33,7 @@ def constraint(ephem):
 def acs_config():
     mock = Mock()
     mock.__class__ = AttitudeControlSystem
+    mock.slew_constraint = None
     return mock
 
 
