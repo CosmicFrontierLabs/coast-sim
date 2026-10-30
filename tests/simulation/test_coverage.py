@@ -168,6 +168,28 @@ class TestSpans:
 
 
 class TestPassBookings:
+    @pytest.mark.parametrize("acquisition", [0.0, 25.0])
+    def test_restored_bookings_keep_boundaries_between_samples(self, acquisition):
+        config = _config(HOURS, stations=True)
+        config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.acquisition_seconds = acquisition
+        first = next(
+            p
+            for p in StationCoverage(config).scheduled_passes
+            if p.end - p.begin >= 9 * MIN
+        )
+        booking = (first.begin + 15, first.end - 15, first.station)
+        duration = booking[1] - booking[0]
+        assert duration >= 8 * MIN
+        coverage = StationCoverage(config, scheduled_passes=[booking])
+        assert coverage.contacts == [
+            ContactSpan(booking[0] + acquisition, booking[1], booking[2], 10.0)
+        ]
+        assert coverage.downlink_gb(booking[1], booking[1] + MIN) == 0.0
+        assert coverage.downlink_gb(booking[0], booking[1]) == pytest.approx(
+            (duration - acquisition) * 0.01
+        )
+
     @pytest.mark.parametrize(
         "antenna_type", [AntennaType.FIXED, AntennaType.OMNI, AntennaType.GIMBALED]
     )
@@ -307,6 +329,26 @@ def _walk(
     coverage.scheduled = np.array(
         visible if scheduled is None else scheduled, dtype=bool
     )
+    # Whole non-overlapping bookings follow the matrix's selected station.
+    chosen = np.full(steps, -1, dtype=int)
+    current = -1
+    for k in range(steps):
+        if current < 0 or not coverage.scheduled[current, k]:
+            available = np.flatnonzero(coverage.scheduled[:, k])
+            current = int(available[0]) if len(available) else -1
+        chosen[k] = current
+    coverage.scheduled_passes = []
+    start = 0
+    for stop in range(1, steps + 1):
+        if stop == steps or chosen[stop] != chosen[start]:
+            if chosen[start] >= 0:
+                station = int(chosen[start])
+                coverage.scheduled_passes.append(
+                    ContactSpan(
+                        start * step, stop * step, f"S{station}", rates[station]
+                    )
+                )
+            start = stop
     coverage.rate_steps = np.where(coverage.visible, coverage.rates[:, None], 0.0)
     coverage._ranged = [False] * len(rates)
     coverage._cumulative = np.zeros((len(rates), steps + 1))

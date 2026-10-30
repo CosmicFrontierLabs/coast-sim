@@ -542,6 +542,24 @@ class RecorderLedgers:
             offset += ledger.segments
         self.segments = offset
 
+    def has_science_capacity(self, entry: PlanEntry, seconds: float) -> bool:
+        """An optimistic bound for retrying timed science placements.
+
+        Even spending every link's full capacity over the entire horizon
+        must leave room for the shortest allowed snapshot. Ignore all other
+        production, so failing this bound rules out every possible start.
+        Passing it still requires the exact chronological recorder check.
+        """
+        return all(
+            ledger.limit is None
+            or not ledger._timed_science
+            or ledger.start
+            + ledger.science_volume(entry, seconds)
+            + sum(flow.volume for flow in ledger._link_flows)
+            < ledger.limit - 1e-9
+            for _, ledger, _ in self.members
+        )
+
     def next_contact(self, time: float) -> float | None:
         """Next useful link boundary, found by binary lookup."""
         return min(

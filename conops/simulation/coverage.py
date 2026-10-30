@@ -295,7 +295,7 @@ class StationCoverage:
         """Whether a station is booked at each ephemeris step."""
         for span in self.scheduled_passes:
             k = self._station_index(span.station)
-            start = int(np.searchsorted(self.times, span.begin))
+            start = self.index(span.begin)
             end = int(np.searchsorted(self.times, span.end))
             self.scheduled[k, start:end] = True
         self.scheduled &= self.visible
@@ -307,36 +307,32 @@ class StationCoverage:
         self._repoint_ends: list[float] = []
         if count == 0 or steps == 0:
             return
-        current = -1
-        begin = 0.0
-        acquired = 0.0
-        kind: Literal["acquisition", "handover"] = "acquisition"
-        for k in range(steps):
-            t = float(self.times[k])
-            if current >= 0 and self.scheduled[current, k]:
-                continue
-            linked = False
-            if current >= 0:
-                # The booked pass has ended.
-                linked = self._finish_contact(current, acquired, begin, t, kind)
-            in_view = np.flatnonzero(self.scheduled[:, k])
-            if in_view.size == 0:
-                current = -1
-                continue
-            # Overlap selection has already booked at most one station.
-            chosen = int(in_view[0])
-            acquired = t
-            begin = t + self.acquisition_seconds
-            if linked:
-                begin += self.handover_seconds
-                kind = "handover"
-            else:
-                kind = "acquisition"
-            current = chosen
-        if current >= 0:
-            self._finish_contact(
-                current, acquired, begin, float(self.times[-1]) + self.step_size, kind
-            )
+        previous_end = float("-inf")
+        linked = False
+        for booking in self.scheduled_passes:
+            station = self._station_index(booking.station)
+            first = self.index(booking.begin)
+            last = self.index(booking.end - 1e-6) + 1
+            # Visibility and rates are constant within each ephemeris step;
+            # reservations retain their exact boundaries between those steps.
+            visible = self.visible[station, first:last]
+            edges = np.diff(np.r_[False, visible, False].astype(int))
+            for start, stop in zip(
+                np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+            ):
+                acquired = max(booking.begin, float(self.times[first + start]))
+                end = min(
+                    booking.end, float(self.times[first + stop - 1]) + self.step_size
+                )
+                handover = linked and acquired == previous_end
+                kind: Literal["acquisition", "handover"] = (
+                    "handover" if handover else "acquisition"
+                )
+                begin = acquired + self.acquisition_seconds
+                if handover:
+                    begin += self.handover_seconds
+                linked = self._finish_contact(station, acquired, begin, end, kind)
+                previous_end = end
         self.repoints.sort(key=lambda r: (r.time, r.end))
         self._repoint_times = [r.time for r in self.repoints]
         self._repoint_ends = list(np.maximum.accumulate([r.end for r in self.repoints]))
@@ -664,9 +660,9 @@ class StationCoverage:
         what it downlinks in Gb, ``(begin, begin, 0.0)`` without one.
 
         With ``attitude`` a gimballed antenna counts only the spans it can
-        reach from it (see :meth:`contact_at`). A window of one simulation
-        step holds at most one span of each station, so what is downlinked
-        is between the start and the stop.
+        reach from it (see :meth:`contact_at`). This is a summary: gaps may
+        fall between the start and stop. Use :meth:`rate_spans` when updating
+        a recorder so that outages and rate changes are processed in order.
         """
         start = stop = begin
         downlinked = 0.0

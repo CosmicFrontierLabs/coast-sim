@@ -1253,10 +1253,8 @@ class PriorityScheduler:
             pred = self._pred_at(index)
             succ = self.timeline[index] if index < len(self.timeline) else None
 
-            # First try the gap as it is. Where the recorder has no room
-            # before the next contact, nothing earlier in the gap fits
-            # either; a pass that requires no spacecraft tracking
-            # can fall within the gap, so the gap is tried again after it.
+            # A flexible-antenna contact can fall inside this gap. Retry
+            # placements within it as well as after it when the recorder fills.
             after = not_before
             while True:
                 candidate = self._fit_in_gap(request, pred, succ, after)
@@ -1279,33 +1277,20 @@ class PriorityScheduler:
                 if next_contact is None:
                     break
                 if self.ctx.coverage is not None:
-                    # Between coalesced link boundaries, find a later fit by
-                    # bisection instead of refitting once per telemetry step.
-                    step = self.ctx.step_size
-                    lo = self.ctx.ceil_step(float(block.entry.begin) + step)
-                    hi = self.ctx.floor_step(next_contact)
-                    later = None
-                    while lo <= hi:
-                        mid = self.ctx.floor_step((lo + hi) / 2)
-                        trial = self._fit_in_gap(request, pred, succ, mid)
-                        if trial is None:
-                            hi = mid - step
-                        elif self._ledger.fits_all(
-                            self._volumes,
-                            [
-                                *self._block_additions(trial[0]),
-                                *self._ingress_deltas(succ, trial[2]),
-                            ],
-                        ):
-                            later = trial
-                            hi = mid - step
-                        else:
-                            lo = mid + step
-                    if later is not None:
-                        candidate = later
-                        after = float(later[0].entry.begin)
-                        full = False
+                    minimum = (
+                        request.remaining
+                        if request.whole
+                        else float(snapshot_min_seconds(request.target))
+                    )
+                    if not self._ledger.has_science_capacity(block.entry, minimum):
                         break
+                    # A later start can cross a strong-link window and fail
+                    # again after it. Check starts in order; a failed midpoint
+                    # cannot rule out the earlier half of a variable-rate link.
+                    after = self.ctx.ceil_step(
+                        float(block.entry.begin) + self.ctx.step_size
+                    )
+                    continue
                 after = next_contact
                 if succ is not None and after >= succ.ready:
                     break

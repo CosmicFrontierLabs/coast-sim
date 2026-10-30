@@ -798,6 +798,7 @@ class DITLMixin:
             self._data_collected = after
 
         current_pass = self.acs.current_pass
+        contacts: list[tuple[float, float, float]] = []
         contact_start = contact_stop = utime
         data_to_downlink = 0.0
         if self.coverage is not None:
@@ -810,16 +811,21 @@ class DITLMixin:
                 if self.coverage.gimballed
                 else None
             )
-            if isinstance(config, RecorderView):
-                contact_start, contact_stop, data_to_downlink = (
-                    self.coverage.contact_in(
-                        utime, utime + interval, attitude, recorder=config
-                    )
+            spans = self.coverage.rate_spans(
+                utime,
+                utime + interval,
+                config if isinstance(config, RecorderView) else None,
+            )
+            contacts = [
+                (
+                    span.begin,
+                    span.end,
+                    span.rate_mbps * (span.end - span.begin) / 1000.0,
                 )
-            else:
-                contact_start, contact_stop, data_to_downlink = (
-                    self.coverage.contact_in(utime, utime + interval, attitude)
-                )
+                for span in spans
+                if attitude is None
+                or self.coverage.contact_at(span.begin, attitude) is not None
+            ]
         elif mode == ACSMode.PASS and current_pass is not None:
             # Downlink data during PASS mode, once ACS has acquired the
             # contact: the ingress slew also reports PASS, but carries no link.
@@ -843,23 +849,25 @@ class DITLMixin:
                         rate_mbps * (contact_stop - contact_start) / 1000.0
                     )
 
-        if data_to_downlink <= 0:
+            if data_to_downlink > 0:
+                contacts.append((contact_start, contact_stop, data_to_downlink))
+
+        if not contacts or interval <= 0:
             if data_generated > 0:
                 recorder.add_data(data_generated)
             return data_generated, data_downlinked
 
-        # Generation runs on through the contact, so the step is taken in
-        # pieces: what is generated before the contact is stored, what is
-        # generated during it meets the downlink at the recorder, and what is
-        # generated after it is stored. The contact never sends data generated
-        # after it ends, and nothing is lost to a full recorder while the link
-        # empties it faster than data arrives.
+        # Walk each usable span and gap in time order: outages can overflow
+        # the recorder even when a later link can send everything it retains.
         rate = data_generated / interval
-        recorder.add_data(rate * (contact_start - utime))
-        data_downlinked = recorder.transfer(
-            rate * (contact_stop - contact_start), data_to_downlink
-        )
-        recorder.add_data(rate * (utime + interval - contact_stop))
+        cursor = utime
+        for contact_start, contact_stop, data_to_downlink in contacts:
+            recorder.add_data(rate * (contact_start - cursor))
+            data_downlinked += recorder.transfer(
+                rate * (contact_stop - contact_start), data_to_downlink
+            )
+            cursor = contact_stop
+        recorder.add_data(rate * (utime + interval - cursor))
         return data_generated, data_downlinked
 
     def _recorder_telemetry(self) -> dict[str, dict[str, float]]:

@@ -358,6 +358,55 @@ class TestDispatchRoom:
 
 
 class TestPlanning:
+    def test_variable_link_keeps_a_feasible_start_between_infeasible_starts(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "conops.schedulers.context.optimum_roll", lambda *args, **kwargs: 0.0
+        )
+        config = _recorder_config(hours=1)
+        config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
+        config.constraint.sun_constraint = None
+        config.constraint.earth_constraint = None
+        config.constraint.invalidate_combined_constraint_cache()
+        config.recorder.current_volume_gb = 17.0
+        coverage = Mock(spec=StationCoverage)
+        coverage.step_size = STEP
+        coverage.repoints = []
+        coverage.scheduled_passes = [ContactSpan(T0, T0 + 900, "MAL", 0.0)]
+        coverage.spans.return_value = coverage.scheduled_passes
+        coverage.rate_spans.return_value = [
+            ContactSpan(T0, T0 + 120, "MAL", 0.01),
+            ContactSpan(T0 + 120, T0 + 420, "MAL", 100.0),
+            ContactSpan(T0 + 420, T0 + 900, "MAL", 0.01),
+        ]
+        target = _data_target(config, 1, 10.0, 0.0, 0.08, minutes=5, snapshot=5)
+        scheduler = PriorityScheduler(
+            config,
+            [target],
+            BEGIN,
+            BEGIN + timedelta(seconds=900),
+            include_passes=False,
+            coverage=coverage,
+            start_state=StartState(time=T0, attitude=(0.0, 0.0, 0.0)),
+        )
+        scheduler._reserve_fixed()
+        request = scheduler._requests()[0]
+        pred, succ = scheduler._pred_at(0), None
+        outcomes = []
+        for start in (0, 120, 480):
+            trial = scheduler._fit_in_gap(request, pred, succ, T0 + start)
+            assert trial is not None
+            outcomes.append(
+                scheduler._ledger.fits_all(
+                    scheduler._volumes, scheduler._block_additions(trial[0])
+                )
+            )
+        assert outcomes == [False, True, False]
+        plan = scheduler.schedule()
+        assert len(_science(plan)) == 1
+        assert scheduler._ledger.fits_all(scheduler._volumes, [])
+
     def test_weeklong_omni_contact_does_not_refit_at_every_step(self, monkeypatch):
         hours = 7 * 24
         config = _recorder_config(hours=hours)
@@ -479,6 +528,34 @@ class TestPlanning:
         assert replay.coverage.contacts == ditl.coverage.contacts
         assert replay.validate_plan_matches_execution() == []
         assert ACSMode.PASS not in set(replay.mode)
+
+    @pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+    def test_replay_keeps_bookings_between_ephemeris_samples(self, antenna_type):
+        config = _recorder_config(antenna_type, gimbal_range_deg=180.0)
+        config.spacecraft_bus.communications.acquisition_seconds = 25.0
+        config.recorder.current_volume_gb = 10.0
+        coverage = StationCoverage(config)
+        first = next(p for p in coverage.scheduled_passes if p.end - p.begin >= 9 * MIN)
+        booking = (first.begin + 15, first.end - 15, first.station)
+        plan = Plan.model_validate_json(
+            Plan(ground_contacts=[booking]).model_dump_json()
+        )
+        replay = DITL(
+            config=config,
+            plan=plan,
+            begin=datetime.fromtimestamp(first.begin - MIN, timezone.utc),
+            end=datetime.fromtimestamp(first.end + MIN, timezone.utc),
+        )
+        replay.step_size = STEP
+        assert replay.calc()
+        assert replay.coverage is not None
+        assert [(p.begin, p.end, p.station) for p in replay.coverage.contacts] == [
+            (booking[0] + 25, booking[1], booking[2])
+        ]
+        assert replay.coverage.downlink_gb(booking[1], booking[1] + MIN) == 0.0
+        assert replay.data_downlinked_gb[-1] == pytest.approx(
+            (booking[1] - booking[0] - 25) * 0.01
+        )
 
     def _plan(self, antenna_type: AntennaType = AntennaType.OMNI):
         config = _recorder_config(antenna_type)
