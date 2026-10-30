@@ -1,9 +1,13 @@
 """Tests for conops.slew module."""
 
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import rust_ephem
 from pydantic import ValidationError
 
 from conops import AttitudeControlSystem, MissionConfig, Slew
@@ -72,8 +76,10 @@ class TestSlewDurationUpperBound:
         slew.acs_config = acs
         bound = Slew.duration_upper_bound(acs)
         rng = np.random.default_rng(254)
-        with patch(
-            "conops.simulation.slew.constraint_avoiding_waypoint", return_value=waypoint
+        with patch.object(
+            slew.constraint.constraint,
+            "route_around",
+            return_value=SimpleNamespace(waypoint=waypoint),
         ):
             for _ in range(20):
                 slew.startra, slew.startroll, slew.endra, slew.endroll = rng.uniform(
@@ -112,9 +118,10 @@ class TestSlewDurationUpperBound:
         slew.acs_config = AttitudeControlSystem(
             slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING
         )
-        with patch(
-            "conops.simulation.slew.constraint_avoiding_waypoint",
-            return_value=(45.0, 30.0),
+        with patch.object(
+            slew.constraint.constraint,
+            "route_around",
+            return_value=SimpleNamespace(waypoint=(45.0, 30.0)),
         ):
             slew.endra = 90
             slew.predict_slew()
@@ -803,6 +810,213 @@ class TestSlewPathResolution:
 class TestConstraintAvoidingSlew:
     """Test constraint-avoiding slew path algorithm."""
 
+    @pytest.fixture
+    def sun_routing_slew(self):
+        from conops.config import Constraint
+
+        begin = datetime(2025, 12, 1, tzinfo=timezone.utc)
+        ephem = rust_ephem.TLEEphemeris(
+            begin=begin,
+            end=begin + timedelta(hours=1),
+            step_size=60,
+            tle=str(Path(__file__).parents[2] / "examples" / "example.tle"),
+        )
+        return Slew(
+            ephem=ephem,
+            constraint=Constraint(ephem=ephem),
+            acs_config=AttitudeControlSystem(
+                slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+                slew_constraint=rust_ephem.SunConstraint(min_angle=45),
+            ),
+            slewstart=begin.timestamp(),
+        )
+
+    @staticmethod
+    def assert_executed_path_clear(slew):
+        """Check physical execution more densely than the planning sample grid."""
+        from conops.common.vector import quaternion_attitude_delta
+        from conops.simulation.attitude import AttitudeTrajectory
+
+        trajectory = AttitudeTrajectory.from_slew(slew, slew.acs_config)
+        for time in np.linspace(slew.slewstart, slew.slewend, 2001):
+            ra, dec, roll = trajectory.state(time).attitude
+            assert not slew.acs_config.slew_constraint.in_constraint(
+                ephemeris=slew.ephem,
+                target_ra=ra,
+                target_dec=dec,
+                target_roll=roll,
+                time=slew.ephem.timestamp[0],
+            )
+        assert (
+            quaternion_attitude_delta(
+                *trajectory.state(slew.slewstart).attitude,
+                slew.startra,
+                slew.startdec,
+                slew.startroll,
+            )[0]
+            < 1e-8
+        )
+        assert (
+            quaternion_attitude_delta(
+                *trajectory.state(slew.slewend).attitude,
+                slew.endra,
+                slew.enddec,
+                slew.endroll,
+            )[0]
+            < 1e-8
+        )
+        assert slew.slewtime <= Slew.duration_upper_bound(slew.acs_config)
+
+    @pytest.mark.parametrize(
+        "start,end,waypoint",
+        [
+            (
+                (191.52930262525126, -74.20413493648024, 0.0),
+                (263.1013748329145, 36.278644537133104, -170.0),
+                (338.16604163771433, -22.972837599760943),
+            ),
+            (
+                (140.3802469299209, -0.2878957418370768, 17.79198728373409),
+                (306.47931984503873, -21.706220497902766, -96.2653646512816),
+                None,
+            ),
+        ],
+    )
+    def test_unsafe_detour_retains_clear_direct_trajectory(
+        self, sun_routing_slew, start, end, waypoint
+    ):
+        """Pointing-arc clearance must not replace a safe slew with an unsafe one."""
+        slew = sun_routing_slew
+        slew.startra, slew.startdec, slew.startroll = start
+        slew.endra, slew.enddec, slew.endroll = end
+        # The reported case has tied pointing detours; force the reported side
+        # so the regression is independent of platform tie-breaking.
+        if waypoint is not None:
+            with patch.object(
+                rust_ephem.SunConstraint,
+                "route_around",
+                return_value=SimpleNamespace(waypoint=waypoint),
+            ):
+                slew.calc_slewtime()
+        else:
+            slew.calc_slewtime()
+
+        self.assert_executed_path_clear(slew)
+        if waypoint is not None:
+            assert len(slew._slew_segments) == 1
+
+    def test_nonzero_roll_detour_is_checked_at_routing_sample(self, sun_routing_slew):
+        """Use the sample before slewstart, rather than the nearest or Unix step."""
+        slew = sun_routing_slew
+        begin = slew.ephem.begin + timedelta(seconds=7)
+        slew.ephem = rust_ephem.TLEEphemeris(
+            begin=begin,
+            end=begin + timedelta(hours=1),
+            step_size=60,
+            tle=str(Path(__file__).parents[2] / "examples" / "example.tle"),
+        )
+        slew.constraint.ephem = slew.ephem
+        slew.startra, slew.startdec, slew.startroll = (191.529302625, -74.204135, 0)
+        slew.endra, slew.enddec, slew.endroll = (263.101375, 36.278645, -170)
+        slew.slewstart = begin.timestamp() + 47
+        constraint = slew.acs_config.slew_constraint
+        with patch.object(
+            rust_ephem.SunConstraint,
+            "in_constraint_batch",
+            wraps=constraint.in_constraint_batch,
+        ) as check:
+            slew.calc_slewtime()
+
+        assert check.call_count > 0
+        for call in check.call_args_list:
+            assert call.kwargs["indices"] == 0
+            assert len(call.kwargs["target_rolls"]) == len(call.kwargs["target_ras"])
+            assert all(roll is not None for roll in call.kwargs["target_rolls"])
+        self.assert_executed_path_clear(slew)
+
+    def test_detour_validation_uses_actual_instrument_roll(self, sun_routing_slew):
+        """A free-roll sweep clears this detour, but its executed instrument does not."""
+        slew = sun_routing_slew
+        slew.acs_config.slew_constraint = rust_ephem.BoresightOffsetConstraint(
+            constraint=rust_ephem.SunConstraint(min_angle=45), yaw_deg=30
+        )
+        slew.startra, slew.startdec, slew.startroll = (
+            339.37291030142796,
+            12.19792153118585,
+            -109.12867742431521,
+        )
+        slew.endra, slew.enddec, slew.endroll = (
+            175.51726369288758,
+            -20.676923274338087,
+            85.02900768331979,
+        )
+        with patch.object(
+            rust_ephem.BoresightOffsetConstraint,
+            "route_around",
+            return_value=SimpleNamespace(
+                waypoint=(320.3669516963612, -49.66146445047205)
+            ),
+        ):
+            slew.calc_slewtime()
+
+        self.assert_executed_path_clear(slew)
+        assert len(slew._slew_segments) == 1
+
+    def test_rust_route_avoids_sun_crossing(self):
+        """A real exclusion cone produces a detour with executable timing."""
+        from conops.config import Constraint
+        from conops.simulation.attitude import AttitudeTrajectory
+
+        begin = datetime(2025, 12, 1, 0, 0, 7, tzinfo=timezone.utc)
+        ephem = rust_ephem.TLEEphemeris(
+            begin=begin,
+            end=begin + timedelta(minutes=5),
+            step_size=60,
+            tle=str(Path(__file__).parents[2] / "examples" / "example.tle"),
+        )
+        sun = ephem.sun_pv.position[0] - ephem.gcrs_pv.position[0]
+        sun /= np.linalg.norm(sun)
+        tangent = np.cross(sun, [0.0, 0.0, 1.0])
+        tangent /= np.linalg.norm(tangent)
+
+        def radec(vector):
+            return (
+                float(np.degrees(np.arctan2(vector[1], vector[0])) % 360),
+                float(np.degrees(np.arcsin(vector[2]))),
+            )
+
+        start_ra, start_dec = radec(0.5 * sun + np.sqrt(0.75) * tangent)
+        end_ra, end_dec = radec(0.5 * sun - np.sqrt(0.75) * tangent)
+        constraint = rust_ephem.SunConstraint(min_angle=45.0)
+        acs = AttitudeControlSystem(
+            slew_algorithm=SlewAlgorithm.CONSTRAINT_AVOIDING,
+            slew_constraint=constraint,
+        )
+        slew = Slew(
+            ephem=ephem,
+            constraint=Constraint(ephem=ephem),
+            acs_config=acs,
+            startra=start_ra,
+            startdec=start_dec,
+            endra=end_ra,
+            enddec=end_dec,
+            slewstart=begin.timestamp() + 47,
+        )
+
+        assert slew.calc_slewtime() <= Slew.duration_upper_bound(acs)
+        assert len(slew._slew_segments) == 2
+        assert slew.slewdist > 120.0
+        trajectory = AttitudeTrajectory.from_slew(slew, acs)
+        for time in np.linspace(slew.slewstart, slew.slewend, 201):
+            ra, dec, roll = trajectory.state(time).attitude
+            assert not constraint.in_constraint(
+                ephemeris=ephem,
+                target_ra=ra,
+                target_dec=dec,
+                target_roll=roll,
+                time=begin,
+            )
+
     def test_constraint_avoiding_fallback_to_quaternion(self, slew, acs_config):
         """When no constraint is violated, falls back to quaternion SLERP."""
         from conops.common.enums import SlewAlgorithm
@@ -825,15 +1039,7 @@ class TestConstraintAvoidingSlew:
         assert slew.slewdist > 0
 
     def test_constraint_avoiding_with_violation(self, slew, acs_config, constraint):
-        """When constraint is violated, the algorithm completes and returns a valid path.
-
-        An RA-band constraint (40–50°) on an equatorial arc cannot be avoided by a
-        single perpendicular waypoint — waypoints for equatorial arcs stay on the equator,
-        so any connecting arc to the destination must still cross the violated RA range.
-        The documented fallback is to return the direct SLERP path.  This test verifies
-        the algorithm handles violations gracefully: it produces a valid path with the
-        correct endpoints regardless of whether a waypoint was found.
-        """
+        """An unroutable crossing retains the direct quaternion fallback."""
         from conops.common.enums import SlewAlgorithm
 
         acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
@@ -845,15 +1051,8 @@ class TestConstraintAvoidingSlew:
         slew.endroll = 0.0
         slew.slewstart = 1700000000.0
 
-        def mock_in_constraint(ra, dec, utime, target_roll=None):
-            return 40 < ra < 50
-
-        constraint.in_constraint = mock_in_constraint
-        constraint.constraint = Mock()
-        constraint.constraint.in_constraint = Mock(
-            side_effect=lambda **kwargs: mock_in_constraint(
-                kwargs["target_ra"], kwargs["target_dec"], kwargs["time"]
-            )
+        constraint.constraint.route_around.return_value = SimpleNamespace(
+            violated=True, waypoint=None
         )
 
         slew.predict_slew()
@@ -948,9 +1147,10 @@ class TestConstraintAvoidingSlew:
         )
         slew.acs_config = directional_acs
 
-        with patch(
-            "conops.simulation.slew.constraint_avoiding_waypoint",
-            return_value=waypoint,
+        with patch.object(
+            slew.constraint.constraint,
+            "route_around",
+            return_value=SimpleNamespace(waypoint=waypoint),
         ):
             slew.predict_slew()
 
@@ -989,9 +1189,9 @@ class TestConstraintAvoidingSlew:
 
         acs_config.slew_algorithm = SlewAlgorithm.CONSTRAINT_AVOIDING
 
-        # Create a mock slew constraint that always returns False (no violation)
+        # A clear direct arc needs no waypoint.
         mock_slew_constraint = Mock()
-        mock_slew_constraint.in_constraint = Mock(return_value=False)
+        mock_slew_constraint.route_around.return_value.waypoint = None
         acs_config.slew_constraint = mock_slew_constraint
 
         # Set up spacecraft constraint that would violate (but should not be used)
@@ -1008,8 +1208,16 @@ class TestConstraintAvoidingSlew:
 
         slew.predict_slew()
 
-        # The slew_constraint should have been called (it doesn't violate)
-        assert mock_slew_constraint.in_constraint.called
+        mock_slew_constraint.route_around.assert_called_once_with(
+            ephemeris=slew.ephem,
+            start_ra=0.0,
+            start_dec=0.0,
+            end_ra=90.0,
+            end_dec=0.0,
+            time=1700000000.0,
+            target_roll=None,
+        )
+        slew.constraint.constraint.route_around.assert_not_called()
         # Should fall back to quaternion path (no waypoint)
         assert hasattr(slew, "slewpath")
         assert len(slew.slewpath[0]) > 0
@@ -1027,7 +1235,7 @@ class TestConstraintAvoidingSlew:
 
         # Mock spacecraft constraint that doesn't violate
         mock_spacecraft_constraint = Mock()
-        mock_spacecraft_constraint.in_constraint = Mock(return_value=False)
+        mock_spacecraft_constraint.route_around.return_value.waypoint = None
         slew.constraint.constraint = mock_spacecraft_constraint
 
         slew.startra = 0.0
@@ -1041,7 +1249,15 @@ class TestConstraintAvoidingSlew:
         slew.predict_slew()
 
         # The spacecraft constraint should have been called
-        assert mock_spacecraft_constraint.in_constraint.called
+        mock_spacecraft_constraint.route_around.assert_called_once_with(
+            ephemeris=slew.ephem,
+            start_ra=0.0,
+            start_dec=0.0,
+            end_ra=90.0,
+            end_dec=0.0,
+            time=1700000000.0,
+            target_roll=None,
+        )
         # Should fall back to quaternion path (no waypoint)
         assert hasattr(slew, "slewpath")
         assert len(slew.slewpath[0]) > 0

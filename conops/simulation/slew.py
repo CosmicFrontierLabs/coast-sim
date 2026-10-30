@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -5,11 +6,10 @@ import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from ..common import dtutcfromtimestamp, roll_over_angle, separation, unixtime2date
+from ..common import roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
     attitude_to_quat,
-    constraint_avoiding_waypoint,
     quat_slerp,
     quat_to_attitude,
     quaternion_attitude_delta,
@@ -486,10 +486,12 @@ class Slew(BaseModel):
         """Compute constraint-avoiding slew path using quaternion SLERP segments.
 
         Uses the ACS slew_constraint if configured, otherwise falls back to the
-        spacecraft's general pointing constraint.  If any constraint is violated
-        (Sun, Earth, Moon, etc.), a waypoint is inserted and the path is built
-        from two consecutive SLERP segments.  Falls back to plain quaternion SLERP
-        when no violation is detected.
+        spacecraft's general pointing constraint. rust-ephem's route_around
+        finds a validated waypoint around a constraint crossing (Sun, Earth,
+        Moon, etc.), then two SLERP segments connect it to the endpoints.
+        Check their actual pointing and roll samples in Rust before accepting
+        the detour. An unsafe detour retains the existing direct fallback for
+        downstream admission/execution checks.
         """
         assert self.acs_config is not None, "ACS config must be set to predict slew"
         assert self.constraint is not None, "Constraint must be set to predict slew"
@@ -503,38 +505,24 @@ class Slew(BaseModel):
             else self.constraint.constraint
         )
 
-        # Create a constraint check function for the waypoint algorithm
-        def check_constraint(ra: float, dec: float, time: float) -> bool:
-            """Return True if the constraint is violated at this pointing."""
-            if slew_constraint is None:
-                return False
-            # Round time to nearest ephemeris step to ensure it exists in ephemeris
-            # rust-ephem's in_constraint requires exact timestamp matches
-            step_size: float = getattr(ephem, "step_size", 60)
-            rounded_time = round(time / step_size) * step_size
-            dt = dtutcfromtimestamp(rounded_time)
-            return bool(
-                slew_constraint.in_constraint(
-                    ephemeris=ephem,
-                    target_ra=ra,
-                    target_dec=dec,
-                    time=dt,
-                    target_roll=None,
-                )
-            )
+        if slew_constraint is None:
+            self._predict_slew_quaternion(steps)
+            return
 
-        # Use the generalized constraint-avoiding waypoint algorithm
-        waypoint = constraint_avoiding_waypoint(
-            self.startra,
-            self.startdec,
-            self.endra,
-            self.enddec,
-            self.slewstart,
-            check_constraint,
-        )
+        # rust-ephem checks the combined constraint and validates both waypoint
+        # legs at the ephemeris sample at or before the slew start time.
+        waypoint = slew_constraint.route_around(
+            ephemeris=ephem,
+            start_ra=self.startra,
+            start_dec=self.startdec,
+            end_ra=self.endra,
+            end_dec=self.enddec,
+            time=self.slewstart,
+            target_roll=None,
+        ).waypoint
 
         if waypoint is None:
-            # No violation – plain quaternion SLERP
+            # No detour available (clear arc or no validated waypoint).
             self._predict_slew_quaternion(steps)
             return
 
@@ -608,6 +596,24 @@ class Slew(BaseModel):
         all_ras = ras1 + ras2[1:]
         all_decs = decs1 + decs2[1:]
         all_rolls = rolls1 + rolls2[1:]
+
+        # Pointing arcs validated by route_around can differ from these full-
+        # attitude SLERPs. Check their actual rolls at the same frozen sample.
+        sample_index = (
+            bisect_right(ephem.timestamp, self.slewstart, key=lambda t: t.timestamp())
+            - 1
+        )
+        if np.any(
+            slew_constraint.in_constraint_batch(
+                ephemeris=ephem,
+                target_ras=all_ras,
+                target_decs=all_decs,
+                target_rolls=all_rolls,
+                indices=sample_index,
+            )
+        ):
+            self._predict_slew_quaternion(steps)
+            return
 
         self.slewpath = (all_ras, all_decs)
         self._quat_roll_path = all_rolls
