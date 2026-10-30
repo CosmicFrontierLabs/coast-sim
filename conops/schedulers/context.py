@@ -293,6 +293,16 @@ class SchedulingContext:
     # ── Ground passes ─────────────────────────────────────────────────────
 
     @property
+    def passes(self) -> list[Pass] | None:
+        """Supplied bookings; None predicts them, while [] books no passes."""
+        return self._passes
+
+    @passes.setter
+    def passes(self, passes: Sequence[Pass] | None) -> None:
+        self._passes = list(passes) if passes is not None else None
+        self._coverage = None
+
+    @property
     def coverage(self) -> StationCoverage | None:
         """Link coverage for passes without spacecraft tracking, or None
         when passes require tracking activities.

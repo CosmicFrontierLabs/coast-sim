@@ -719,19 +719,6 @@ class RollingHorizonDITL(DITL):
         if start <= utime:
             return now
         contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
-        science: list[tuple[float, float]] = []
-        for entry in committed:
-            if entry.collection_begin is None or entry.collection_end is None:
-                continue
-            begin = max(float(entry.collection_begin), utime)
-            end = min(float(entry.collection_end), start)
-            if end <= begin:
-                continue
-            volume = config.science_generated(end - begin, entry.science_data)
-            if float(entry.collection_begin) < utime:
-                # Already collecting: its fixed amount is on the recorder.
-                volume -= config.science_generated(0.0, entry.science_data)
-            science.append((begin, volume))
         ledger = RecorderLedger(
             config,
             utime,
@@ -743,8 +730,21 @@ class RollingHorizonDITL(DITL):
             coverage=self.coverage,
         )
         volumes = [0.0] * ledger.segments
-        for begin, volume in science:
-            volumes[ledger.segment(begin)] += volume
+        for entry in committed:
+            if entry.collection_begin is None or entry.collection_end is None:
+                continue
+            begin = max(float(entry.collection_begin), utime)
+            end = min(float(entry.collection_end), start)
+            if end <= begin:
+                continue
+            for segment, volume in ledger.science_additions(
+                entry,
+                end - begin,
+                begin,
+                # Already collecting: its fixed amount is on the recorder.
+                include_fixed=float(entry.collection_begin) >= utime,
+            ):
+                volumes[segment] += volume
         for entry in contacts:
             # The slew into a contact still to come, flown in PASS mode.
             volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
