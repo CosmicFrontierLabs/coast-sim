@@ -45,7 +45,7 @@ from .local_search_scheduler import (
     _State,
 )
 from .priority_scheduler import _Block, _Request, program_shares
-from .recorder import RecorderLedger
+from .recorder import RecorderLedger, amount_total, combine_amounts
 
 if TYPE_CHECKING:
     from ortools.sat.python import cp_model
@@ -1181,10 +1181,9 @@ class CpSatScheduler(LocalSearchScheduler):
             for segment, volume in ledger.science_additions(
                 target, snapshot.seconds, float(block.entry.collection_begin)
             ):
-                volumes[segment] += volume
+                volumes[segment] = combine_amounts(volumes[segment], volume)
         first = ledger.segment(origin_time)
-        levels = ledger.peaks(volumes)
-        entering = levels[first] - ledger.accrual[first] - volumes[first]
+        entering = ledger.level_at(volumes, origin_time)
         limit = ledger.limit
         assert limit is not None
         # What adds data rounds up and what removes it rounds down, so the
@@ -1197,7 +1196,7 @@ class CpSatScheduler(LocalSearchScheduler):
             ],
             entering=_kb_up(entering),
             accrual=[_kb_up(x) for x in ledger.accrual[first:]],
-            fixed=[_kb_up(x) for x in volumes[first:]],
+            fixed=[_kb_up(amount_total(x)) for x in volumes[first:]],
             removal=[_kb_down(x) for x in ledger.removal[first:]],
             removal_accrual=[_kb_up(x) for x in ledger.removal_accrual[first:]],
             limit=_kb_down(limit) - 1,

@@ -3,10 +3,13 @@
 import os
 from unittest.mock import Mock
 
+import matplotlib
 import pytest
 import rust_ephem
 
 import conops
+
+matplotlib.use("Agg")
 
 
 @pytest.hookimpl(optionalhook=True)

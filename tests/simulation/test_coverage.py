@@ -45,6 +45,20 @@ def omni() -> tuple[MissionConfig, StationCoverage]:
 
 
 class TestForConfig:
+    def test_daily_queries_share_one_full_geometry_and_rate_array_per_station(self):
+        config = _config(48, stations=True)
+        passes = PassTimes(config)
+        for station in config.ground_stations.stations:
+            for start in range(0, 48 * 60, 60):
+                geometry = passes.station_geometry(station, start, start + 60)
+                rates = passes.downlink_rates(station, start, start + 60)
+                assert np.shares_memory(
+                    geometry.to_station, passes._geometry[station.code].to_station
+                )
+                assert np.shares_memory(rates, passes._rates[station.code])
+        assert len(passes._geometry) == len(config.ground_stations.stations)
+        assert len(passes._rates) == len(config.ground_stations.stations)
+
     def test_none_without_a_communications_system(self) -> None:
         """The legacy behaviour: a body-fixed antenna, which downlinks in passes."""
         assert StationCoverage.for_config(_config(2, stations=True)) is None
@@ -365,7 +379,15 @@ class TestScheduling:
     def test_a_handover_longer_than_the_view_downlinks_nothing(self) -> None:
         coverage = _walk([[1, 1, 0, 0], [0, 1, 1, 0]], [10.0, 10.0], handover=200.0)
         assert coverage.contacts == [ContactSpan(0.0, 120.0, "S0", 10.0)]
-        assert coverage.handovers == 1
+        assert coverage.handovers == 0
+        assert coverage.repoint_cuts(120, 1000) == []
+
+    def test_acquisition_longer_than_the_booking_creates_no_repoint(self) -> None:
+        coverage = _walk([[1, 1, 0, 0]], [10.0], acquisition=200.0)
+        assert coverage.contacts == []
+        assert coverage.acquisitions == 0
+        assert coverage.repoints == []
+        assert coverage.repoint_cuts(0, 1000) == []
 
     def test_no_station_no_contacts(self) -> None:
         assert _walk([[0, 0, 0]], [10.0]).contacts == []

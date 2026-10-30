@@ -12,8 +12,9 @@ when they are excluded from spacecraft-tracking activities.
 
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
+from functools import cached_property
 from typing import Literal, NamedTuple
 
 import numpy as np
@@ -28,7 +29,7 @@ from ..config.groundstation import (
     effective_downlink_rate_mbps,
     rate_varies_with_range,
 )
-from .passes import PassTimes
+from .passes import PassTimes, StationGeometry
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -143,6 +144,7 @@ class StationCoverage:
         config: MissionConfig,
         *,
         scheduled_passes: Sequence[tuple[float, float, str]] | None = None,
+        _stations: list[GroundStation] | None = None,
     ) -> None:
         ephem = config.constraint.ephem
         if ephem is None:
@@ -150,9 +152,7 @@ class StationCoverage:
         self.config = config
         self.ephem = ephem
         self.pass_times = PassTimes(config)
-        self.times: npt.NDArray[np.float64] = np.array(
-            [t.timestamp() for t in ephem.timestamp], dtype=float
-        )
+        self.times = self.pass_times.times
         self.step_size = float(ephem.step_size)
         communications = config.spacecraft_bus.communications
         self.acquisition_seconds = (
@@ -165,11 +165,15 @@ class StationCoverage:
             if communications is not None
             else 0.0
         )
-        self.stations: list[GroundStation] = [
-            station
-            for station in config.ground_stations.stations
-            if (effective_downlink_rate_mbps(station, communications) or 0.0) > 0.0
-        ]
+        self.stations: list[GroundStation] = (
+            _stations
+            if _stations is not None
+            else [
+                station
+                for station in config.ground_stations.stations
+                if (effective_downlink_rate_mbps(station, communications) or 0.0) > 0.0
+            ]
+        )
         self.rates: npt.NDArray[np.float64] = np.array(
             [
                 float(effective_downlink_rate_mbps(s, communications) or 0.0)
@@ -196,14 +200,18 @@ class StationCoverage:
         self._to_station = np.zeros((count, steps, 3))
         """Unit vectors from the spacecraft to each station, in GCRS."""
         for k, station in enumerate(self.stations):
-            geometry = self.pass_times.station_geometry(station, 0, steps)
-            self.elevation_deg[k] = geometry.elevation_deg
-            self.range_km[k] = geometry.range_km
-            self._to_station[k] = geometry.to_station
+            self.pass_times.station_geometry(
+                station,
+                0,
+                steps,
+                out=StationGeometry(
+                    self.elevation_deg[k], self.range_km[k], self._to_station[k]
+                ),
+            )
         masks = np.array([s.min_elevation_deg for s in self.stations], dtype=float)
         self.visible: npt.NDArray[np.bool_] = self.elevation_deg > masks[:, None]
         """Whether each station is above its mask at each step."""
-        self.rate_steps = np.where(self.visible, self.rates[:, None], 0.0)
+        self.rate_steps = np.empty((count, steps))
         """The downlink rate from each station at each step in view, at the
         step's range where a band's rate varies with it."""
         self._ranged = [
@@ -211,7 +219,7 @@ class StationCoverage:
         ]
         """Whether each station's rate varies with range."""
         for k, station in enumerate(self.stations):
-            self.rate_steps[k] = self.pass_times.downlink_rates(station, 0, steps)
+            self.pass_times.downlink_rates(station, 0, steps, out=self.rate_steps[k])
         # Gb downlinked from each station by the start of each step, were it
         # in contact throughout: the rate is constant within a step.
         self._cumulative = np.zeros((count, steps + 1))
@@ -252,12 +260,16 @@ class StationCoverage:
             return None
         if communications.antenna_pointing.antenna_type == AntennaType.FIXED:
             return None
-        if not any(
-            (effective_downlink_rate_mbps(station, communications) or 0.0) > 0.0
-            for station in config.ground_stations.stations
-        ):
-            return None
-        return cls(config, scheduled_passes=scheduled_passes)
+        stations = [
+            s
+            for s in config.ground_stations.stations
+            if (effective_downlink_rate_mbps(s, communications) or 0.0) > 0.0
+        ]
+        return (
+            cls(config, scheduled_passes=scheduled_passes, _stations=stations)
+            if stations
+            else None
+        )
 
     # ── Scheduling ────────────────────────────────────────────────────────
 
@@ -291,39 +303,71 @@ class StationCoverage:
     def _schedule_contacts(self) -> None:
         """Apply acquisitions, handovers and repoints to the booked passes."""
         count, steps = self.scheduled.shape
+        self._repoint_times: list[float] = []
+        self._repoint_ends: list[float] = []
         if count == 0 or steps == 0:
             return
         current = -1
         begin = 0.0
+        acquired = 0.0
+        kind: Literal["acquisition", "handover"] = "acquisition"
         for k in range(steps):
             t = float(self.times[k])
             if current >= 0 and self.scheduled[current, k]:
                 continue
+            linked = False
             if current >= 0:
                 # The booked pass has ended.
-                self._add_contact(current, begin, t)
+                linked = self._finish_contact(current, acquired, begin, t, kind)
             in_view = np.flatnonzero(self.scheduled[:, k])
             if in_view.size == 0:
                 current = -1
                 continue
             # Overlap selection has already booked at most one station.
             chosen = int(in_view[0])
+            acquired = t
             begin = t + self.acquisition_seconds
-            if current >= 0:
+            if linked:
                 begin += self.handover_seconds
-                self.handovers += 1
-                kind: Literal["acquisition", "handover"] = "handover"
+                kind = "handover"
             else:
-                self.acquisitions += 1
                 kind = "acquisition"
             current = chosen
-            if self.repointing:
-                self.repoints.append(
-                    Repoint(t, begin, self.stations[chosen].code, kind)
-                )
         if current >= 0:
-            self._add_contact(current, begin, float(self.times[-1]) + self.step_size)
+            self._finish_contact(
+                current, acquired, begin, float(self.times[-1]) + self.step_size, kind
+            )
         self.repoints.sort(key=lambda r: (r.time, r.end))
+        self._repoint_times = [r.time for r in self.repoints]
+        self._repoint_ends = list(np.maximum.accumulate([r.end for r in self.repoints]))
+
+    def _finish_contact(
+        self,
+        station: int,
+        acquired: float,
+        begin: float,
+        end: float,
+        kind: Literal["acquisition", "handover"],
+    ) -> bool:
+        """Commit acquisition metadata only for a link with a usable span."""
+        if begin >= end:
+            return False
+        before, repoints = len(self.contacts), len(self.repoints)
+        pointing = self._last_pointing
+        if self.repointing:
+            self.repoints.append(
+                Repoint(acquired, begin, self.stations[station].code, kind)
+            )
+        self._add_contact(station, begin, end)
+        if len(self.contacts) == before:
+            del self.repoints[repoints:]
+            self._last_pointing = pointing
+            return False
+        if kind == "handover":
+            self.handovers += 1
+        else:
+            self.acquisitions += 1
+        return True
 
     def _add_contact(self, station: int, begin: float, end: float) -> None:
         """The contact with ``station`` over ``[begin, end)``, split around
@@ -471,11 +515,7 @@ class StationCoverage:
 
     @property
     def gimballed(self) -> bool:
-        communications = self.config.spacecraft_bus.communications
-        return (
-            communications is not None
-            and communications.antenna_pointing.antenna_type == AntennaType.GIMBALED
-        )
+        return self.repointing
 
     def index(self, utime: float) -> int:
         """The ephemeris step at or before ``utime``."""
@@ -531,9 +571,8 @@ class StationCoverage:
         its mean rate over the part inside it."""
         spans: list[ContactSpan] = []
         first = max(0, bisect_right(self._begins, begin) - 1)
-        for span in self.contacts[first:]:
-            if span.begin >= end:
-                break
+        last = bisect_left(self._begins, end)
+        for span in self.contacts[first:last]:
             lo, hi = max(span.begin, begin), min(span.end, end)
             if hi > lo:
                 if (lo, hi) == (span.begin, span.end):
@@ -549,19 +588,61 @@ class StationCoverage:
         result = []
         for span in self.spans(begin, end):
             station = self._station_index(span.station)
-            cursor = span.begin
-            volume = 0.0
-            while cursor < span.end:
-                k = self.index(cursor)
-                stop = min(span.end, float(self.times[k]) + self.step_size)
-                rate = recorder.downlink_rate(
-                    span.station, float(self.range_km[station, k])
+            key = (recorder.name, span.station)
+            if key not in self._recorder_integrals:
+                rates = np.fromiter(
+                    (
+                        recorder.downlink_rate(span.station, float(d))
+                        for d in self.range_km[station]
+                    ),
+                    dtype=float,
                 )
-                volume += rate * (stop - cursor) / 1000.0
-                cursor = stop
+                cumulative = np.r_[0.0, np.cumsum(rates * self.step_size / 1000.0)]
+                self._recorder_integrals[key] = (rates, cumulative)
+            rates, cumulative = self._recorder_integrals[key]
+
+            def at(time: float) -> float:
+                k = self.index(time)
+                into = min(max(time - float(self.times[k]), 0.0), self.step_size)
+                return float(cumulative[k] + rates[k] * into / 1000.0)
+
+            volume = at(span.end) - at(span.begin)
             result.append(
                 span._replace(rate_mbps=volume * 1000.0 / (span.end - span.begin))
             )
+        return result
+
+    @cached_property
+    def _recorder_integrals(
+        self,
+    ) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+        return {}
+
+    def rate_spans(
+        self, begin: float, end: float, recorder: RecorderView | None = None
+    ) -> list[ContactSpan]:
+        """Usable links split only where their effective rate changes."""
+        result = []
+        for span in self.spans(begin, end):
+            j = self._station_index(span.station)
+            if recorder is None:
+                rates = self.rate_steps[j]
+            else:
+                self.recorder_spans(recorder, span.begin, span.end)
+                rates = self._recorder_integrals[(recorder.name, span.station)][0]
+            first, last = self.index(span.begin), self.index(span.end - 1e-6) + 1
+            edges = [
+                first,
+                *(first + 1 + np.flatnonzero(np.diff(rates[first:last]) != 0)),
+                last,
+            ]
+            for a, b in zip(edges, edges[1:]):
+                lo, hi = (
+                    max(span.begin, float(self.times[a])),
+                    min(span.end, float(self.times[b - 1]) + self.step_size),
+                )
+                if hi > lo:
+                    result.append(ContactSpan(lo, hi, span.station, float(rates[a])))
         return result
 
     def downlink_gb(self, begin: float, end: float) -> float:
@@ -615,20 +696,29 @@ class StationCoverage:
 
     def repoints_in(self, begin: float, end: float) -> list[Repoint]:
         """The repoints that begin in ``[begin, end)``."""
-        return [r for r in self.repoints if begin <= r.time < end]
+        return self.repoints[
+            bisect_left(self._repoint_times, begin) : bisect_left(
+                self._repoint_times, end
+            )
+        ]
 
     def repoint_cuts(self, begin: float, end: float) -> list[tuple[float, float]]:
         """When the antenna is moving in ``[begin, end)``, as ``(time, end)``
         pairs, to cut from the windows of an observation that must not
         contain a repoint (see :func:`cut_windows`)."""
-        return [
-            (r.time, r.end) for r in self.repoints if r.time < end and r.end >= begin
-        ]
+        first = bisect_left(self._repoint_ends, begin)
+        last = bisect_left(self._repoint_times, end)
+        return [(r.time, r.end) for r in self.repoints[first:last] if r.end >= begin]
 
     def next_repoint_cut(self, utime: float) -> tuple[float, float] | None:
         """The first repoint still to end after ``utime``: in progress if it
         began at or before ``utime``, else the next one; None without one."""
-        return next(((r.time, r.end) for r in self.repoints if r.end > utime), None)
+        k = bisect_right(self._repoint_ends, utime)
+        return (
+            (self.repoints[k].time, self.repoints[k].end)
+            if k < len(self.repoints)
+            else None
+        )
 
     def fraction(self, begin: float, end: float) -> float:
         """The fraction of ``[begin, end)`` in contact."""

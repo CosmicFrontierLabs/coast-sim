@@ -81,14 +81,6 @@ class BandCapability(ConfigModel):
         if range_km is None or table is None:
             return self.downlink_rate_mbps
         return interpolate_range_table(table, range_km)
-        if range_km <= table[0][0]:
-            return table[0][1]
-        if range_km >= table[-1][0]:
-            return table[-1][1]
-        for (r0, rate0), (r1, rate1) in zip(table, table[1:]):
-            if r0 <= range_km <= r1:
-                return rate0 + (rate1 - rate0) * (range_km - r0) / (r1 - r0)
-        return self.downlink_rate_mbps
 
     @model_validator(mode="before")
     @classmethod

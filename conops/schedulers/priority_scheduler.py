@@ -31,7 +31,7 @@ from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
 from .battery import MIN_CHARGE_SECONDS, Addition, Additions, Angles, BatteryLedger
 from .context import Attitude, SchedulingContext
-from .recorder import RecorderLedgers
+from .recorder import RecorderAmount, RecorderLedgers, combine_amounts
 
 CHARGE_OBSID = 999000
 """Obsid of the first planned charge; the rest follow."""
@@ -520,7 +520,7 @@ class PriorityScheduler:
         """A timeline's energy with the charges its idle sunlit time holds."""
         return self._timeline_energy(self._charged_timeline(list(timeline)))
 
-    def _block_additions(self, block: _Block) -> list[tuple[int, float]]:
+    def _block_additions(self, block: _Block) -> list[tuple[int, RecorderAmount]]:
         return self._ledger.science_additions(
             block.entry,
             _collection_seconds(block),
@@ -1278,6 +1278,34 @@ class PriorityScheduler:
                 )
                 if next_contact is None:
                     break
+                if self.ctx.coverage is not None:
+                    # Between coalesced link boundaries, find a later fit by
+                    # bisection instead of refitting once per telemetry step.
+                    step = self.ctx.step_size
+                    lo = self.ctx.ceil_step(float(block.entry.begin) + step)
+                    hi = self.ctx.floor_step(next_contact)
+                    later = None
+                    while lo <= hi:
+                        mid = self.ctx.floor_step((lo + hi) / 2)
+                        trial = self._fit_in_gap(request, pred, succ, mid)
+                        if trial is None:
+                            hi = mid - step
+                        elif self._ledger.fits_all(
+                            self._volumes,
+                            [
+                                *self._block_additions(trial[0]),
+                                *self._ingress_deltas(succ, trial[2]),
+                            ],
+                        ):
+                            later = trial
+                            hi = mid - step
+                        else:
+                            lo = mid + step
+                    if later is not None:
+                        candidate = later
+                        after = float(later[0].entry.begin)
+                        full = False
+                        break
                 after = next_contact
                 if succ is not None and after >= succ.ready:
                     break
@@ -1545,7 +1573,10 @@ class PriorityScheduler:
             *self._ingress_deltas(after, after_slew),
         ]
         for move in moves:
-            additions.extend((s, -v) for s, v in self._block_additions(move.old_block))
+            additions.extend(
+                (s, combine_amounts(0.0, v, -1.0))
+                for s, v in self._block_additions(move.old_block)
+            )
             additions.extend(self._block_additions(move.new_block))
         if not self._ledger.fits_all(self._volumes, additions):
             return None

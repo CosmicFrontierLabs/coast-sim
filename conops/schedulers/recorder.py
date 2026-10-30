@@ -12,7 +12,9 @@ instrument. The limit is the recorder's planning limit.
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
@@ -21,6 +23,52 @@ from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
 from .consumable import ConsumableLedger, Removal
+
+
+class DataFlow(NamedTuple):
+    """Gb produced uniformly over an interval, or at an instantaneous boundary."""
+
+    begin: float
+    end: float
+    volume: float
+
+
+RecorderAmount = float | tuple[DataFlow, ...]
+
+
+def amount_total(amount: RecorderAmount) -> float:
+    return amount if isinstance(amount, (int, float)) else sum(f.volume for f in amount)
+
+
+def combine_amounts(
+    a: RecorderAmount, b: RecorderAmount, sign: float = 1.0
+) -> RecorderAmount:
+    """Combine immutable flow histories; scalar stores retain their arithmetic."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a + sign * b
+    flows: dict[tuple[float, float], float] = {}
+    for value, factor in ((a, 1.0), (b, sign)):
+        if isinstance(value, (int, float)):
+            if value != 0.0:
+                raise ValueError(
+                    "Timed recorder additions require their production interval"
+                )
+            continue
+        for flow in value:
+            key = (flow.begin, flow.end)
+            flows[key] = flows.get(key, 0.0) + factor * flow.volume
+    return tuple(
+        DataFlow(lo, hi, v) for (lo, hi), v in sorted(flows.items()) if abs(v) > 1e-12
+    )
+
+
+def amounts_equal(a: RecorderAmount, b: RecorderAmount) -> bool:
+    d = combine_amounts(a, b, -1.0)
+    return (
+        abs(d) <= 1e-9
+        if isinstance(d, (int, float))
+        else all(abs(f.volume) <= 1e-9 for f in d)
+    )
 
 
 def contact_downlink_gb(
@@ -45,7 +93,7 @@ def contact_downlink_gb(
     return rate_mbps * max(0.0, seconds) / 1000.0
 
 
-class RecorderLedger(ConsumableLedger[float, float]):
+class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
     """Recorder volume over a horizon, by the segments its contacts cut it into.
 
     Args:
@@ -104,31 +152,25 @@ class RecorderLedger(ConsumableLedger[float, float]):
         """Where each contact's removal starts, and what the step its link
         ends in generates after the link, at the PASS rate, beyond the
         nominal rate the segment counts it at."""
+        self._link_flows: tuple[DataFlow, ...] = ()
         if coverage is not None:
-            # Credit only the data sent by a completed step. A single removal
-            # at acquisition would make the rest of the contact's capacity
-            # available before the spacecraft has transmitted anything.
-            step = self.step_size or coverage.step_size
+            spans = coverage.rate_spans(
+                self.grid_step(begin),
+                end,
+                config if isinstance(config, RecorderView) else None,
+            )
+            self._link_flows = tuple(
+                DataFlow(p.begin, p.end, -p.rate_mbps * (p.end - p.begin) / 1000.0)
+                for p in spans
+            )
+            # Coarse solver/retry boundaries follow link changes. The exact
+            # sweep below also includes every science production boundary.
             amounts: dict[float, float] = {}
-            for span in coverage.spans(self.grid_step(begin), end):
-                cursor = span.begin
-                while cursor < span.end:
-                    tick = (
-                        self.origin
-                        + (math.floor((cursor - self.origin) / step + 1e-9) + 1) * step
-                    )
-                    stop = min(tick, span.end)
-                    pieces = (
-                        coverage.recorder_spans(config, cursor, stop)
-                        if isinstance(config, RecorderView)
-                        else coverage.spans(cursor, stop)
-                    )
-                    amount = sum(
-                        p.rate_mbps * (p.end - p.begin) / 1000.0 for p in pieces
-                    )
-                    if amount > 0.0:
-                        amounts[stop] = amounts.get(stop, 0.0) + amount
-                    cursor = stop
+            for span in spans:
+                amounts[span.end] = (
+                    amounts.get(span.end, 0.0)
+                    + span.rate_mbps * (span.end - span.begin) / 1000.0
+                )
             removals.extend(Removal(t, t, amount) for t, amount in amounts.items())
         for entry in contacts:
             if (
@@ -225,55 +267,129 @@ class RecorderLedger(ConsumableLedger[float, float]):
         time: float,
         *,
         include_fixed: bool = True,
-    ) -> list[tuple[int, float]]:
-        """Science where it is collected, without downlinking future data.
-
-        Tracking passes cannot overlap science, so their existing scalar
-        accounting suffices. Flexible antennas need each part of a snapshot
-        on the recorder before the corresponding step's downlink is credited.
-        """
+    ) -> list[tuple[int, RecorderAmount]]:
+        """Production intervals, coalesced between partial execution steps."""
         fixed = self.science_volume(entry, 0.0)
         if not self._timed_science:
             volume = self.science_volume(entry, seconds)
             return [(self.segment(time), volume if include_fixed else volume - fixed)]
-        additions: dict[int, float] = {}
-
-        def spread(begin: float, end: float, volume: float) -> None:
-            for k in range(self.segment(begin), self.segments):
-                lo, hi = max(begin, self.bounds[k]), min(end, self.bounds[k + 1])
-                if hi > lo:
-                    additions[k] = additions.get(k, 0.0) + volume * (hi - lo) / (
-                        end - begin
-                    )
-                if self.bounds[k + 1] >= end:
-                    break
-
         if seconds <= 0.0:
             return []
+        rate = self.science_volume(entry, 1.0) - fixed
+        flows = []
         if self.step_size is None:
-            spread(time, time + seconds, self.science_volume(entry, seconds) - fixed)
-            if include_fixed:
-                k = self.segment(time)
-                additions[k] = additions.get(k, 0.0) + fixed
+            flows.append(DataFlow(time, time + seconds, rate * seconds))
+            if include_fixed and fixed:
+                flows.append(DataFlow(time, time, fixed))
         else:
-            # DITL spreads each step's generation uniformly through that step,
-            # including a snapshot's fixed amount in its first collecting step.
-            # Use the same distribution at acquisitions and repoints that split
-            # a step, so a link cannot transmit the data generated after it ends.
             step = self.step_size
-            cursor = self.origin + math.floor((time - self.origin) / step) * step
-            while cursor < time + seconds and cursor < self._end:
-                stop = min(cursor + step, self._end)
-                lo, hi = max(time, cursor), min(time + seconds, stop)
-                volume = self.science_volume(entry, hi - time)
-                if lo > time:
-                    volume -= self.science_volume(entry, lo - time)
-                elif not include_fixed:
-                    volume -= fixed
+            first = self.origin + math.floor((time - self.origin) / step) * step
+            last = (
+                self.origin
+                + math.floor((time + seconds - self.origin - 1e-6) / step) * step
+            )
+            edges = sorted(
+                {first, min(first + step, self._end), last, min(last + step, self._end)}
+            )
+            for lo, hi in zip(edges, edges[1:]):
+                duration = max(0.0, min(hi, time + seconds) - max(lo, time))
+                if hi > lo and duration > 0.0:
+                    volume = rate * duration + (
+                        fixed if include_fixed and lo == first else 0.0
+                    )
+                    flows.append(DataFlow(lo, hi, volume))
+        additions: dict[int, tuple[DataFlow, ...]] = {}
+        for flow in flows:
+            if flow.begin == flow.end:
+                k = self.segment(flow.begin)
+                additions[k] = (*additions.get(k, ()), flow)
+                continue
+            for k in range(self.segment(flow.begin), self.segments):
+                lo, hi = (
+                    max(flow.begin, self.bounds[k]),
+                    min(flow.end, self.bounds[k + 1]),
+                )
                 if hi > lo:
-                    spread(cursor, stop, volume)
-                cursor = stop
+                    piece = DataFlow(
+                        lo, hi, flow.volume * (hi - lo) / (flow.end - flow.begin)
+                    )
+                    additions[k] = (*additions.get(k, ()), piece)
+                if self.bounds[k + 1] >= flow.end:
+                    break
         return list(additions.items())
+
+    def _walk(
+        self, planned: Sequence[RecorderAmount], stop: float | None = None
+    ) -> tuple[list[float], list[float]]:
+        """Sweep rate and production changes in order, reflecting volume at zero."""
+        events: dict[float, list[float]] = {t: [0.0, 0.0] for t in self.bounds}
+        end = self.bounds[-1] if stop is None else stop
+        events.setdefault(end, [0.0, 0.0])
+        flows = list(self._link_flows)
+        for k, amount in enumerate(planned):
+            if isinstance(amount, (int, float)):
+                if amount:
+                    flows.append(DataFlow(self.bounds[k], self.bounds[k], amount))
+            else:
+                flows.extend(amount)
+        for flow in flows:
+            if flow.begin == flow.end:
+                events.setdefault(flow.begin, [0.0, 0.0])[1] += flow.volume
+            else:
+                rate = flow.volume / (flow.end - flow.begin)
+                events.setdefault(flow.begin, [0.0, 0.0])[0] += rate
+                events.setdefault(flow.end, [0.0, 0.0])[0] -= rate
+        level = peak = self.start
+        rate = self.config.housekeeping_generated(1.0)
+        cursor = self.bounds[0]
+        peaks: list[float] = []
+        levels: list[float] = []
+        boundary = 1
+        for time, (change, impulse) in sorted(events.items()):
+            if time < cursor:
+                continue
+            if time > end:
+                break
+            level = max(0.0, level + rate * (time - cursor))
+            peak = max(peak, level)
+            while boundary < len(self.bounds) and self.bounds[boundary] <= time:
+                peaks.append(peak)
+                levels.append(level)
+                peak = level
+                boundary += 1
+            level += impulse
+            peak = max(peak, level)
+            rate += change
+            cursor = time
+        return ([max(peak, level)], [level]) if stop is not None else (peaks, levels)
+
+    def _peaks_and_levels(
+        self, planned: Sequence[RecorderAmount]
+    ) -> tuple[list[float], list[float]]:
+        return (
+            self._walk(planned)
+            if self._timed_science
+            else super()._peaks_and_levels(planned)
+        )
+
+    def level_at(self, planned: Sequence[RecorderAmount], time: float) -> float:
+        if self._timed_science:
+            return self._walk(planned, time)[1][-1]
+        if time >= self.bounds[-1]:
+            return self.levels(planned)[-1]
+        first = self.segment(time)
+        return (
+            self.peaks(planned)[first]
+            - self.accrual[first]
+            - amount_total(planned[first])
+        )
+
+    def add(
+        self, planned: Sequence[RecorderAmount], segment: int, extra: RecorderAmount
+    ) -> tuple[RecorderAmount, ...]:
+        result = list(planned)
+        result[segment] = combine_amounts(result[segment], extra)
+        return tuple(result)
 
     def ingress_volume(
         self,
@@ -313,15 +429,18 @@ class RecorderLedger(ConsumableLedger[float, float]):
             self.grid_step(float(entry.begin if begin is None else begin))
         )
 
-    def initial_volumes(self, entries: Sequence[PlanEntry]) -> tuple[float, ...]:
+    def initial_volumes(
+        self, entries: Sequence[PlanEntry]
+    ) -> tuple[RecorderAmount, ...]:
         """What entries already on the timeline add, by segment: science
         where it is collected, and the slews into contacts where they start."""
-        volumes = [0.0] * self.segments
+        volumes: list[RecorderAmount] = [0.0] * self.segments
         for entry in entries:
             ingress = self.ingress_volume(entry)
             if ingress != 0.0:
                 # Negative where the PASS rate is below the nominal one.
-                volumes[self.ingress_segment(entry)] += ingress
+                k = self.ingress_segment(entry)
+                volumes[k] = combine_amounts(volumes[k], ingress)
             if entry.collection_begin is None or entry.collection_end is None:
                 continue
             seconds = float(entry.collection_end) - float(entry.collection_begin)
@@ -330,7 +449,7 @@ class RecorderLedger(ConsumableLedger[float, float]):
             for segment, volume in self.science_additions(
                 entry, seconds, float(entry.collection_begin)
             ):
-                volumes[segment] += volume
+                volumes[segment] = combine_amounts(volumes[segment], volume)
         return tuple(volumes)
 
 
@@ -385,13 +504,12 @@ class RecorderLedgers:
         self.segments = offset
 
     def next_contact(self, time: float) -> float | None:
-        """Next recorder segment boundary after the given time."""
+        """Next useful link boundary, found by binary lookup."""
         return min(
             (
-                bound
+                ledger.bounds[k]
                 for _, ledger, _ in self.members
-                for bound in ledger.bounds[1:-1]
-                if bound > time
+                if (k := max(1, bisect_right(ledger.bounds, time))) < ledger.segments
             ),
             default=None,
         )
@@ -400,12 +518,14 @@ class RecorderLedgers:
     def active(self) -> bool:
         return any(ledger.active for _, ledger, _ in self.members)
 
-    def initial_volumes(self, entries: Sequence[PlanEntry]) -> tuple[float, ...]:
+    def initial_volumes(
+        self, entries: Sequence[PlanEntry]
+    ) -> tuple[RecorderAmount, ...]:
         return tuple(
             v for _, ledger, _ in self.members for v in ledger.initial_volumes(entries)
         )
 
-    def peaks(self, planned: Sequence[float]) -> list[float]:
+    def peaks(self, planned: Sequence[RecorderAmount]) -> list[float]:
         return [
             v
             for _, ledger, offset in self.members
@@ -413,7 +533,9 @@ class RecorderLedgers:
         ]
 
     def fits_all(
-        self, planned: Sequence[float], additions: Sequence[tuple[int, float]]
+        self,
+        planned: Sequence[RecorderAmount],
+        additions: Sequence[tuple[int, RecorderAmount]],
     ) -> bool:
         trial = self.add_all(planned, additions)
         return all(
@@ -423,11 +545,12 @@ class RecorderLedgers:
 
     @staticmethod
     def add_all(
-        planned: Sequence[float], additions: Sequence[tuple[int, float]]
-    ) -> tuple[float, ...]:
+        planned: Sequence[RecorderAmount],
+        additions: Sequence[tuple[int, RecorderAmount]],
+    ) -> tuple[RecorderAmount, ...]:
         result = list(planned)
         for segment, value in additions:
-            result[segment] += value
+            result[segment] = combine_amounts(result[segment], value)
         return tuple(result)
 
     def science_volume(self, entry: PlanEntry, seconds: float) -> float:
@@ -437,7 +560,7 @@ class RecorderLedgers:
 
     def science_additions(
         self, entry: PlanEntry, seconds: float, time: float
-    ) -> list[tuple[int, float]]:
+    ) -> list[tuple[int, RecorderAmount]]:
         return [
             (offset + segment, volume)
             for _, ledger, offset in self.members
