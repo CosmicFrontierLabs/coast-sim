@@ -126,7 +126,11 @@ class Slew(BaseModel):
         key = (
             self.rate_fraction,
             id(self.acs_config),
-            *self.acs_config.__dict__.items(),
+            self.acs_config.max_slew_rate,
+            self.acs_config.max_slew_rate_body,
+            self.acs_config.slew_acceleration,
+            self.acs_config.slew_acceleration_body,
+            self.acs_config.settle_time,
         )
         if key == self._motion_limits_key and self._motion_limits_cache is not None:
             return self._motion_limits_cache

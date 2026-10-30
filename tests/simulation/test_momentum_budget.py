@@ -420,3 +420,39 @@ def test_install_certifies_pending_motion_and_full_hold_once(monkeypatch):
     monkeypatch.setattr(budget, "forecast", record)
     executor.install(trajectory, momentum_end=trajectory.end + 100)
     assert forecasts == [start, trajectory.end + 100]
+
+
+@pytest.mark.parametrize(
+    "coefficients",
+    [
+        ((1, 2, 3), (150, -100, 80), (120, 80, 40)),  # growing H, far beyond midpoint
+        ((1, 2, 3), (400, 120, -100), (-400, -100, 100)),  # interior peak
+        ((100, -50, 80), (-200, 100, -160), (0, 0, 0)),  # zero midpoint H
+    ],
+)
+def test_fixed_axis_bound_covers_changing_quadratic_momentum(coefficients):
+    from conops.simulation.attitude import AttitudeState
+
+    _, _, executor = setup_budget(capacity=1000, inertia=(1000, 800, 600))
+    budget = executor.momentum
+    initial = AttitudeState(0, tuple(attitude_to_quat(15, 25, 10)), (0, 0, 20))
+    duration = 3.0
+    coefficients = np.asarray(coefficients, dtype=float)
+    # Independent dense evaluation of the physical demand, without the
+    # midpoint variation bound or its recursive subdivision.
+    norms = []
+    for time in np.linspace(0, duration, 10001):
+        state = initial.coast(float(time))
+        fraction = time / duration
+        total = (
+            coefficients[0] + fraction * coefficients[1] + fraction**2 * coefficients[2]
+        )
+        demand = quaternion_to_rotation_matrix(
+            state.quaternion
+        ) @ total - budget.inertia @ np.deg2rad(state.angular_velocity_body)
+        norms.append(np.linalg.norm(demand))
+    peak = max(norms)
+    budget.capacity = peak * 1.001
+    assert budget._fixed_axis_within_limit(initial.coast, 0, duration, coefficients)
+    budget.capacity = peak * 0.999
+    assert not budget._fixed_axis_within_limit(initial.coast, 0, duration, coefficients)

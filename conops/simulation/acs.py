@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import rust_ephem
@@ -97,7 +96,7 @@ class ACS:
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
-        self.momentum_readmit: Callable[[Slew, float], Slew | None] | None = None
+        self.readmission_requests: list[Slew] = []
         self._initial_attitude: Attitude = (0.0, 0.0, 0.0)
         self._attitude_guidance_disabled = False
 
@@ -377,7 +376,8 @@ class ACS:
             # Dispatch to appropriate handler based on command type
             match command.command_type:
                 case ACSCommandType.SLEW_TO_TARGET:
-                    self._handle_slew_command(command, utime)
+                    if not self._handle_slew_command(command, utime):
+                        continue
                 case ACSCommandType.START_PASS:
                     self._start_pass(command, utime)
                 case ACSCommandType.END_PASS:
@@ -391,10 +391,14 @@ class ACS:
 
             self.executed_commands.append(command)
 
-    def _handle_slew_command(self, command: ACSCommand, utime: float) -> None:
+    def _handle_slew_command(self, command: ACSCommand, utime: float) -> bool:
         """Handle SLEW_TO_TARGET command."""
         if command.slew is not None:
-            command.slew = self._start_slew(command.slew, utime)
+            started = self._start_slew(command.slew, utime)
+            if started is None:
+                return False
+            command.slew = started
+        return True
 
     # Handle Ground Station Pass Commands
     def _start_pass(self, command: ACSCommand, utime: float) -> None:
@@ -525,28 +529,11 @@ class ACS:
                 prepared.state(prepared.start).quaternion, executor.state.quaternion
             )
             if prepared.start != utime or angle > 1e-8:
-                if self.momentum_readmit is None:
-                    raise AttitudeExecutionError(
-                        "Stale momentum admission needs a scheduler"
-                    )
-                replacement = self.momentum_readmit(slew, utime)
-                if replacement is None:
-                    self._log_or_print(
-                        utime, "SLEW", "Delayed slew no longer admissible"
-                    )
-                    return None
-                slew = replacement
-                prepared = slew._momentum_trajectory
-                assert prepared is not None
-                if slew.slewstart > utime:
-                    self.enqueue_command(
-                        ACSCommand(
-                            command_type=ACSCommandType.SLEW_TO_TARGET,
-                            execution_time=slew.slewstart,
-                            slew=slew,
-                        )
-                    )
-                    return None
+                self.readmission_requests.append(slew)
+                self._log_or_print(
+                    utime, "SLEW", "Delayed slew requires scheduler re-admission"
+                )
+                return None
             executor.install(prepared, momentum_end=slew._momentum_hold_end)
         else:
             slew.startra = self.ra

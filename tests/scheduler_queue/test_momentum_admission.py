@@ -117,6 +117,8 @@ def test_delayed_admission_is_replanned_from_actual_state_and_time(scenario):
     plan = MomentumObservationPlanner(sim).observation(target, sim.ustart)
     assert plan is not None
     sim.acs._start_slew(plan.slew, sim.ustart + 60)
+    assert sim.acs.current_slew is None
+    sim._pointing(sim.ustart + 60)
     actual = sim.acs.current_slew
     assert actual is not None and actual is not plan.slew
     assert actual.slewstart == sim.ustart + 60
@@ -826,7 +828,10 @@ def test_braking_deferral_readmits_and_updates_executed_command(scenario):
     assert command.execution_time > sim.ustart + 5
     assert not sim.acs.executed_commands
     sim.acs._process_commands(sim.ustart + 60)
-    assert sim.acs.executed_commands[-1] is command
+    assert not sim.acs.executed_commands
+    sim._pointing(sim.ustart + 60)
+    assert sim.acs.executed_commands[-1] is not command
+    command = sim.acs.executed_commands[-1]
     assert command.slew is sim.acs.current_slew
     assert command.slew is not admitted.slew
     assert command.slew.slewstart == sim.ustart + 60
@@ -844,7 +849,11 @@ def test_delayed_target_that_misses_deadline_is_cancelled(scenario):
     sim._apply_slew_metadata(target, admitted.slew)
     sim._track_ppt_in_timeline()
     assert len(sim.plan) == 1
+    sim.acs.science_observation_active = True
     assert sim.acs._start_slew(admitted.slew, sim.ustart + 60) is None
+    assert sim.ppt is target
+    sim._pointing(sim.ustart + 60)
+    assert not sim.acs.science_observation_active
     assert sim.ppt is None
     assert not sim.plan.entries
     assert sim.acs.current_slew is None
@@ -954,3 +963,216 @@ def test_run_with_intervening_motion_keeps_plan_and_execution_consistent(
     assert entries[0].begin == sim.ustart + 180
     assert entries[0].exposure == 300
     assert not sim.validate_plan_matches_execution()
+
+
+def test_failed_idle_readmission_enters_safe_after_command_dispatch(
+    scenario, monkeypatch
+):
+    from conops.common import ACSCommandType
+    from conops.simulation.acs_command import ACSCommand
+
+    sim, target = scenario
+    sim.acs.momentum_budget.capacity = 100  # SAFE's nominal maneuver also fits.
+    admitted = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert admitted is not None
+    sim.ppt = None
+    now = sim.ustart + 60
+    monkeypatch.setattr(sim._idle_safety, "first_violation", lambda *args: now)
+    monkeypatch.setattr(MomentumObservationPlanner, "_idle_escape", lambda *args: None)
+    monkeypatch.setattr(
+        MomentumObservationPlanner, "_safe", lambda *args, **kwargs: False
+    )
+    dispatch = sim.acs._process_commands
+    depth = maximum = 0
+
+    def tracked_dispatch(time):
+        nonlocal depth, maximum
+        depth += 1
+        maximum = max(maximum, depth)
+        try:
+            return dispatch(time)
+        finally:
+            depth -= 1
+
+    monkeypatch.setattr(sim.acs, "_process_commands", tracked_dispatch)
+    stale = ACSCommand(
+        command_type=ACSCommandType.SLEW_TO_TARGET,
+        execution_time=now,
+        slew=admitted.recovery,
+    )
+    sim.acs.enqueue_command(stale)
+    sim._pointing(now)
+    assert maximum == 1
+    assert sim.acs.in_safe_mode
+    assert all(command is not stale for command in sim.acs.executed_commands)
+    assert any(
+        command.command_type == ACSCommandType.ENTER_SAFE_MODE
+        for command in sim.acs.executed_commands
+    )
+    assert not sim.acs.readmission_requests
+
+
+@pytest.mark.parametrize("moving_violation", [False, True])
+def test_pending_arc_uses_slewing_scope_before_idle_hold(
+    scenario, monkeypatch, moving_violation
+):
+    from conops.simulation.attitude import AttitudeTrajectory
+
+    sim, _ = scenario
+    executor = sim.acs._executor
+    limits = sim.config.spacecraft_bus.attitude_control.model_copy(
+        update={"max_slew_rate": 0.5}
+    )
+    trajectory = AttitudeTrajectory.turn_from_state(executor.state, (20, 0, 0), limits)
+    executor.install(trajectory)
+    checks = []
+
+    def check(ra, dec, roll, time, mode, **kwargs):
+        checks.append((time, mode))
+        # An IDLE-only restriction during the turn must not reject the turn.
+        if mode == ACSMode.IDLE or moving_violation:
+            return ("scoped keepout", "hardware")
+        return None
+
+    monkeypatch.setattr(sim, "_attitude_constraint_name_for_attitude", check)
+    hold = Mock(return_value=float("inf"))
+    monkeypatch.setattr(sim._idle_safety, "first_violation", hold)
+    end = trajectory.end + 60
+    violation = sim._pending_attitude_violation(sim.ustart, end)
+    assert (violation is not None) is moving_violation
+    assert checks and all(mode == ACSMode.SLEWING for _, mode in checks)
+    if not moving_violation:
+        hold.assert_called_once_with(executor.predict(end).attitude, trajectory.end)
+        hold.return_value = end
+        assert sim._pending_attitude_violation(sim.ustart, end) == end
+
+
+@pytest.mark.parametrize("capacity", [None, 20])
+def test_both_admission_paths_reject_missing_valid_roll(
+    scenario, monkeypatch, capacity
+):
+    sim, target = scenario
+    sim.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s = capacity
+    sim.config.constraint.ignore_roll = True
+    roll_range = Mock(return_value=[])
+    monkeypatch.setattr(
+        type(sim.config.constraint),
+        "constraint",
+        property(lambda self: Mock(roll_range=roll_range)),
+    )
+    build = Mock(
+        side_effect=AssertionError("inadmissible target must not build a slew")
+    )
+    monkeypatch.setattr(sim, "_new_ppt_slew", build)
+    sim._fetch_new_ppt(sim.ustart, 0, 0)
+    assert sim.ppt is None and sim._ppt_unavailable
+    assert not sim.acs.command_queue
+    assert any("no valid roll" in event.description for event in sim.log.events)
+    build.assert_not_called()
+
+
+def test_recorder_projection_is_once_per_fetch(scenario, monkeypatch):
+    sim, target = scenario
+    room = Mock(return_value=None)
+    monkeypatch.setattr(sim, "_recorder_room_gb", room)
+    sim._fetch_new_ppt(sim.ustart, 0, 0)
+    assert sim.ppt is target and sim.acs.command_queue
+    room.assert_called_once_with(sim.ustart, 0, 0, sim.acs.roll)
+
+
+def test_short_collection_cap_rejects_before_building_roll_trials(
+    scenario, monkeypatch
+):
+    sim, target = scenario
+    target.collection_limit = target.ss_min - 1
+    build = Mock(side_effect=AssertionError("must reject before slew construction"))
+    forecast = Mock(side_effect=AssertionError("must reject before momentum forecast"))
+    monkeypatch.setattr(sim, "_new_ppt_slew", build)
+    monkeypatch.setattr(sim.acs._executor, "forecast_momentum", forecast)
+    assert MomentumObservationPlanner(sim).observation(target, sim.ustart) is None
+    build.assert_not_called()
+    forecast.assert_not_called()
+
+
+def test_rest_geometry_uses_ephemeris_brackets_not_momentum_substeps(
+    scenario, monkeypatch
+):
+    from conops.simulation.attitude import AttitudeTrajectory
+
+    sim, target = scenario
+    planner = MomentumObservationPlanner(sim)
+    hold = AttitudeTrajectory.turn_from_state(
+        planner.executor.state, (0, 0, 0), sim.config.spacecraft_bus.attitude_control
+    )
+    checks = Mock(return_value=None)
+    monkeypatch.setattr(sim, "_attitude_constraint_name_for_attitude", checks)
+    assert (
+        planner._first_violation(
+            hold,
+            sim.ustart + 1201,
+            ACSMode.SCIENCE,
+            start=sim.ustart + 31,
+            target=target,
+        )
+        is None
+    )
+    assert [call.args[3] for call in checks.call_args_list] == [
+        sim.ustart + t for t in range(0, 1261, 60)
+    ]
+
+
+@pytest.mark.parametrize("inertia", [(1000, 1000, 1000), (1000, 800, 600)])
+def test_long_idle_with_torque_reserve_skips_escape_search(
+    scenario, monkeypatch, inertia
+):
+    sim, _ = scenario
+    ephem = DeterministicEphemeris(
+        SCENARIO_BEGIN, SCENARIO_BEGIN + timedelta(hours=1), 2
+    )
+    sim.ephem = sim.acs.ephem = sim.config.constraint.ephem = ephem
+    sim.config.spacecraft_bus.inertia_tensor_body_kg_m2 = np.diag(inertia)
+    sim.config.spacecraft_bus.attitude_control.stored_momentum.gravity_gradient_enabled = True
+    executor = sim.acs._executor
+    executor.momentum = MomentumBudget(sim.config, ephem, executor.state)
+    escape = Mock(
+        side_effect=AssertionError("ample reserve must not search every tick")
+    )
+    monkeypatch.setattr(MomentumObservationPlanner, "_idle_escape", escape)
+    for offset in range(0, 1200, 60):
+        sim.acs._advance_attitude(sim.ustart + offset)
+        assert (
+            MomentumObservationPlanner(sim).idle_recovery(sim.ustart + offset) is None
+        )
+    escape.assert_not_called()
+
+
+def test_motion_limit_cache_ignores_unrelated_acs_configuration(scenario):
+    sim, _ = scenario
+    slew = Slew(config=sim.config, rate_fraction=0.5)
+    first = slew.motion_limits
+    sim.config.spacecraft_bus.attitude_control.idle_min_hold_s += 60
+    assert slew.motion_limits is first
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_capacity_run_rejects_uncovered_end_before_execution(
+    scenario, monkeypatch, replay
+):
+    from conops import DITL
+    from conops.targets import Plan
+
+    sim, target = scenario
+    if replay:
+        target.begin, target.end = sim.ustart, sim.ustart + 600
+        sim = DITL(config=sim.config, ephem=sim.ephem, plan=Plan(entries=[target]))
+    sim.end = sim.ephem.timestamp[-1] + timedelta(seconds=60)
+    pointing = Mock(
+        side_effect=AssertionError("coverage must be checked before execution")
+    )
+    monkeypatch.setattr(sim.acs, "pointing", pointing)
+    with pytest.raises(
+        ValueError, match="Ephemeris does not cover simulation date range"
+    ):
+        sim.calc()
+    pointing.assert_not_called()
+    assert not sim.telemetry.housekeeping

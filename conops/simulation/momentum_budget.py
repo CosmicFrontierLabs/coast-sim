@@ -19,7 +19,12 @@ from ..common.ephemeris import position_vectors
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
 from .attitude import AttitudeExecutionError, AttitudeState, AttitudeTrajectory
-from .momentum import MomentumSample, StoredMomentumTracker
+from .momentum import (
+    EARTH_GRAVITATIONAL_PARAMETER_KM3_S2,
+    MomentumSample,
+    StoredMomentumTracker,
+)
+from .slew import Slew
 
 
 class MomentumLimitError(AttitudeExecutionError):
@@ -109,6 +114,44 @@ class MomentumBudget:
             initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
+        slowest_fraction = settings.slew_rate_fractions[-1]
+        slow_limits = acs.model_copy(
+            update={
+                "max_slew_rate": acs.max_slew_rate * slowest_fraction,
+                "max_slew_rate_body": tuple(
+                    rate * slowest_fraction for rate in acs.max_slew_rate_body
+                )
+                if acs.max_slew_rate_body is not None
+                else None,
+            }
+        )
+        self.idle_escape_duration = Slew.duration_upper_bound(slow_limits)
+        self.idle_escape_momentum = float(np.linalg.norm(self.inertia, 2)) * np.deg2rad(
+            fastest * slowest_fraction
+        )
+        self.max_external_torque = 0.0
+        if settings.gravity_gradient_enabled:
+            # Positions are linearly interpolated. Include the minimum radius
+            # inside each segment, rather than just its endpoints.
+            first, delta = self.positions[:-1], np.diff(self.positions, axis=0)
+            length2 = np.sum(delta * delta, axis=1)
+            fraction = np.clip(
+                -np.sum(first * delta, axis=1) / np.where(length2 > 0, length2, 1), 0, 1
+            )
+            radius = float(
+                np.linalg.norm(first + fraction[:, None] * delta, axis=1).min()
+            )
+            moments = np.linalg.eigvalsh(self.inertia)
+            self.max_external_torque = (
+                float(
+                    1.5
+                    * EARTH_GRAVITATIONAL_PARAMETER_KM3_S2
+                    * (moments[-1] - moments[0])
+                    / radius**3
+                )
+                if radius > 0
+                else float("inf")
+            )
 
     def _sample(
         self,
@@ -171,14 +214,18 @@ class MomentumBudget:
             torques = [
                 (momentum[1] + 2 * f * momentum[2]) / duration for f in (left, right)
             ]
-            derivative = (
+            # This bounds a finite difference, not d(R H)/dt. Split it as
+            # (R(t)-R(mid)) H(mid) + R(t) (H(t)-H(mid)). Rotations have unit
+            # norm, so midpoint |H| plus the torque bound covers growing H
+            # too; no product of changing rotation and changing H is omitted.
+            variation_rate_bound = (
                 np.linalg.norm(total) * max(np.linalg.norm(rate) for rate in rates)
                 + max(np.linalg.norm(torque) for torque in torques)
                 + inertia_accel
             )
-            if norm + derivative * (right - left) * duration / 2 <= self.capacity * (
-                1 + 1e-10
-            ):
+            if norm + variation_rate_bound * (
+                right - left
+            ) * duration / 2 <= self.capacity * (1 + 1e-10):
                 return True
             return (
                 depth < 18

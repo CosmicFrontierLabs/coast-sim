@@ -484,17 +484,23 @@ class AttitudeExecutor:
         self, trajectory: AttitudeTrajectory, end: float | None = None
     ) -> "MomentumForecast":
         """Predict pending motion and a proposed trajectory without committing."""
+        return self._certify_momentum(trajectory, end)[1]
+
+    def _certify_momentum(
+        self, trajectory: AttitudeTrajectory, end: float | None
+    ) -> tuple["MomentumForecast", "MomentumForecast"]:
+        """The single admission sequence used by previews and installation."""
         assert self.momentum is not None
         before = self.forecast_momentum(trajectory.start)
         self.momentum.require(before)
         forecast = self.momentum.forecast(
             trajectory.state,
-            trajectory.end if end is None else end,
+            trajectory.end if end is None else max(trajectory.end, end),
             initial=before,
             trajectory=trajectory,
         )
         self.momentum.require(forecast)
-        return forecast
+        return before, forecast
 
     def next_rest_time(self, utime: float) -> float:
         self._check_time(utime)
@@ -534,17 +540,7 @@ class AttitudeExecutor:
                 "A new trajectory must join the current attitude and angular velocity"
             )
         if self.momentum is not None:
-            before = self.forecast_momentum(trajectory.start)
-            self.momentum.require(before)
-            forecast = self.momentum.forecast(
-                trajectory.state,
-                trajectory.end
-                if momentum_end is None
-                else max(trajectory.end, momentum_end),
-                initial=before,
-                trajectory=trajectory,
-            )
-            self.momentum.require(forecast)
+            before, forecast = self._certify_momentum(trajectory, momentum_end)
             # Execution reads the same certified integration cells, including
             # partial ticks; it does not re-grid this immutable trajectory.
             self.momentum.commit(replace(before, path=forecast.path))
