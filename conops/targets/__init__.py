@@ -12,6 +12,7 @@ from .plan_entry import (
     AttitudeRotationSchema,
     PlanEntry,
     TargetAttitudeSchema,
+    instrument_modes_of,
 )
 from .plan_metadata import (
     EarthOrientationMetadata,
@@ -38,6 +39,7 @@ __all__ = [
     "ObservationSequence",
     "SequenceStep",
     "PlanEntry",
+    "instrument_modes_of",
     "TargetAttitudeSchema",
     "AttitudeRotationSchema",
     "AttitudePointingSchema",

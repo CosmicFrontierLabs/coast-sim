@@ -237,7 +237,10 @@ class RecorderView:
         return housekeeping_while_waiting(self, seconds)
 
     def science_generated(
-        self, seconds: float, science: Mapping[str, ScienceData] | None = None
+        self,
+        seconds: float,
+        science: Mapping[str, ScienceData] | None = None,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> float:
         storage = self.mission.data_storage
         assert storage is not None
@@ -250,13 +253,15 @@ class RecorderView:
                 f"science overrides reference unknown instruments: {sorted(unknown)}"
             )
         return sum(
-            (
-                science.get(instrument.name, instrument.data_generation.science)
-                if science
-                else instrument.data_generation.science
-            ).data_generated(seconds)
+            data.data_generated(seconds)
             for instrument in self.payload.instruments
             if storage.instrument_science.get(instrument.name) == self.name
+            if (
+                data := self.payload._science_of(
+                    instrument, science or {}, instrument_modes
+                )
+            )
+            is not None
         )
 
     def downlink_rate(self, station: str, range_km: float | None = None) -> float:

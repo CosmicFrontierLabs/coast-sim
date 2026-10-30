@@ -75,6 +75,24 @@ Building and executing a plan
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 
+A target's ``instrument_modes`` names the instruments its observation uses and
+the mode each is in, by name, such as ``{"camera": "SCIENCE"}``; a sequence step
+can name its own. Instruments not named idle for the observation. A target naming
+none uses the instrument it names with ``instrument_name``, or every instrument
+with modes, in ``SCIENCE``. The modes set what the payload draws while the target
+is observed, in both DITLs and in the battery ledger the planners keep, so a
+request that uses one instrument of several costs the battery less than one that
+uses them all, and what it generates on the recorder: each instrument used
+generates its mode's science data, or its own where the mode sets none, and an
+instrument with modes that is not used generates nothing (see the instrument modes
+under :doc:`configuration`). The modes a target
+names, its own and each sequence step's, are checked against the payload when it
+is made, with the payload's ``concurrency`` rules on what may observe at once (see
+:doc:`configuration`); a target naming none is checked as using every instrument
+with modes when it is added to the dispatch queue or given to a scheduler. The
+plan records the modes on each entry. A Target of Opportunity names its modes with the ``instrument_modes``
+argument of ``submit_too``.
+
 A target is observed at the power-optimal instrument roll unless it asks for
 another: ``roll_offset_deg`` is added to the power-optimal roll, and ``roll_deg`` is
 the roll itself. Dispatch and the planners observe the target at that roll where the
@@ -107,7 +125,9 @@ How a plan is built
    charge ran during one. Dispatch takes the same list: it ends the observation under
    way when an activity begins, marking it interrupted so it is revisited, holds the
    attitude it has in ``IDLE`` until the activity ends, and starts no observation that
-   would run into the next activity.
+   would run into the next activity. An activity's ``instrument_modes`` names what it
+   uses, such as a calibration lamp's instrument, and its draw is counted during the
+   hold; an activity naming none draws every instrument's idle power.
 3. **Requests** are sorted by merit value at the start of the horizon
    (base merit plus the urgency, cadence and completion-deficit terms; see
    :doc:`configuration`). Each request is split into snapshots of up to ``ss_max``

@@ -109,6 +109,16 @@ class Housekeeping(BaseModel):
             return None
         return [entry.angle_deg for entry in self.solar_array_drive_angles]
 
+    instrument_modes: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The mode each instrument with modes is in at this timestep, by "
+            "name: the observation's for the instruments it uses, IDLE or a "
+            "mode named like the ACS mode for the rest; None when no "
+            "instrument defines modes"
+        ),
+    )
+
     power_usage: float | None = Field(
         default=None, description="Total power usage in W"
     )
@@ -352,6 +362,11 @@ class HousekeepingList(list[Housekeeping]):
     def acs_mode(self) -> list[ACSMode | int | None]:
         """Get ACS mode values from all housekeeping records."""
         return [hk.acs_mode for hk in self]
+
+    @property
+    def instrument_modes(self) -> list[dict[str, str] | None]:
+        """Get the instrument modes from all housekeeping records."""
+        return [hk.instrument_modes for hk in self]
 
     @property
     def panel_illumination(self) -> list[float | None]:

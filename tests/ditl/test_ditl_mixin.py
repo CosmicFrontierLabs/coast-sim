@@ -283,7 +283,9 @@ class TestDITLMixin:
             1000.0, ACSMode.SCIENCE, 60, collection_seconds=60
         )
         ditl.config.housekeeping_generated.assert_called_with(ANY, mode=ACSMode.SCIENCE)
-        ditl.config.science_generated.assert_called_once_with(60, science=None)
+        ditl.config.science_generated.assert_called_once_with(
+            60, science=None, instrument_modes=None
+        )
 
     def test_process_data_management_science_mode_calls_add_data(
         self, ditl_with_payload_and_recorder: DITLMixin

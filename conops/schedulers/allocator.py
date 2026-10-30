@@ -26,7 +26,7 @@ from ..simulation.coverage import StationCoverage
 from ..simulation.passes import Pass
 from ..targets import Pointing
 from ..targets.merit import MeritModel
-from ..targets.plan_entry import snapshot_min_seconds
+from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
 from .context import SchedulingContext
 from .recorder import contact_downlink_gb
 
@@ -1038,10 +1038,11 @@ class LongRangeAllocator:
                 visible[k] = seen
         category = self.merit_model.category(target)
         merit = self.merit_model.value_terms(target, start, delivered_shares=shares)
+        modes = instrument_modes_of(target)
         generated: dict[str, tuple[float, float]] = {}
         for name, view in self.config.recorder_views().items():
-            fixed = view.science_generated(0.0, target.science_data)
-            rate = view.science_generated(1.0, target.science_data) - fixed
+            fixed = view.science_generated(0.0, target.science_data, modes)
+            rate = view.science_generated(1.0, target.science_data, modes) - fixed
             generated[name] = (max(0.0, rate), max(0.0, fixed))
         return _Demand(
             obsid=obsid,
