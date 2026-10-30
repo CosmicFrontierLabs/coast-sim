@@ -127,11 +127,13 @@ Under ``spacecraft_bus.attitude_control.stored_momentum``:
   ``duration_seconds`` (default 120) the dump holds the spacecraft, and
   ``residual_fraction`` (default 0) it leaves in the wheels. A dump needs a
   capacity. None: no thrusters, so the wheels fill until a run reports it.
-* ``enforce_capacity`` (bool, default ``False``): the other use of a capacity,
-  exclusive with dumps: the executed motion is certified against it and an
-  observation admitted only where it fits, with the run failing otherwise (see
-  the capacity enforcement under :doc:`configuration`). Everything on this page
-  is the dumps' side.
+* ``enforce_capacity`` (bool, default ``False``): the capacity enforced on the
+  executed motion as well: every slew and hold is certified against it before it
+  is flown and an observation admitted only where it fits, with the run failing
+  otherwise (see the capacity enforcement under :doc:`configuration`). Enforcement
+  integrates into the same tracker as everything on this page, so it combines
+  with the dumps: a dump empties the wheels, and enforcement forecasts on from
+  what they hold.
 * ``slew_momentum_enabled`` (bool, default ``False``): whether the momentum the body
   carries while it slews counts against the capacity (see `Slews`_). Needs a
   capacity and an inertia tensor; on its own it enables tracking.

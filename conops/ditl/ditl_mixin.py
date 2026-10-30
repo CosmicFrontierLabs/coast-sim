@@ -33,7 +33,7 @@ from ..simulation.momentum import (
     slew_sample_interval_s,
     tracker_from_config,
 )
-from ..simulation.momentum_budget import MomentumLimitError
+from ..simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry
@@ -465,10 +465,6 @@ class DITLMixin:
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
         momentum_config = getattr(attitude_control, "stored_momentum", None)
-        if getattr(momentum_config, "capacity_enabled", False) is True:
-            # Enforcement owns integration at actual trajectory boundaries,
-            # independently of housekeeping cadence. Do not integrate twice.
-            return None
         if getattr(momentum_config, "enabled", False) is not True:
             return None
         assert momentum_config is not None
@@ -486,9 +482,20 @@ class DITLMixin:
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
-        """Reload the run's inputs."""
-        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+        """Reload the run's inputs. Where the capacity is enforced, the
+        executor's budget integrates into this tracker, so the ACS is given
+        it before the budget exists, or the budget adopts it."""
+        tracker = self._build_stored_momentum_tracker()
+        self._stored_momentum_tracker = tracker
         self._momentum_previous: _MomentumInputs | None = None
+        acs = getattr(self, "acs", None)
+        if acs is None:
+            return
+        acs.momentum_tracker = tracker
+        budget = getattr(acs, "momentum_budget", None)
+        executor = getattr(acs, "_executor", None)
+        if tracker is not None and isinstance(budget, MomentumBudget) and executor:
+            budget.adopt(tracker, executor.state)
 
     def _update_stored_momentum(
         self,
@@ -506,8 +513,8 @@ class DITLMixin:
         sampled from the ACS at the configured attitude step, with the orbit
         interpolated between the step's ends, so the torque along the slew is
         integrated whatever the resolution. Where the capacity is enforced,
-        the executor's budget integrates instead, at the motion's own
-        boundaries, and its last sample is reported.
+        the executor's budget integrates into the same tracker instead, at
+        the motion's own boundaries, and its last sample is reported.
         """
         if (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
@@ -617,6 +624,11 @@ class DITLMixin:
             return
         before = tracker.stored_momentum_norm_n_m_s
         tracker.unload(dump.residual_fraction)
+        budget = getattr(self.acs, "momentum_budget", None)
+        executor = getattr(self.acs, "_executor", None)
+        if isinstance(budget, MomentumBudget) and executor is not None:
+            # Enforcement forecasts from the emptied wheels from here on.
+            budget.unloaded(executor.state)
         self.log.log_event(
             utime=utime,
             event_type="MOMENTUM",

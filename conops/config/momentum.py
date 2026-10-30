@@ -87,9 +87,9 @@ class StoredMomentumConfig(ConfigModel):
             "with a return to the departure attitude (slew_rate_fractions, "
             "roll_step_deg), and a run that cannot continue within it fails. "
             "Off, the capacity is the red line thruster dumps keep the wheels "
-            "under and fault management records; the two are exclusive, since "
-            "enforcement integrates the momentum in the executor and dumps need "
-            "the run's tracker"
+            "under and fault management records. With thrusters too, the dumps "
+            "empty the wheels at the planning level and enforcement forecasts "
+            "on from what they hold"
         ),
     )
     slew_rate_fractions: tuple[float, ...] = Field(
@@ -266,11 +266,6 @@ class StoredMomentumConfig(ConfigModel):
     def _dumps_need_a_capacity(self) -> "StoredMomentumConfig":
         if self.thruster_dump is not None and self.capacity_n_m_s is None:
             raise ValueError("thruster dumps need capacity_n_m_s to be triggered at")
-        if self.enforce_capacity and self.thruster_dump is not None:
-            raise ValueError(
-                "enforce_capacity and thruster_dump are exclusive: enforcement "
-                "integrates the momentum in the executor, dumps need the run's tracker"
-            )
         if self.slew_momentum_enabled and self.capacity_n_m_s is None:
             raise ValueError(
                 "slew momentum needs capacity_n_m_s to be admitted against"
@@ -295,6 +290,7 @@ class StoredMomentumConfig(ConfigModel):
             or self.magnetorquer_max_dipole_a_m2 is not None
             or self.residual_dipole_body_a_m2 is not None
             or self.slew_momentum_enabled
+            or self.capacity_enabled
         )
 
     @field_validator("initial_momentum_body_n_m_s", "residual_dipole_body_a_m2")

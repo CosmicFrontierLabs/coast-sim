@@ -419,8 +419,9 @@ Set ``stored_momentum.enforce_capacity`` with a finite positive spherical actuat
 momentum limit in ``stored_momentum.capacity_n_m_s`` to enable admission and
 execution checks. The default leaves existing scheduling unchanged. A physical
 inertia tensor is required, even when gravity-gradient torque is disabled.
-Enforcement and thruster dumps are exclusive: enforcement integrates the momentum
-in the executor, dumps need the run's tracker.
+Enforcement integrates the same torque sources the run tracks, into the run's own
+tracker, so it can be combined with thruster dumps: the dumps empty the wheels at
+the planning level and enforcement forecasts on from what they hold.
 
 The executor carries total angular momentum in inertial coordinates. At each
 sample the required actuator momentum in body coordinates is
@@ -488,8 +489,8 @@ for all idle recovery maneuvers; retain the executed attitude history for auditi
 
 This is a sampled rigid-body feasibility model, not a continuous-time certificate
 or a full actuator simulation. It does not include CMG steering singularities,
-individual actuator limits, magnetorquer unloading, moving-array inertia, or
-disturbances other than the enabled gravity-gradient torque. Check convergence
+individual actuator limits, moving-array inertia, or disturbances other than the
+configured torque sources. Check convergence
 and allow appropriate engineering margin. The bounded roll/speed search and
 return-to-departure fallback are conservative: rejecting a candidate does not
 prove it physically impossible, and the resulting yield is not maximum capacity.

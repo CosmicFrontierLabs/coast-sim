@@ -218,12 +218,114 @@ class OrbitSample:
         )
 
 
+@dataclass(frozen=True)
+class OrbitTables:
+    """An ephemeris as the arrays a torque bound is taken over: the sample
+    times, the ECI positions, and where the ephemeris has them the ECI
+    velocities, the Earth-fixed positions and the Sun's ECI positions."""
+
+    times: npt.NDArray[np.float64]
+    positions_eci_km: npt.NDArray[np.float64]
+    velocities_eci_km_s: npt.NDArray[np.float64] | None = None
+    positions_ecef_km: npt.NDArray[np.float64] | None = None
+    sun_positions_eci_km: npt.NDArray[np.float64] | None = None
+
+    @classmethod
+    def from_ephem(cls, ephem: object) -> OrbitTables:
+        """The tables of ``ephem``; a test double may lack all but the
+        positions."""
+        from ..common.ephemeris import position_vectors, velocity_vectors
+
+        times = np.array(
+            [t.timestamp() for t in ephem.timestamp],  # type: ignore[attr-defined]
+            dtype=np.float64,
+        )
+        positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)  # type: ignore[arg-type]
+        sun = getattr(getattr(ephem, "sun_pv", None), "position", None)
+        ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
+        velocities = velocity_vectors(ephem)  # type: ignore[arg-type]
+        return cls(
+            times,
+            positions,
+            velocities,
+            np.asarray(ecef, dtype=np.float64) if ecef is not None else None,
+            np.asarray(sun, dtype=np.float64) if sun is not None else None,
+        )
+
+    def min_radius_km(self) -> float:
+        """The least distance from the Earth's centre along the orbit,
+        inside each linearly interpolated segment, not only at the samples."""
+        first, delta = (
+            self.positions_eci_km[:-1],
+            np.diff(self.positions_eci_km, axis=0),
+        )
+        if len(first) == 0:
+            return float(np.linalg.norm(self.positions_eci_km[0]))
+        length2 = np.sum(delta * delta, axis=1)
+        fraction = np.clip(
+            -np.sum(first * delta, axis=1) / np.where(length2 > 0, length2, 1), 0, 1
+        )
+        return float(np.linalg.norm(first + fraction[:, None] * delta, axis=1).min())
+
+    def max_flow_km_s(self) -> float:
+        """The greatest speed relative to the atmosphere along the orbit;
+        zero without velocities."""
+        if self.velocities_eci_km_s is None:
+            return 0.0
+        rotation = np.array([0.0, 0.0, EARTH_ROTATION_RATE_RAD_S], dtype=np.float64)
+        flow = self.velocities_eci_km_s - np.cross(rotation, self.positions_eci_km)
+        return float(np.linalg.norm(flow, axis=1).max())
+
+    def max_field_t(self, field: GeomagneticField) -> float:
+        """The strongest geomagnetic field along the orbit; zero without
+        Earth-fixed positions, where the sources see no field either."""
+        if self.positions_ecef_km is None:
+            return 0.0
+        return max(
+            float(np.linalg.norm(field.field_eci_t(position, ecef, float(utime))))
+            for utime, position, ecef in zip(
+                self.times, self.positions_eci_km, self.positions_ecef_km, strict=True
+            )
+        )
+
+    def min_sun_distance_km(self) -> float:
+        """The least distance to the Sun along the orbit; one astronomical
+        unit without the Sun's positions."""
+        if self.sun_positions_eci_km is None:
+            return ASTRONOMICAL_UNIT_KM
+        return float(
+            np.linalg.norm(
+                self.sun_positions_eci_km - self.positions_eci_km, axis=1
+            ).min()
+        )
+
+
 class TorqueSource(Protocol):
-    """One environmental torque, evaluated in the body frame."""
+    """One environmental torque, evaluated in the body frame, with a bound
+    on its magnitude along an orbit."""
 
     name: str
 
     def torque_body_n_m(self, sample: OrbitSample) -> npt.NDArray[np.float64]: ...
+
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float: ...
+
+
+def _surface_lever_m2_m(surfaces: SurfaceModel, weights: Sequence[float]) -> float:
+    """Σ weight × area × lever arm over the plates, for a force bound."""
+    center_of_mass = np.asarray(surfaces.center_of_mass_m, dtype=np.float64)
+    return float(
+        sum(
+            weight
+            * surface.area_m2
+            * float(
+                np.linalg.norm(
+                    np.asarray(surface.center_m, dtype=np.float64) - center_of_mass
+                )
+            )
+            for weight, surface in zip(weights, surfaces.surfaces, strict=True)
+        )
+    )
 
 
 class GravityGradientTorque:
@@ -250,6 +352,20 @@ class GravityGradientTorque:
             dtype=np.float64,
         )
 
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float:
+        """At most 3μ/(2r³) times the spread of the principal moments, at
+        the orbit's lowest point."""
+        radius_km = orbit.min_radius_km()
+        if radius_km <= 0.0:
+            return float("inf")
+        moments = np.linalg.eigvalsh(self.inertia_tensor_body_kg_m2)
+        return float(
+            1.5
+            * EARTH_GRAVITATIONAL_PARAMETER_KM3_S2
+            * (moments[-1] - moments[0])
+            / radius_km**3
+        )
+
 
 class SolarRadiationPressureTorque:
     """Sunlight on the spacecraft's surfaces; nothing where the Sun vector
@@ -265,6 +381,22 @@ class SolarRadiationPressureTorque:
             return np.zeros(3, dtype=np.float64)
         return solar_radiation_pressure_torque_body(
             sample.to_body(sample.sun_eci_km), self.surfaces, sunlit=sample.sunlit
+        )
+
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float:
+        """Every plate lit face-on at the orbit's nearest approach to the
+        Sun: the force on a plate is at most the pressure times its area
+        times 1 + ρs + 2ρd/3."""
+        pressure = (
+            SOLAR_PRESSURE_N_M2
+            * (ASTRONOMICAL_UNIT_KM / orbit.min_sun_distance_km()) ** 2
+        )
+        return pressure * _surface_lever_m2_m(
+            self.surfaces,
+            [
+                1.0 + s.specular_reflectivity + 2.0 * s.diffuse_reflectivity / 3.0
+                for s in self.surfaces.surfaces
+            ],
         )
 
 
@@ -291,6 +423,32 @@ class AerodynamicDragTorque:
         self.last_density_kg_m3 = density
         return aerodynamic_drag_torque_body(
             sample.to_body(flow), density, self.surfaces
+        )
+
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float:
+        """Every plate facing the flow at the orbit's densest point and
+        greatest speed."""
+        speed_m_s = orbit.max_flow_km_s() * 1000.0
+        if speed_m_s <= 0.0:
+            return 0.0
+        ecefs = (
+            orbit.positions_ecef_km
+            if orbit.positions_ecef_km is not None
+            else [None] * len(orbit.times)
+        )
+        density = max(
+            self.atmosphere.density_kg_m3(float(utime), position, ecef)
+            for utime, position, ecef in zip(
+                orbit.times, orbit.positions_eci_km, ecefs, strict=True
+            )
+        )
+        return (
+            0.5
+            * density
+            * speed_m_s**2
+            * _surface_lever_m2_m(
+                self.surfaces, [s.drag_coefficient for s in self.surfaces.surfaces]
+            )
         )
 
 
@@ -347,6 +505,10 @@ class MagnetorquerUnloading:
             return np.zeros(3, dtype=np.float64)
         return np.asarray(np.cross(self.dipole_body_a_m2(momentum, field), field))
 
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float:
+        """The greatest dipole across the strongest field along the orbit."""
+        return self.max_dipole_a_m2 * orbit.max_field_t(self.field)
+
 
 class ResidualDipoleTorque:
     """The torque of the geomagnetic field on the spacecraft's residual
@@ -367,6 +529,12 @@ class ResidualDipoleTorque:
         if field is None:
             return np.zeros(3, dtype=np.float64)
         return np.asarray(np.cross(self.dipole_body_a_m2, field), dtype=np.float64)
+
+    def torque_bound_n_m(self, orbit: OrbitTables) -> float:
+        """The dipole across the strongest field along the orbit."""
+        return float(np.linalg.norm(self.dipole_body_a_m2)) * orbit.max_field_t(
+            self.field
+        )
 
 
 @dataclass(frozen=True)
@@ -477,6 +645,15 @@ class StoredMomentumTracker:
             value = getattr(self, name)
             setattr(result, name, None if value is None else value.copy())
         return result
+
+    def assign(self, other: StoredMomentumTracker) -> None:
+        """Take ``other``'s integration state, as a live tracker does from a
+        forecast committed on a copy of it."""
+        for name in ("_momentum_eci_n_m_s", "_previous_torque_eci_n_m"):
+            value = getattr(other, name)
+            setattr(self, name, None if value is None else value.copy())
+        self._previous_utime = other._previous_utime
+        self._actuator_norm_n_m_s = other._actuator_norm_n_m_s
 
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state, where a
