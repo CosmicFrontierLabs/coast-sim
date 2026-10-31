@@ -29,13 +29,11 @@ from .constants import (
 
 # Cache precision for constraint results.
 # RA/Dec rounded to 0.01 deg (~36 arcsec) - small vs typical constraint zones (10+ deg)
-# Time rounded to 1 second - constraint geometry changes slowly
+# Keep requested times exact: subsecond maneuver samples can straddle a keepout.
 _RA_DEC_PRECISION = 2  # decimal places
-_TIME_PRECISION = 0  # round to nearest second
 
 # Integer-based rounding multipliers for faster key generation
 _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
-_TIME_ROUNDER = 10**_TIME_PRECISION
 
 
 class AttitudeConstraintScope(str, Enum):
@@ -91,7 +89,7 @@ def _round_constraint_key(
         constraint_type,
         int(ra * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
         int(dec * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
-        int(utime * _TIME_ROUNDER) / _TIME_ROUNDER if _TIME_ROUNDER > 1 else int(utime),
+        utime,
         None
         if target_roll is None
         else int(target_roll * _RA_DEC_ROUNDER) / _RA_DEC_ROUNDER,
@@ -103,7 +101,8 @@ class Constraint(ConfigModel):
 
     Constraint checks are cached to avoid redundant computations when the same
     (ra, dec, time) is checked multiple times. Cache keys are rounded to avoid
-    floating-point mismatches (RA/Dec to 0.01 deg, time to 1 second).
+    floating-point mismatches in angles (RA/Dec to 0.01 deg). Times stay exact
+    so fractional maneuver samples cannot reuse a different time's result.
 
     The cache grows during a simulation run. For a 12-hour DITL with 50 targets:
     - ~60K cache entries
