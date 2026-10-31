@@ -186,6 +186,35 @@ def _roll_valid_mask(
     return None if mask.all() else mask
 
 
+def _science_roll_filter(
+    constraint: Constraint | None, science_attitude: bool
+) -> Constraint | None:
+    """The constraint whose explicit science constraint the candidates must
+    be tested against roll by roll, or None when there is nothing to test."""
+    # A test double for the constraint has no science constraint to speak of.
+    if not science_attitude or not isinstance(constraint, Constraint):
+        return None
+    return constraint if constraint.science_constraint_roll_dependent else None
+
+
+def _first_science_clear_roll(
+    scores: npt.NDArray[np.float64],
+    reference_roll: float | None,
+    constraint: Constraint,
+    ra: float,
+    dec: float,
+    utime: float,
+) -> float:
+    """The best-power roll that keeps the explicit science constraint clear,
+    or the best-power roll when none does, and the attitude check reports
+    the constraint at it."""
+    for candidate in _power_score_order(scores, reference_roll):
+        roll = float(_ROLL_DEGREES[candidate])
+        if not constraint.in_explicit_science(ra, dec, utime, target_roll=roll):
+            return roll
+    return _best_power_roll(scores, reference_roll)
+
+
 def _sun_at_zero_roll(
     ra: float, dec: float, utime: float, ephem: rust_ephem.Ephemeris
 ) -> npt.NDArray[np.float64]:
@@ -206,8 +235,17 @@ def optimum_body_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     drive_state: SolarArrayDriveState | None = None,
+    science_attitude: bool = True,
 ) -> float:
-    """Return the power-optimal physical body roll at the current array state."""
+    """Return the power-optimal physical body roll at the current array state.
+
+    For a science attitude, a roll-dependent explicit science constraint (a
+    field-of-view polygon, as a stray-light patch beside the boresight is
+    written, or a boresight offset) is tested roll by roll in power order and
+    the first clear roll taken, or the power-optimal roll when none is clear.
+    A charging, safe or idle attitude (``science_attitude=False``) takes the
+    power-optimal roll.
+    """
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
     sun_at_zero = _sun_at_zero_roll(ra, dec, utime, ephem)
     candidate_mask = _roll_valid_mask(ra, dec, utime, ephem, constraint)
@@ -218,11 +256,13 @@ def optimum_body_roll(
         if not candidate_mask.any():
             assert reference is not None
             return reference
+    science_filter = _science_roll_filter(constraint, science_attitude)
 
     if (
         (solar_panel is None or not solar_panel.panels)
         and candidate_mask is None
         and reference is None
+        and science_filter is None
     ):
         sun = sun_at_zero / np.linalg.norm(sun_at_zero)
         return float((np.arctan2(sun[2], sun[1]) / DTOR) % 360.0)
@@ -232,6 +272,10 @@ def optimum_body_roll(
     )
     if candidate_mask is not None:
         scores = np.where(candidate_mask, scores, -np.inf)
+    if science_filter is not None:
+        return _first_science_clear_roll(
+            scores, reference, science_filter, ra, dec, utime
+        )
     return _best_power_roll(scores, reference)
 
 

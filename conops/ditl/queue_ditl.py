@@ -9,7 +9,7 @@ from typing import Protocol, TypedDict
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from ..common import (
     ACSMode,
@@ -24,7 +24,8 @@ from ..common import (
     whole_steps,
 )
 from ..common.enums import ACSCommandType, SlewAlgorithm
-from ..common.ephemeris import position_vectors
+from ..common.ephemeris import position_vectors, sun_vector_change_deg
+from ..common.numerics import TIME_TOLERANCE_S
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import (
     DAY_SECONDS,
@@ -64,6 +65,7 @@ from ..targets import (
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
 from ..targets.sequence import ObservationSequence
+from ..targets.too import TOORequest
 from .ditl_log import DITLLog
 from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
 from .ditl_stats import DITLStats
@@ -120,47 +122,6 @@ class _HasTimestampMethod(Protocol):
     """
 
     def timestamp(self) -> float: ...
-
-
-class TOORequest(BaseModel):
-    """A Target of Opportunity (TOO) request waiting to be executed.
-
-    Attributes:
-        obsid: Unique observation identifier for this TOO
-        ra: Right ascension in degrees
-        dec: Declination in degrees
-        merit: Priority merit value (higher = more urgent)
-        exptime: Requested exposure time in seconds
-        name: Human-readable name for the TOO target
-        submit_time: Unix timestamp when the TOO becomes active. If 0.0,
-            the TOO is active immediately from simulation start.
-        deadline: Latest Unix time science collection may begin, or None for
-            no deadline. Urgency rises as it approaches, and the TOO cannot be
-            selected after it.
-        science_data: Science data observing the TOO generates, keyed by
-            instrument name; other instruments generate their own.
-        executed: Whether this TOO has been dispatched as the current
-            observation
-    """
-
-    obsid: int
-    ra: float
-    dec: float
-    merit: float
-    exptime: int
-    name: str
-    submit_time: float = 0.0
-    deadline: float | None = None
-    instrument_modes: dict[str, str] = Field(
-        default_factory=dict, exclude_if=lambda v: not v
-    )
-    """The instruments observing the TOO uses and the mode each is in, by
-    name; empty: every instrument with modes, in SCIENCE."""
-    science_data: dict[str, ScienceData] = Field(default_factory=dict)
-    interrupt: bool = True
-    """Whether the TOO may cut short the observation in progress. If False it
-    waits for that observation to end."""
-    executed: bool = False
 
 
 class _ScienceDeadlineInputs(BaseModel):
@@ -398,19 +359,21 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def submit_too(
         self,
-        obsid: int,
-        ra: float,
-        dec: float,
-        merit: float,
-        exptime: int,
-        name: str,
+        obsid: int | TOORequest,
+        ra: float = 0.0,
+        dec: float = 0.0,
+        merit: float = 0.0,
+        exptime: int = 0,
+        name: str = "",
         submit_time: float | datetime | None = None,
         deadline: float | datetime | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
         interrupt: bool = True,
         instrument_modes: Mapping[str, str] | None = None,
     ) -> TOORequest:
-        """Submit a Target of Opportunity (TOO) request.
+        """Submit a Target of Opportunity (TOO) request: a
+        :class:`~conops.targets.TOORequest` holding any request, or the
+        fields of a plain pointing.
 
         A TOO is an ordinary queue request with a short window. Once its
         ``submit_time`` is reached it joins the target queue with its own merit
@@ -466,21 +429,30 @@ class QueueDITL(DITLMixin, DITLStats):
             ...     submit_time=ditl.ustart + 3600,
             ... )
         """
+        if isinstance(obsid, TOORequest):
+            too = obsid
+            self.config.payload.check_request(dict(too.instrument_modes))
+            self.too_register.append(too)
+            return too
         self.config.payload.check_request(dict(instrument_modes or {}))
-        too = TOORequest(
-            obsid=obsid,
-            ra=ra,
-            dec=dec,
-            merit=merit,
-            exptime=exptime,
-            name=name,
-            # None means active immediately (0.0 is always <= any simulation time)
-            submit_time=unixtime_from(submit_time) if submit_time is not None else 0.0,
-            deadline=unixtime_from(deadline) if deadline is not None else None,
-            science_data=dict(science_data or {}),
-            interrupt=interrupt,
-            instrument_modes=dict(instrument_modes or {}),
-            executed=False,
+        too = TOORequest.model_validate(
+            {
+                "config": self.config,
+                "obsid": obsid,
+                "ra": ra,
+                "dec": dec,
+                "merit": merit,
+                "exptime": exptime,
+                "name": name,
+                # None means active immediately (0.0 is always <= any simulation time)
+                "submit_time": unixtime_from(submit_time)
+                if submit_time is not None
+                else 0.0,
+                "deadline": unixtime_from(deadline) if deadline is not None else None,
+                "science_data": dict(science_data or {}),
+                "interrupt": interrupt,
+                "instrument_modes": dict(instrument_modes or {}),
+            }
         )
         self.too_register.append(too)
         return too
@@ -489,17 +461,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return the queue target for an active TOO, adding it on first use."""
         target = self._too_targets.get(id(too))
         if target is None:
-            target = self.queue.add(
-                ra=too.ra,
-                dec=too.dec,
-                obsid=too.obsid,
-                name=too.name,
-                merit=too.merit,
-                exptime=too.exptime,
-                deadline=too.deadline,
-                science_data=too.science_data,
-                instrument_modes=too.instrument_modes,
-            )
+            request = too.target_for(self.config)
+            assert isinstance(request, Pointing)
+            target = self.queue.add_request(request)
             self._too_targets[id(too)] = target
             self.log.log_event(
                 utime=max(too.submit_time, self.ustart),
@@ -665,6 +629,7 @@ class QueueDITL(DITLMixin, DITLStats):
         # interrupted observation, is held out of this selection.
         interrupted = self.ppt
         ppt_unavailable = self._ppt_unavailable
+        sequence_before = self._sequence
         candidates = outranking
         while True:
             if not candidates:
@@ -694,10 +659,19 @@ class QueueDITL(DITLMixin, DITLStats):
                 for target in held_out:
                     target.done = False
             if replacement is None or slew is None:
+                self._sequence = sequence_before
                 self._ppt_unavailable = ppt_unavailable
                 return False
+            taken = (
+                self._sequence.parent
+                if self._sequence is not None
+                and self._sequence.parent is not replacement
+                else replacement
+            )
             too, _, offered_at = next(
-                item for item in candidates if item[1] is replacement
+                item
+                for item in candidates
+                if item[1] is replacement or item[1] is taken
             )
             # The value admission settled on, over the collection it admitted;
             # a queue that leaves no breakdown admitted it at the value offered.
@@ -708,7 +682,12 @@ class QueueDITL(DITLMixin, DITLStats):
             # candidate worth no more than the observation must not shut out
             # one that is worth more. Admission goes on without it.
             self._ppt_unavailable = ppt_unavailable
-            candidates = [item for item in candidates if item[1] is not replacement]
+            self._sequence = sequence_before
+            candidates = [
+                item
+                for item in candidates
+                if item[1] is not replacement and item[1] is not taken
+            ]
         self.log.log_event(
             utime=utime,
             event_type="TOO",
@@ -720,6 +699,10 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=too.obsid,
             acs_mode=self.acs.acsmode,
         )
+        # Admission may have begun the replacement's sequence visit; ending
+        # the interrupted observation must not cut that visit short.
+        replacement_run = self._sequence
+        self._sequence = None
         self._terminate_ppt(
             utime,
             reason=f"Preempted by TOO {too.name} (obsid={too.obsid})",
@@ -727,6 +710,7 @@ class QueueDITL(DITLMixin, DITLStats):
             mark_done=False,  # Don't mark as done, it was interrupted
         )
         self.ppt = replacement
+        self._sequence = replacement_run
         self._command_ppt_slew(utime, slew)
         too.executed = True
         return True
@@ -849,8 +833,13 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if slew is None or preview.ppt is None:
             return None
+        # A sequence target is taken up as its first step's pointing: the
+        # candidate behind it is the visit's parent.
+        taken = preview._sequence.parent if preview._sequence is not None else None
         too, target, value = next(
-            item for item in candidates if memo[id(item[1])] is preview.ppt
+            item
+            for item in candidates
+            if memo[id(item[1])] is preview.ppt or memo[id(item[1])] is taken
         )
         # The value admission settled on, over the collection it admitted.
         admitted = preview.ppt.merit_breakdown or value
@@ -879,6 +868,10 @@ class QueueDITL(DITLMixin, DITLStats):
         self._committed_too = None
         target = commitment.target
         prepared = commitment.prepared
+        if isinstance(getattr(target, "sequence", None), ObservationSequence):
+            # A sequence target is observed step by step: the admitted
+            # observation is its first step, which takes the prepared slew.
+            target = self._begin_sequence(target, utime)
         for name in (
             "begin",
             "end",
@@ -907,6 +900,10 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=target.obsid,
             acs_mode=self.acs.acsmode,
         )
+        # The sequence visit begun for the replacement must not be cut by
+        # the end of the observation it replaces.
+        replacement_run = self._sequence
+        self._sequence = None
         self._terminate_ppt(
             utime,
             reason=f"Preempted by TOO {commitment.request.name} (obsid={target.obsid})",
@@ -915,6 +912,7 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.ppt = target
         self._momentum_recovery = commitment.momentum_recovery
+        self._sequence = replacement_run
         self.acs.slew_dists.append(commitment.slew.slewdist)
         self.acs.enqueue_command(
             ACSCommand(
@@ -1312,6 +1310,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self._desaturations += 1
         self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
+        # The dump answers any dump called for while an observation ran.
+        self._dump_pending = False
 
     def _within_momentum(self, utime: float, ra: float, dec: float, slew: Slew) -> bool:
         """Whether the observation just selected begins as bounded, given
@@ -1446,7 +1446,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ).norms
             if len(from_empty) and from_empty.max() >= capacity:
                 assert self._sequence is not None
-                parent = self._sequence.parent
+                parent = self._request_of(self._sequence.parent)
                 self.log.log_event(
                     utime=utime,
                     event_type="MOMENTUM",
@@ -1752,7 +1752,13 @@ class QueueDITL(DITLMixin, DITLStats):
             self.config, self._activity_attitude, begin=self._activity_started
         )
         entry.end = min(utime, self._activity_end)
-        self.plan.append(entry)
+        # Recorded when it ends, after any contact that began inside it: the
+        # plan is kept in order of beginning.
+        entries = self.plan.entries
+        index = len(entries)
+        while index > 0 and float(entries[index - 1].begin) > float(entry.begin):
+            index -= 1
+        entries.insert(index, entry)
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
@@ -1764,6 +1770,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if activity.desaturation:
             self.acs.end_desaturation()
             self._unload_stored_momentum(utime, activity.obsid)
+            # The wheels are empty: nothing called for before the dump stands.
+            self._dump_pending = False
 
     def _ppt_deadline(self, target: Pointing | None = None) -> float | None:
         """The latest time the observation may begin collecting: its visit
@@ -1969,14 +1977,19 @@ class QueueDITL(DITLMixin, DITLStats):
             # Credit the visit at the end of what was collected, not the tick
             # start, so cadence scoring sees how recently the target was observed.
             visit = self.ppt.visit
-            self.ppt.record_collection(collection_stop, collection_seconds, visit=visit)
+            self.ppt.record_collection(
+                collection_stop, collection_seconds, visit=visit, step=self.step_size
+            )
             if self._sequence is not None and self.ppt.step is not None:
-                parent = self._request_of(self._sequence.parent)
+                parent = self._sequence.parent
                 if self.ppt.calibration:
                     parent.record_calibration(collection_stop, collection_seconds)
                 else:
                     parent.record_collection(
-                        collection_stop, collection_seconds, visit=visit
+                        collection_stop,
+                        collection_seconds,
+                        visit=visit,
+                        step=self.step_size,
                     )
         # Use the mixin method to process data generation and downlink
         data_generated, data_downlinked = self._process_data_management(
@@ -2206,6 +2219,12 @@ class QueueDITL(DITLMixin, DITLStats):
     def validate_plan_matches_execution(self) -> list[PlanExecutionMismatch]:
         """Return plan/ACS mismatches over exported science and contact intervals."""
         return self._plan_validator().validate()
+
+    def slew_requirement_mismatches(self) -> list[PlanExecutionMismatch]:
+        """The slews of the executed plan that took longer than their
+        requirement class allows (``attitude_control.slew_requirements``);
+        empty without a table. A report, not a fault: the run completes."""
+        return self._plan_validator().slew_requirement_mismatches()
 
     def _assert_plan_matches_execution(self) -> None:
         """Raise if the exported plan doesn't match executed telemetry, logging the first mismatch."""
@@ -2604,6 +2623,9 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.slewtime = int(round(slew.slewtime))
         entry.slew_rate_fraction = slew.rate_fraction
         entry.slewdist = float(slew.slewdist)
+        entry.great_circle_deg = float(slew.great_circle_deg)
+        entry.sun_vector_change_deg = float(slew.sun_vector_change_deg)
+        entry.settle_seconds = float(slew.settle_seconds or 0.0)
         entry.slewpath = slew.slewpath
         if entry.uses_mounted_attitude():
             entry.spacecraft_attitude = (
@@ -2672,7 +2694,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if entry_begin <= slew_start < entry_end:
             return True
 
-        return abs(entry_begin - slew_start) <= 1e-6
+        return abs(entry_begin - slew_start) <= TIME_TOLERANCE_S
 
     def _sync_gsp_slew_metadata(self, slew: Slew) -> None:
         """Update the GSP plan entry's timing/roll from its associated executed slew."""
@@ -2681,6 +2703,9 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.begin = int(slew.slewstart)
             entry.slewtime = int(round(slew.slewtime))
             entry.slewdist = float(slew.slewdist)
+            entry.great_circle_deg = float(slew.great_circle_deg)
+            entry.sun_vector_change_deg = float(slew.sun_vector_change_deg)
+            entry.settle_seconds = float(slew.settle_seconds or 0.0)
             entry.roll = float(slew.endroll)
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
@@ -2921,6 +2946,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ephem,
                 self.config.solar_panel,
                 self.constraint,
+                science_attitude=False,
                 drive_state=self.acs.solar_array_drive_state,
             )
             for roll in self.acs._idle_safe_roll_candidates(preferred_roll):
@@ -3263,6 +3289,9 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if slew is not None:
             entry.slewdist = float(slew.slewdist)
+            entry.great_circle_deg = float(slew.great_circle_deg)
+            entry.sun_vector_change_deg = float(slew.sun_vector_change_deg)
+            entry.settle_seconds = float(slew.settle_seconds or 0.0)
         entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
@@ -3329,8 +3358,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 entry.station == station
                 and contact_begin is not None
                 and contact_end is not None
-                and abs(float(contact_begin) - pass_begin) <= 1e-6
-                and abs(float(contact_end) - pass_end) <= 1e-6
+                and abs(float(contact_begin) - pass_begin) <= TIME_TOLERANCE_S
+                and abs(float(contact_end) - pass_end) <= TIME_TOLERANCE_S
             ):
                 return entry
         return None
@@ -4059,11 +4088,15 @@ class QueueDITL(DITLMixin, DITLStats):
 
         candidate = target or self.ppt
         if candidate is not None and deadline_inputs.request_openings:
-            # The observation ends when a request ranked above it must start.
+            # The observation ends when a request ranked above it must start,
+            # or one ranked below it that it can wait for; a sequence visit
+            # under way is not cut for the latter, since a cut visit is void.
+            visit_under_way = target is None and self._sequence is not None
             cut = self.queue.request_cut(
                 candidate,
                 deadline_inputs.request_openings,
                 deadline_inputs.simulation_end,
+                yield_to_lower=not visit_under_way,
             )
             if cut is not None:
                 deadlines.append((cut[0], f"request {cut[1]} must start"))
@@ -4286,8 +4319,16 @@ class QueueDITL(DITLMixin, DITLStats):
             body_roll,
         )
         attitude_control = self.config.spacecraft_bus.attitude_control
+        sun_change = self._selection_sun_vector_change(
+            target,
+            execution_time,
+            (startra, startdec, startroll),
+            (endra, enddec, body_roll),
+        )
         slewtime = scheduled_slew_time(
             attitude_control.slew_time(slewdist, rotation_axis_body)
+            if sun_change is None
+            else attitude_control.slew_time(slewdist, rotation_axis_body, sun_change)
         )
         mounted_telescope = (
             issubclass(type(target), PlanEntry) and target.uses_mounted_attitude()
@@ -4300,6 +4341,24 @@ class QueueDITL(DITLMixin, DITLStats):
             if mounted_telescope
             else None,
         )
+
+    def _selection_sun_vector_change(
+        self,
+        target: Pointing,
+        execution_time: float,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+    ) -> float | None:
+        """How far the slew into a candidate moves the Sun in the body frame,
+        for the thermal settling table; None where ``settle_time`` applies:
+        without a table, or for a category that skips the thermal settle."""
+        attitude_control = self.config.spacecraft_bus.attitude_control
+        table = getattr(attitude_control, "thermal_settling", None)
+        if not isinstance(table, list) or not table:
+            return None
+        if self.config.observation_categories.skips_thermal_settling(int(target.obsid)):
+            return None
+        return sun_vector_change_deg(self.ephem, execution_time, start, end)
 
     def _point_moving_target(
         self,
@@ -4653,6 +4712,9 @@ class QueueDITL(DITLMixin, DITLStats):
             target.ss_max,
             target.exptime if target.exptime is not None else target.ss_max,
         )
+        budget_left = self.queue.science_budget_left(target)
+        if isinstance(budget_left, (int, float)):
+            requested = min(requested, float(budget_left))
         limit = getattr(target, "collection_limit", None)
         if isinstance(limit, (int, float)):
             requested = min(requested, float(limit))

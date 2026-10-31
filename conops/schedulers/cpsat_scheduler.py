@@ -15,8 +15,9 @@ segment, between contacts, where its collection starts, and every segment's
 peak volume is kept within the planning limit, so the solver trades high-data
 science against low-data science directly.
 
-The model approximates slews (each target's roll is chosen before solving), so
-each chunk's order is decoded with the scheduler's exact checks before the next
+The model approximates slews (each target's roll is chosen before solving, and
+the thermal settle of each slew is for the Sun where it is at the chunk's origin),
+so each chunk's order is decoded with the scheduler's exact checks before the next
 chunk is solved from where it leaves the spacecraft. Every plan therefore
 executes as planned.
 """
@@ -31,7 +32,8 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 
 from ..common import ACSMode
-from ..common.vector import quaternion_attitude_delta
+from ..common.ephemeris import sun_direction
+from ..common.vector import attitude_to_quat, quaternion_deltas, scbodyvectors
 from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
@@ -71,6 +73,10 @@ down, so the model never counts less data than the ledger does."""
 _KB_ROUNDING = 1e-6
 """Kilobits within which a value is taken as the whole number it is next to,
 so a rate that is whole in gigabits per second does not round up."""
+
+
+_EMPTY_CHAIN = 2
+"""A chain of the start and end sentinels alone holds no task."""
 
 
 def _kb_up(gb: float) -> int:
@@ -293,10 +299,14 @@ class _ChunkModel:
         recorder: _ChunkRecorder | list[_ChunkRecorder] | None = None,
         battery: _ChunkBattery | None = None,
         allocated_left: Mapping[SpanKey, float] | None = None,
+        category_caps: Sequence[tuple[int, Sequence[int]]] = (),
     ) -> None:
         from ortools.sat.python import cp_model
 
         self.tasks = tasks
+        self.category_caps = list(category_caps)
+        """For each category with a time budget: the seconds its candidates
+        may collect in this chunk together, and the candidates' indices."""
         self.recorders = (
             recorder
             if isinstance(recorder, list)
@@ -541,6 +551,9 @@ class _ChunkModel:
                 objective.append(-task.late * product)
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
+        for cap, members in self.category_caps:
+            # A category's time budget: its candidates share what is left.
+            model.add(sum(self.counted[k] for k in members) <= cap)
         # Allocated seconds: collection that starts in a span of the request's
         # allocated time, up to what is left of it, is worth allocation_bonus
         # more.
@@ -805,7 +818,7 @@ class _ChunkModel:
         model = self.model
         chain = [0, *hint, 0]
         on_chain = set(zip(chain, chain[1:]))
-        model.add_hint(self.empty, len(chain) == 2)
+        model.add_hint(self.empty, len(chain) == _EMPTY_CHAIN)
         for (i, j), literal in self.arc_literals.items():
             model.add_hint(literal, (i, j) in on_chain)
         for k, task in enumerate(self.tasks):
@@ -904,11 +917,22 @@ class _ChunkModel:
             level += recorder.accrual[s] + volume[s]
 
     def solve(
-        self, time_limit: float, workers: int, seed: int, origin_time: float
-    ) -> tuple[str, list[_Snapshot] | None]:
-        """Solve, returning CP-SAT's status and the chosen snapshots in order.
+        self,
+        time_limit: float,
+        workers: int,
+        seed: int,
+        origin_time: float,
+        deterministic_time: float | None = None,
+    ) -> tuple[str, str, list[_Snapshot] | None]:
+        """Solve, returning CP-SAT's status, what ended its search (see
+        :func:`search_ending`) and the chosen snapshots in order.
 
-        The snapshots are None if the solver found no solution in time. A
+        The search ends at ``time_limit`` seconds of wall-clock time, or at
+        ``deterministic_time`` units of CP-SAT's deterministic time when
+        given, whichever comes first. A model CP-SAT finds invalid is one
+        the scheduler built wrong, not a search that ran out of time, and
+        raises. The snapshots are None if the solver found no solution in
+        time. A
         snapshot whose collection counts against allocated time is released
         (``origin_time`` plus its seconds from the origin) no earlier than its
         slew start, nor than the first arrival in the span: the model's slew
@@ -919,6 +943,8 @@ class _ChunkModel:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
+        if deterministic_time is not None:
+            solver.parameters.max_deterministic_time = deterministic_time
         solver.parameters.num_workers = workers
         # CP-SAT's seed is a signed 32-bit integer; the search's seed, like
         # Python's, can be any integer.
@@ -928,8 +954,19 @@ class _ChunkModel:
         solver.parameters.cp_model_presolve = False
         status = solver.solve(self.model)
         status_name = solver.status_name(status)
+        if status == cp_model.MODEL_INVALID:
+            raise ValueError(
+                f"CP-SAT found the chunk's model invalid: {solver.solution_info()}"
+            )
+        ended = search_ending(
+            status_name,
+            float(solver.wall_time),
+            time_limit,
+            float(solver.deterministic_time),
+            deterministic_time,
+        )
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return status_name, None
+            return status_name, ended, None
 
         chosen = sorted(
             (solver.value(self.arrival[k]), k)
@@ -947,7 +984,34 @@ class _ChunkModel:
                     slew = self.step * solver.value(self.slew_step[k])
                     release = origin_time + max(slew, _ceil(span.arrival[0], self.step))
             snapshots.append(_Snapshot(obsid=obsid, seconds=seconds, release=release))
-        return status_name, snapshots
+        return status_name, ended, snapshots
+
+
+LIMIT_REACHED_FRACTION = 0.95
+"""The fraction of a limit a search's time must reach to count as ended by it."""
+
+
+def search_ending(
+    status: str,
+    wall_seconds: float,
+    time_limit: float,
+    deterministic_seconds: float,
+    deterministic_time: float | None,
+) -> str:
+    """What ended a chunk's search: ``"optimal"`` where the solver proved its
+    answer, ``"deterministic budget"`` where that budget was reached,
+    ``"wall clock"`` where the wall-clock limit was, else ``"solver"`` for a
+    search the solver ended itself, as for an infeasible model."""
+    if status == "OPTIMAL":
+        return "optimal"
+    if (
+        deterministic_time is not None
+        and deterministic_seconds >= LIMIT_REACHED_FRACTION * deterministic_time
+    ):
+        return "deterministic budget"
+    if wall_seconds >= LIMIT_REACHED_FRACTION * time_limit:
+        return "wall clock"
+    return "solver"
 
 
 class CpSatScheduler(LocalSearchScheduler):
@@ -966,15 +1030,22 @@ class CpSatScheduler(LocalSearchScheduler):
        search (see :class:`~conops.schedulers.LocalSearchScheduler`).
 
     The plan returned is never worse than the priority-first plan;
-    :attr:`solver_chunks_used` shows where the solver improved on it. Takes
+    :attr:`solver_chunks_used` shows where the solver improved on it,
+    :attr:`solver_statuses` CP-SAT's status for each chunk and
+    :attr:`solver_limits` what ended each chunk's search. A chunk model
+    CP-SAT finds invalid raises a ``ValueError``. Takes
     the arguments of :class:`~conops.schedulers.LocalSearchScheduler`
     (``time_limit`` defaults to 0, so no local search), plus:
 
     Args:
         solver_time_limit: Seconds CP-SAT may search, shared across chunks.
+        solver_deterministic_time: Units of CP-SAT's deterministic time the
+            search may take, shared across chunks, so the search ends at the
+            same point every run whatever the machine's speed; the wall-clock
+            limit still applies. Set it, with ``workers`` 1 and ``seed``, for
+            runs that repeat exactly.
         chunk: Length of each chunk the horizon is solved in.
-        workers: CP-SAT search workers. Use 1, with ``seed``, for runs that
-            repeat exactly.
+        workers: CP-SAT search workers.
         max_candidates: Candidate snapshots in a chunk's model at most, those
             of the priority-first plan first, then in priority order.
     """
@@ -989,6 +1060,7 @@ class CpSatScheduler(LocalSearchScheduler):
         end: datetime,
         *,
         solver_time_limit: float = 20.0,
+        solver_deterministic_time: float | None = None,
         chunk: timedelta = timedelta(hours=3),
         workers: int = 8,
         max_candidates: int = 120,
@@ -1007,12 +1079,18 @@ class CpSatScheduler(LocalSearchScheduler):
             raise ValueError("solver_time_limit and chunk must be positive")
         if workers < 1 or max_candidates < 1:
             raise ValueError("workers and max_candidates must be positive")
+        if solver_deterministic_time is not None and solver_deterministic_time <= 0:
+            raise ValueError("solver_deterministic_time must be positive")
         self.solver_time_limit = solver_time_limit
+        self.solver_deterministic_time = solver_deterministic_time
+        self._deterministic_per_chunk: float | None = None
         self.chunk = chunk
         self.workers = workers
         self.max_candidates = max_candidates
         self.solver_statuses: list[str] = []
         """CP-SAT's final status for each chunk, such as OPTIMAL or FEASIBLE."""
+        self.solver_limits: list[str] = []
+        """What ended each chunk's search (see :func:`search_ending`)."""
         self.solver_chunks_used: list[bool] = []
         """For each chunk, whether the solver's snapshots were kept; if not,
         the priority-first plan's were, as they scored better."""
@@ -1049,14 +1127,28 @@ class CpSatScheduler(LocalSearchScheduler):
         chunk = self.chunk.total_seconds()
         chunks = max(1, int(np.ceil((self.ctx.uend - self.ctx.ustart) / chunk)))
         per_chunk = self.solver_time_limit / chunks
+        self._deterministic_per_chunk = (
+            None
+            if self.solver_deterministic_time is None
+            else self.solver_deterministic_time / chunks
+        )
         self.solver_statuses = []
+        self.solver_limits = []
         self.solver_chunks_used = []
 
         states = [self._initial_state()]
         sequence: list[_Snapshot] = []
+        # The rest of the priority-first plan decoded on from the current
+        # state, state by state. Decoding is what a chunk costs besides its
+        # solve, and while chunks keep that plan the decoding is the same, so
+        # it is carried from chunk to chunk rather than done again.
+        rest: list[_State] | None = None
         chunk_end = self.ctx.ustart
         while chunk_end < self.ctx.uend:
             chunk_begin, chunk_end = chunk_end, min(chunk_end + chunk, self.ctx.uend)
+            if self._resume_from is not None and chunk_end <= self._resume_from:
+                # A pass planning on from a dump keeps the science before it.
+                continue
             state = states[-1]
             # The chunk leaves the rest of the priority-first plan room to
             # follow it unchanged: it finishes before that plan's next slew and
@@ -1066,6 +1158,9 @@ class CpSatScheduler(LocalSearchScheduler):
             # than the priority-first plan.
             planned = self._released_between(start, chunk_begin, chunk_end)
             later = self._released_between(start, chunk_end, self.ctx.uend)
+            if rest is None or rest[0] is not state:
+                rest = self._decoded_states(state, [*planned, *later])
+            unchanged = self._objective(rest[-1])
             budget = dict(state.remaining)
             for snapshot in later:
                 budget[snapshot.obsid] -= snapshot.seconds
@@ -1079,16 +1174,32 @@ class CpSatScheduler(LocalSearchScheduler):
                 finish if finish is not None else self.ctx.uend,
                 later,
             )
-            kept, used = planned, False
-            if solved is not None and self._final_score(
-                state, solved + later
-            ) >= self._final_score(state, planned + later):
-                kept, used = solved, True
+            used = (
+                solved is not None
+                and self._final_score(state, solved + later) >= unchanged
+            )
             self.solver_chunks_used.append(used)
-            for snapshot in kept:
-                sequence.append(snapshot)
-                states.append(self._step(states[-1], snapshot))
+            if used:
+                assert solved is not None
+                for snapshot in solved:
+                    sequence.append(snapshot)
+                    states.append(self._step(states[-1], snapshot))
+                rest = None
+            else:
+                sequence.extend(planned)
+                states.extend(rest[1 : len(planned) + 1])
+                rest = rest[len(planned) :]
         return _Decoded.model_construct(sequence=sequence, states=states)
+
+    def _decoded_states(
+        self, state: _State, sequence: Sequence[_Snapshot]
+    ) -> list[_State]:
+        """The states of decoding ``sequence`` from ``state``: ``state``
+        first, then one after each snapshot."""
+        states = [state]
+        for snapshot in sequence:
+            states.append(self._step(states[-1], snapshot))
+        return states
 
     @staticmethod
     def _released_between(start: _Decoded, begin: float, end: float) -> list[_Snapshot]:
@@ -1143,7 +1254,7 @@ class CpSatScheduler(LocalSearchScheduler):
         if not any(task.optional for task in tasks):
             return []
 
-        slews = self._slews(tasks)
+        slews = self._slews(tasks, origin_time)
         for k, task in enumerate(tasks):
             if task.optional:
                 # The shortest slew in: the model errs on the side of letting
@@ -1170,14 +1281,20 @@ class CpSatScheduler(LocalSearchScheduler):
             recorder,
             battery,
             state.allocated_left,
+            self._category_caps(tasks, state),
         )
         chunk.add_hint(
             self._hint(tasks, planned, origin_time, slews, budget, chunk_seconds)
         )
-        status, snapshots = chunk.solve(
-            time_limit, self.workers, self.seed, origin_time
+        status, ended, snapshots = chunk.solve(
+            time_limit,
+            self.workers,
+            self.seed,
+            origin_time,
+            self._deterministic_per_chunk,
         )
         self.solver_statuses.append(status)
+        self.solver_limits.append(ended)
         return snapshots
 
     def _chunk_recorder(
@@ -1421,6 +1538,32 @@ class CpSatScheduler(LocalSearchScheduler):
                     break
         return planned
 
+    def _category_caps(
+        self, tasks: Sequence[_Task], state: _State
+    ) -> list[tuple[int, list[int]]]:
+        """For each category with a time budget among the chunk's candidates:
+        the seconds left of it, with what ``state`` has collected and
+        planned, and the candidates' indices."""
+        members: dict[str, list[int]] = {}
+        budgets: dict[str, float] = {}
+        for k, task in enumerate(tasks):
+            if task.obsid is None:
+                continue
+            category = self._by_obsid[task.obsid].category
+            if category.time_budget_seconds is None:
+                continue
+            members.setdefault(category.name, []).append(k)
+            budgets[category.name] = category.time_budget_seconds
+        return [
+            (
+                int(
+                    np.floor(max(0.0, budgets[name] - state.categories.get(name, 0.0)))
+                ),
+                indices,
+            )
+            for name, indices in members.items()
+        ]
+
     def _candidates(
         self,
         state: _State,
@@ -1451,7 +1594,13 @@ class CpSatScheduler(LocalSearchScheduler):
             # A snapshot must collect something, as in the priority-first
             # scheduler, even with an ss_min of zero; this also keeps the
             # snapshot counts below from dividing by zero.
-            shortest = max(1, int(np.ceil(snapshot_min_seconds(target))))
+            shortest = int(np.ceil(snapshot_min_seconds(target, request.step)))
+            if remaining < self._initial_remaining[obsid] and remaining >= request.step:
+                # Some of the exposure is placed already: the remainder may
+                # be shorter than ss_min, as in the other planners, unless
+                # it is shorter than the step, which is rounding.
+                shortest = min(shortest, int(np.ceil(remaining)))
+            shortest = max(1, shortest)
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue
@@ -1604,13 +1753,13 @@ class CpSatScheduler(LocalSearchScheduler):
         if not self._ledger.active:
             return (0, 0)
         modes = instrument_modes_of(target)
-        once = self.config.science_generated(
-            0.0, target.science_data, modes
-        ) + extra_data_gb(target)
-        per_second = (
-            self.config.science_generated(1.0, target.science_data, modes) - once
-        )
-        return (_kb_up(per_second), _kb_up(once))
+        zero = self.config.science_generated(0.0, target.science_data, modes)
+        per_second = self.config.science_generated(1.0, target.science_data, modes)
+        # The once-only volume is the science at zero seconds plus the
+        # entry's extra data, its steps' data among it, as the ledger counts
+        # it; the rate is what a second of collection adds to that.
+        once = zero + extra_data_gb(target)
+        return (_kb_up(per_second - zero), _kb_up(once))
 
     def _opens(
         self, request: _Request, state: _State, origin_time: float
@@ -1787,21 +1936,72 @@ class CpSatScheduler(LocalSearchScheduler):
                 spans.append(_Span((obsid, n), (lo, hi), rate))
         return spans
 
-    def _slews(self, tasks: Sequence[_Task]) -> np.ndarray:
-        """Seconds of the scheduled slew from each task to each other task."""
+    def _slews(self, tasks: Sequence[_Task], origin_time: float) -> np.ndarray:
+        """Seconds of the scheduled slew from each task to each other task.
+
+        With a thermal settling table, each slew settles for the change it
+        makes to the Sun's direction in the body frame, the Sun where it is
+        at ``origin_time``, unless the task's category skips the thermal
+        settle; without one, every slew settles for the ACS's settle time,
+        as a slew the scheduler's exact checks fly does.
+        """
         acs = self.config.spacecraft_bus.attitude_control
+        categories = self.config.observation_categories
+        ephem = self.config.constraint.ephem
+        sun = (
+            sun_direction(ephem, origin_time)
+            if acs.thermal_settling and ephem is not None
+            else None
+        )
         size = len(tasks)
         result = np.zeros((size, size), dtype=np.int64)
-        cache: dict[tuple[Attitude, Attitude], int] = {}
-        for i, before in enumerate(tasks):
-            for j, after in enumerate(tasks):
+        if size == 0:
+            return result
+        # The geometry of every pair at once: the rotation from each task's
+        # departure attitude to each arrival attitude, and the angle the Sun
+        # moves by in the body frame between them.
+        outs = [before.attitude_out for before in tasks]
+        ins = [after.attitude_in for after in tasks]
+        distances, axes = quaternion_deltas(
+            np.array([attitude_to_quat(*a) for a in outs], dtype=np.float64),
+            np.array([attitude_to_quat(*a) for a in ins], dtype=np.float64),
+        )
+        changes: np.ndarray | None = None
+        if sun is not None:
+            tiled = np.tile(np.asarray(sun, dtype=np.float64), (size, 1))
+            sun_out = scbodyvectors(np.radians(np.array(outs, dtype=np.float64)), tiled)
+            sun_in = scbodyvectors(np.radians(np.array(ins, dtype=np.float64)), tiled)
+            sun_out /= np.linalg.norm(sun_out, axis=1)[:, np.newaxis]
+            sun_in /= np.linalg.norm(sun_in, axis=1)[:, np.newaxis]
+            changes = np.degrees(np.arccos(np.clip(sun_out @ sun_in.T, -1.0, 1.0)))
+        settles = [
+            changes is not None
+            and not (
+                after.obsid is not None
+                and categories.skips_thermal_settling(after.obsid)
+            )
+            for after in tasks
+        ]
+        cache: dict[tuple[float, tuple[float, float, float], float | None], int] = {}
+        for i in range(size):
+            for j in range(size):
                 if i == j:
                     continue
-                key = (before.attitude_out, after.attitude_in)
+                distance = float(distances[i, j])
+                axis = (
+                    float(axes[i, j, 0]),
+                    float(axes[i, j, 1]),
+                    float(axes[i, j, 2]),
+                )
+                change = (
+                    float(changes[i, j])
+                    if settles[j] and changes is not None and distance > 0.0
+                    else None
+                )
+                key = (distance, axis, change)
                 seconds = cache.get(key)
                 if seconds is None:
-                    distance, axis = quaternion_attitude_delta(*key[0], *key[1])
-                    seconds = scheduled_slew_time(acs.slew_time(distance, axis))
+                    seconds = scheduled_slew_time(acs.slew_time(distance, axis, change))
                     cache[key] = seconds
                 result[i, j] = seconds
         return result

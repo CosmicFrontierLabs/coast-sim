@@ -142,6 +142,49 @@ def _extract_observations(
     return observations
 
 
+def _extract_sequence_steps(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """The steps of sequence visits, as (start, duration) in hours."""
+    segments = []
+    for ppt in ditl.plan:
+        if ppt.step is None or ppt.obstype in (ObsType.GSP, ObsType.ACTIVITY):
+            continue
+        start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
+        duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
+        if duration > 0:
+            segments.append((start, duration))
+    return segments
+
+
+def _extract_activities(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Scheduled activities as (start, duration) in hours: thruster
+    momentum dumps, and the rest."""
+    dumps: list[tuple[float, float]] = []
+    others: list[tuple[float, float]] = []
+    for ppt in ditl.plan:
+        if ppt.obstype != ObsType.ACTIVITY:
+            continue
+        start = (ppt.begin - t_start) / 3600 - offset_hours
+        duration = (ppt.end - ppt.begin) / 3600
+        if duration <= 0:
+            continue
+        (dumps if ppt.desaturation else others).append((start, duration))
+    return dumps, others
+
+
+def _extract_repoints(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[float]:
+    """When the antenna repointed during an observation, in hours."""
+    repoints = getattr(ditl, "repoints_in_observations", None)
+    if not isinstance(repoints, list):
+        return []
+    return [(float(at) - t_start) / 3600 - offset_hours for at, _, _ in repoints]
+
+
 def _extract_slews(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
@@ -579,6 +622,64 @@ def plot_ditl_timeline_plotly(
             )
         )
 
+    # Sequence steps, hatched over their observation bars
+    for i, (start, duration) in enumerate(
+        _extract_sequence_steps(ditl, t_start, offset_hours)
+    ):
+        fig.add_trace(
+            go.Bar(
+                x=[duration],
+                y=cast(Any, ["Observations"]),
+                orientation="h",
+                marker={
+                    "color": "rgba(0,0,0,0)",
+                    "pattern": {"shape": "/", "fgcolor": "black"},
+                    "line": {"color": "black", "width": 0.5},
+                },
+                name="Sequence Step",
+                showlegend=(i == 0),
+                base=start,
+                width=0.8,
+                hovertemplate=_bar_hover_template("Sequence Step", start, duration),
+            )
+        )
+
+    # Antenna repoints during observations
+    repoint_times = _extract_repoints(ditl, t_start, offset_hours)
+    if repoint_times:
+        fig.add_trace(
+            go.Scatter(
+                x=repoint_times,
+                y=cast(Any, ["Observations"] * len(repoint_times)),
+                mode="markers",
+                marker={"symbol": "triangle-down", "size": 9, "color": "red"},
+                name="Antenna Repoint",
+                showlegend=True,
+                hovertemplate="Antenna Repoint<br>Time: %{x:.2f} h<extra></extra>",
+            )
+        )
+
+    # Scheduled activities, momentum dumps apart from the rest
+    dumps, activities = _extract_activities(ditl, t_start, offset_hours)
+    for label, color, segments in (
+        ("Momentum Dump", "purple", dumps),
+        ("Activity", "olive", activities),
+    ):
+        for i, (start, duration) in enumerate(segments):
+            fig.add_trace(
+                go.Bar(
+                    x=[duration],
+                    y=cast(Any, ["Activities"]),
+                    orientation="h",
+                    marker_color=color,
+                    name=label,
+                    showlegend=(i == 0),
+                    base=start,
+                    width=0.8,
+                    hovertemplate=_bar_hover_template(label, start, duration),
+                )
+            )
+
     # Plot slews
     slew_segments = _extract_slews(ditl, t_start, offset_hours)
     for i, (start, duration) in enumerate(slew_segments):
@@ -725,7 +826,7 @@ def plot_ditl_timeline_plotly(
     if show_saa:
         y_categories.insert(0, "SAA")
     y_categories = ["Safe Mode"] + y_categories
-    y_categories = ["Charging", "Slewing", "Observations"] + y_categories
+    y_categories = ["Charging", "Activities", "Slewing", "Observations"] + y_categories
     if show_orbit_numbers:
         y_categories = ["Orbit"] + y_categories
 

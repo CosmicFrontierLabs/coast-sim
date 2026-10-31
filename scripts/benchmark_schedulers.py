@@ -70,6 +70,7 @@ def build_contenders(
         dispatch(),
         planned(PriorityScheduler),
         planned(LocalSearchScheduler, time_limit=time_limit),
+        planned(LocalSearchScheduler, seeded_by_dispatch=True, time_limit=time_limit),
         rolling(PriorityScheduler, **replanning),  # type: ignore[arg-type]
         rolling(LocalSearchScheduler, scheduler_options=search, **replanning),  # type: ignore[arg-type]
     ]
@@ -78,6 +79,9 @@ def build_contenders(
     if cp_sat:
         contenders += [
             planned(CpSatScheduler, solver_time_limit=time_limit),
+            planned(
+                CpSatScheduler, seeded_by_dispatch=True, solver_time_limit=time_limit
+            ),
             rolling(CpSatScheduler, scheduler_options=solver, **replanning),  # type: ignore[arg-type]
         ]
     if hours >= 48:

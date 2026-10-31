@@ -12,11 +12,18 @@ from ortools.sat.python import cp_model, cp_model_helper  # noqa: E402
 
 from conops import DITL  # noqa: E402
 from conops.common import ObsType  # noqa: E402
+from conops.common.ephemeris import sun_vector_change_deg  # noqa: E402
+from conops.common.vector import quaternion_attitude_delta  # noqa: E402
 from conops.config import MissionConfig, TargetConfig  # noqa: E402
+from conops.config.acs import ThermalSettlingStep, scheduled_slew_time  # noqa: E402
 from conops.config.observation_categories import ObservationCategory  # noqa: E402
 from conops.ditl import RollingHorizonDITL  # noqa: E402
 from conops.schedulers import CpSatScheduler  # noqa: E402
-from conops.schedulers.cpsat_scheduler import _ChunkModel, _Task  # noqa: E402
+from conops.schedulers.cpsat_scheduler import (  # noqa: E402
+    _ChunkModel,
+    _Task,
+    search_ending,
+)
 from conops.schedulers.local_search_scheduler import _Snapshot  # noqa: E402
 from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
@@ -849,3 +856,303 @@ class TestArguments:
 
         with pytest.raises(ImportError, match="ortools"):
             _scheduler(targets, 1).schedule()
+
+
+class TestSlewSettle:
+    """The model's slews settle as the exact ones do: with a thermal settling
+    table, for the change each slew makes to the Sun's direction in the body
+    frame; the solver otherwise planned on the ACS's shorter settle and the
+    decoded plan carried slews it had not timed."""
+
+    @staticmethod
+    def _tasks(
+        start: tuple[float, float, float], end: tuple[float, float, float]
+    ) -> list[_Task]:
+        return [
+            _Task(None, (start, start), (0, 0)),
+            _Task((1, 0.0), (end, end), (0, HOUR), collection=(300, 300)),
+        ]
+
+    def test_with_a_table_the_slew_settles_for_its_sun_vector_change(self) -> None:
+        config = _config(6)
+        acs = config.spacecraft_bus.attitude_control
+        acs.thermal_settling = [
+            ThermalSettlingStep(max_sun_vector_change_deg=5.0, settle_seconds=60.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=180.0, settle_seconds=1200.0),
+        ]
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        # A half-turn about the boresight moves the Sun far in the body frame.
+        start, end = (PATCH[0][0], PATCH[0][1], 0.0), (PATCH[0][0], PATCH[0][1], 180.0)
+        assert config.constraint.ephem is not None
+        change = sun_vector_change_deg(config.constraint.ephem, T0, start, end)
+        assert change > 5.0
+        distance, axis = quaternion_attitude_delta(*start, *end)
+        slews = scheduler._slews(self._tasks(start, end), T0)
+        assert slews[0, 1] == scheduled_slew_time(
+            acs.motion_time(distance, axis) + 1200.0
+        )
+        assert slews[0, 1] > scheduled_slew_time(acs.slew_time(distance, axis))
+
+    def test_the_table_of_many_tasks_matches_each_pair(self) -> None:
+        """The slew table is computed for every pair at once; each entry is
+        the scheduled slew between that pair's attitudes, with the settle for
+        the change the slew makes to the Sun's direction."""
+        config = _config(6)
+        acs = config.spacecraft_bus.attitude_control
+        acs.thermal_settling = [
+            ThermalSettlingStep(max_sun_vector_change_deg=5.0, settle_seconds=60.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=30.0, settle_seconds=300.0),
+            ThermalSettlingStep(max_sun_vector_change_deg=180.0, settle_seconds=1200.0),
+        ]
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        rng = np.random.default_rng(11)
+        attitudes = [
+            (
+                float(rng.uniform(0, 360)),
+                float(rng.uniform(-80, 80)),
+                float(rng.uniform(0, 360)),
+            )
+            for _ in range(7)
+        ]
+        tasks = [_Task(None, (attitudes[0], attitudes[0]), (0, 0))]
+        for k, attitude in enumerate(attitudes[1:], start=1):
+            leaving = attitudes[(k + 3) % 7]
+            tasks.append(
+                _Task((k, 0.0), (attitude, leaving), (0, HOUR), collection=(300, 300))
+            )
+        slews = scheduler._slews(tasks, T0)
+        assert config.constraint.ephem is not None
+        for i, before in enumerate(tasks):
+            for j, after in enumerate(tasks):
+                if i == j:
+                    assert slews[i, j] == 0
+                    continue
+                distance, axis = quaternion_attitude_delta(
+                    *before.attitude_out, *after.attitude_in
+                )
+                change = sun_vector_change_deg(
+                    config.constraint.ephem, T0, before.attitude_out, after.attitude_in
+                )
+                assert slews[i, j] == scheduled_slew_time(
+                    acs.slew_time(distance, axis, change)
+                )
+
+    def test_a_category_skipping_the_settle_gets_the_settle_time(self) -> None:
+        config = _config(
+            6,
+            categories=[
+                ObservationCategory(
+                    name="quick",
+                    obsid_min=1,
+                    obsid_max=2,
+                    skip_thermal_settling=True,
+                )
+            ],
+        )
+        acs = config.spacecraft_bus.attitude_control
+        acs.thermal_settling = [
+            ThermalSettlingStep(max_sun_vector_change_deg=180.0, settle_seconds=1200.0)
+        ]
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        start, end = (PATCH[0][0], PATCH[0][1], 0.0), (PATCH[0][0], PATCH[0][1], 180.0)
+        distance, axis = quaternion_attitude_delta(*start, *end)
+        slews = scheduler._slews(self._tasks(start, end), T0)
+        assert slews[0, 1] == scheduled_slew_time(acs.slew_time(distance, axis))
+
+    def test_without_a_table_the_slew_settles_for_the_settle_time(self) -> None:
+        config = _config(6)
+        acs = config.spacecraft_bus.attitude_control
+        assert not acs.thermal_settling
+        scheduler = _scheduler([_target(config, 1, *PATCH[0])], 6)
+        start, end = (PATCH[0][0], PATCH[0][1], 0.0), (PATCH[0][0], PATCH[0][1], 180.0)
+        distance, axis = quaternion_attitude_delta(*start, *end)
+        slews = scheduler._slews(self._tasks(start, end), T0)
+        assert slews[0, 1] == scheduled_slew_time(acs.slew_time(distance, axis))
+
+
+class TestDeterministicTime:
+    """A search ended by wall-clock time ends at a different point on each
+    run; one ended by CP-SAT's deterministic time ends at the same point."""
+
+    def test_the_budget_reaches_the_solver(self, monkeypatch) -> None:
+        seen: list[tuple[float, float]] = []
+        original = cp_model.CpSolver.solve
+
+        def solve(self: cp_model.CpSolver, model: cp_model.CpModel) -> int:
+            seen.append(
+                (
+                    self.parameters.max_deterministic_time,
+                    self.parameters.max_time_in_seconds,
+                )
+            )
+            return original(self, model)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", solve)
+        targets = _targets(1)
+        scheduler = _scheduler(
+            targets, 6, solver_deterministic_time=4.0, solver_time_limit=2.0
+        )
+        scheduler.schedule()
+        assert seen
+        chunks = len(seen)
+        assert all(
+            budget == pytest.approx(4.0 / chunks)
+            and wall == pytest.approx(2.0 / chunks)
+            for budget, wall in seen
+        )
+
+    def test_without_the_budget_only_the_wall_clock_limits(self, monkeypatch) -> None:
+        seen: list[float] = []
+        original = cp_model.CpSolver.solve
+
+        def solve(self: cp_model.CpSolver, model: cp_model.CpModel) -> int:
+            seen.append(self.parameters.max_deterministic_time)
+            return original(self, model)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", solve)
+        _scheduler(_targets(1), 6).schedule()
+        default = cp_model.CpSolver().parameters.max_deterministic_time
+        assert seen and all(budget == default for budget in seen)
+
+    def test_two_runs_with_the_budget_give_the_same_plan(self) -> None:
+        plans = []
+        for _ in range(2):
+            targets = _random_targets(_config(6))
+            scheduler = _scheduler(
+                targets, 6, solver_deterministic_time=0.5, workers=1, seed=3
+            )
+            plans.append(
+                [
+                    (int(e.obsid), float(e.begin), float(e.end))
+                    for e in scheduler.schedule()
+                ]
+            )
+        assert plans[0] == plans[1]
+
+    def test_a_budget_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="solver_deterministic_time"):
+            _scheduler(_targets(1), 1, solver_deterministic_time=0.0)
+
+
+class TestInvalidModel:
+    def test_an_invalid_chunk_model_raises_instead_of_falling_back(self) -> None:
+        """A model CP-SAT finds invalid is one the scheduler built wrong; it
+        was kept quiet as a search that ran out of time, and the plan was the
+        priority-first plan's with nothing to say so."""
+        broken = _Task(
+            (1, 0.0), ORIGIN, (0, 3000), collection=(300, 200), window=(0, 3000)
+        )
+        tasks = [_Task(None, ORIGIN, (0, 0)), broken]
+        chunk = _ChunkModel(tasks, np.zeros((2, 2)), 60, 10_000, {1: 300})
+        with pytest.raises(ValueError, match="invalid"):
+            chunk.solve(10.0, 1, 1, 0.0)
+
+
+class TestSearchEnding:
+    @pytest.mark.parametrize(
+        ("status", "wall", "limit", "det", "budget", "expected"),
+        [
+            ("OPTIMAL", 10.0, 10.0, 5.0, 5.0, "optimal"),
+            ("FEASIBLE", 1.0, 10.0, 4.9, 5.0, "deterministic budget"),
+            ("FEASIBLE", 9.6, 10.0, 1.0, 5.0, "wall clock"),
+            ("FEASIBLE", 9.6, 10.0, 1.0, None, "wall clock"),
+            ("INFEASIBLE", 0.1, 10.0, 0.1, 5.0, "solver"),
+            ("UNKNOWN", 0.1, 10.0, 0.1, None, "solver"),
+        ],
+    )
+    def test_what_ended_the_search(
+        self,
+        status: str,
+        wall: float,
+        limit: float,
+        det: float,
+        budget: float | None,
+        expected: str,
+    ) -> None:
+        assert search_ending(status, wall, limit, det, budget) == expected
+
+    def test_every_chunk_reports_what_ended_its_search(self) -> None:
+        scheduler = _scheduler(_targets(6), 6, solver_deterministic_time=4.0)
+        scheduler.schedule()
+        assert len(scheduler.solver_limits) == len(scheduler.solver_statuses) > 0
+        assert set(scheduler.solver_limits) <= {
+            "optimal",
+            "deterministic budget",
+            "wall clock",
+            "solver",
+        }
+
+
+class TestReplanRecordsCarryTheSolver:
+    def test_a_rolling_cp_sat_run_records_what_the_solver_did(self) -> None:
+        targets = _targets(3)
+        ditl = RollingHorizonDITL(
+            targets[0].config,  # type: ignore[arg-type]
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=1),
+            scheduler=CpSatScheduler,
+            scheduler_options={"solver_time_limit": 0.5, "workers": 1, "seed": 1},
+        )
+        ditl.step_size = 60
+        assert ditl.calc()
+        assert ditl.replans
+        for record in ditl.replans:
+            chunks = len(record.solver_statuses)
+            assert chunks > 0
+            assert len(record.solver_chunks_used) == chunks
+            assert len(record.solver_limits) == chunks
+            assert set(record.solver_statuses) <= {"OPTIMAL", "FEASIBLE", "UNKNOWN"}
+
+    def test_another_scheduler_records_nothing_of_the_solver(self) -> None:
+        targets = _targets(3)
+        ditl = RollingHorizonDITL(
+            targets[0].config,  # type: ignore[arg-type]
+            targets,
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=3),
+            replan_interval=timedelta(hours=1),
+        )
+        ditl.step_size = 60
+        assert ditl.calc()
+        assert ditl.replans
+        assert all(
+            r.solver_statuses == []
+            and r.solver_chunks_used == []
+            and r.solver_limits == []
+            for r in ditl.replans
+        )
+
+
+class TestPlanningOnFromADump:
+    def test_chunks_before_the_kept_science_are_not_solved(self) -> None:
+        """A pass after a dump keeps the science before the dump, so the
+        chunks that end before the first slew it let go are not solved."""
+        from .test_momentum_ledger import BEGIN as DUMP_BEGIN
+        from .test_momentum_ledger import _dumping, _dumps, _targets
+
+        config = _dumping()
+        scheduler = CpSatScheduler(
+            config,
+            _targets(config),
+            DUMP_BEGIN,
+            DUMP_BEGIN + timedelta(hours=2),
+            step_size=60,
+            chunk=timedelta(minutes=30),
+            solver_time_limit=4.0,
+        )
+        plan = scheduler.schedule()
+        assert _dumps(plan)
+        assert scheduler._resume_from is not None
+        chunk_ends = [DUMP_BEGIN.timestamp() + 1800.0 * k for k in range(1, 5)]
+        skipped = sum(1 for end in chunk_ends if end <= scheduler._resume_from)
+        assert len(scheduler.solver_statuses) <= 4 - skipped
+        assert scheduler._kept
+        assert all(block.entry in plan.entries for block in scheduler._kept)
+        # A pass that keeps the science past the second chunk solves the
+        # two after it only.
+        scheduler._keep_before(chunk_ends[1] + 60.0)
+        scheduler._resume_from = chunk_ends[1] + 60.0
+        scheduler._solve(scheduler._start_from_priority_plan())
+        assert len(scheduler.solver_statuses) == 2

@@ -42,7 +42,13 @@ _SEARCH_FIELDS = (
     "history_length",
 )
 """Settings of the local search, which the CP-SAT scheduler also runs."""
-_SOLVER_FIELDS = ("solver_time_limit", "chunk_seconds", "workers", "max_candidates")
+_SOLVER_FIELDS = (
+    "solver_time_limit",
+    "solver_deterministic_time",
+    "chunk_seconds",
+    "workers",
+    "max_candidates",
+)
 """Settings of the CP-SAT scheduler only."""
 
 
@@ -181,6 +187,16 @@ class SchedulerConfig(ConfigModel):
     )
     solver_time_limit: float | None = Field(
         default=None, gt=0, description="Seconds CP-SAT may search per chunk"
+    )
+    solver_deterministic_time: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Units of CP-SAT's deterministic time the search may take, shared "
+            "across the chunks, so it ends at the same point every run; with "
+            "workers 1 and a seed, runs repeat exactly. The wall-clock limit "
+            "still applies"
+        ),
     )
     chunk_seconds: float | None = Field(
         default=None, gt=0, description="Length of each chunk CP-SAT solves"

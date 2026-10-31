@@ -5,6 +5,22 @@ import numpy as np
 import numpy.typing as npt
 from pyproj import Geod
 
+from .numerics import (
+    FULL_TURN_DEG,
+    NEGLIGIBLE_NORM,
+    POLE_NORM,
+    ROLL_TOLERANCE_DEG,
+    ROUNDOFF,
+)
+
+_SLERP_LINEAR_DOT = 0.9995
+"""Quaternions whose dot product exceeds this are blended linearly, where
+spherical interpolation would divide by a vanishing sine."""
+_NO_ROTATION_RAD = 1e-6
+"""An arc shorter than this, in radians, is no rotation."""
+_LINEAR_ARC_RAD = 0.01
+"""An arc shorter than this, in radians, is sampled by linear interpolation."""
+
 
 def radec2vec(ra: float, dec: float) -> npt.NDArray[np.float64]:
     """Convert RA/Dec angle (in radians) to a vector"""
@@ -71,10 +87,54 @@ def scbodyvector(
     return body
 
 
+def scbodyvectors(
+    attitudes: npt.NDArray[np.float64], eciarr: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """:func:`scbodyvector` for many samples at once: row ``k`` of the
+    result expresses row ``k`` of ``eciarr`` in the body frame of row ``k``
+    of ``attitudes``, given as (RA, Dec, roll) in radians, with the same
+    rotations in the same order."""
+    attitudes = np.asarray(attitudes, dtype=np.float64).reshape(-1, 3)
+    eciarr = np.asarray(eciarr, dtype=np.float64).reshape(-1, 3)
+    ra, dec, roll = attitudes[:, 0], attitudes[:, 1], attitudes[:, 2]
+    croll, sroll = np.cos(roll), np.sin(roll)
+    cra, sra = np.cos(ra), np.sin(ra)
+    cdec, sdec = np.cos(-dec), np.sin(-dec)
+    zero, one = np.zeros_like(ra), np.ones_like(ra)
+    rot1 = np.stack(
+        [
+            np.stack([one, zero, zero], axis=1),
+            np.stack([zero, croll, sroll], axis=1),
+            np.stack([zero, -sroll, croll], axis=1),
+        ],
+        axis=1,
+    )
+    rot2 = np.stack(
+        [
+            np.stack([cdec, zero, -sdec], axis=1),
+            np.stack([zero, one, zero], axis=1),
+            np.stack([sdec, zero, cdec], axis=1),
+        ],
+        axis=1,
+    )
+    rot3 = np.stack(
+        [
+            np.stack([cra, sra, zero], axis=1),
+            np.stack([-sra, cra, zero], axis=1),
+            np.stack([zero, zero, one], axis=1),
+        ],
+        axis=1,
+    )
+    body: npt.NDArray[np.float64] = np.einsum(
+        "nij,nj->ni", np.matmul(np.matmul(rot1, rot2), rot3), eciarr
+    )
+    return body
+
+
 def vecnorm(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Normalize a vector to unit length. If the vector has zero length, returns the original vector."""
     norm = np.linalg.norm(v)
-    if norm < 1e-15:
+    if norm < NEGLIGIBLE_NORM:
         return v  # Return original vector if it's effectively zero-length
     return v / norm
 
@@ -117,7 +177,7 @@ def separation(
     # Normalize and handle degenerate zero-length vectors
     n1 = np.linalg.norm(onevec)
     n2 = np.linalg.norm(twovec)
-    if n1 < 1e-15 or n2 < 1e-15:
+    if n1 < NEGLIGIBLE_NORM or n2 < NEGLIGIBLE_NORM:
         # If either vector is effectively zero-length, treat separation as zero
         return 0.0
 
@@ -221,7 +281,7 @@ def _unit_vector_or_none(
 ) -> npt.NDArray[np.float64] | None:
     arr = np.asarray(vector, dtype=np.float64)
     norm = float(np.linalg.norm(arr))
-    if norm < 1e-12:
+    if norm < ROUNDOFF:
         return None
     return arr / norm
 
@@ -260,12 +320,12 @@ def attitude_from_body_axes(
         return None
 
     ra_rad, dec_rad = vec2radec(x_axis)
-    if np.hypot(x_axis[0], x_axis[1]) < 1e-10:
+    if np.hypot(x_axis[0], x_axis[1]) < POLE_NORM:
         ra_rad = 0.0
     _, y0, z0 = _zero_roll_body_axes(float(ra_rad), float(dec_rad))
     roll_rad = float(np.arctan2(-np.dot(z_axis, y0), np.dot(z_axis, z0)))
     roll_deg = float(np.rad2deg(roll_rad) % 360.0)
-    if abs(roll_deg - 360.0) < 1e-9:
+    if abs(roll_deg - FULL_TURN_DEG) < ROLL_TOLERANCE_DEG:
         roll_deg = 0.0
 
     return (
@@ -525,7 +585,7 @@ def _quaternion_delta(
     angle_deg = float(
         np.rad2deg(2.0 * np.arctan2(vector_norm, max(0.0, float(delta[0]))))
     )
-    if vector_norm < 1e-12:
+    if vector_norm < ROUNDOFF:
         return 0.0, (0.0, 0.0, 0.0)
 
     axis = delta[1:] / vector_norm
@@ -558,7 +618,7 @@ def quaternion_deltas(
     delta = np.where(delta[..., :1] < 0.0, -delta, delta)
     vector_norm = np.linalg.norm(delta[..., 1:], axis=-1)
     angles = np.rad2deg(2.0 * np.arctan2(vector_norm, np.maximum(0.0, delta[..., 0])))
-    still = vector_norm < 1e-12
+    still = vector_norm < ROUNDOFF
     angles = np.where(still, 0.0, angles)
     axes = delta[..., 1:] / np.where(still, 1.0, vector_norm)[..., None]
     axes = np.where(still[..., None], 0.0, axes)
@@ -675,7 +735,7 @@ def mounted_attitude_to_quat(
     if body_from_instrument.shape != (4,):
         raise ValueError("mounting quaternion must contain exactly four values")
     norm = float(np.linalg.norm(body_from_instrument))
-    if not np.isfinite(norm) or norm < 1e-12:
+    if not np.isfinite(norm) or norm < ROUNDOFF:
         raise ValueError("mounting quaternion must have finite nonzero norm")
     body_from_instrument = body_from_instrument / norm
     result = _quat_mul(body_from_instrument, instrument_from_eci)
@@ -695,7 +755,7 @@ def quat_to_attitude(q: npt.NDArray[np.float64]) -> tuple[float, float, float]:
     bx, by, bz = float(rot[0, 0]), float(rot[0, 1]), float(rot[0, 2])
     dec_rad = float(np.arcsin(np.clip(bz, -1.0, 1.0)))
     ra_rad = float(np.arctan2(by, bx)) % (2 * np.pi)
-    if np.hypot(bx, by) < 1e-10:
+    if np.hypot(bx, by) < POLE_NORM:
         ra_rad = 0.0
 
     # Row 2 of rot is the body-Z (up) direction in ECI
@@ -742,6 +802,35 @@ def quat_slerp(
     return interp / float(np.linalg.norm(interp))
 
 
+def quat_slerp_at(
+    q1: npt.NDArray[np.float64],
+    q2: npt.NDArray[np.float64],
+    ts: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """:func:`quat_slerp` at each of ``ts``, as an (N, 4) array of unit
+    quaternions: the same interpolation, so a sample here is the one
+    ``quat_slerp`` gives at that parameter."""
+    q1 = q1 / np.linalg.norm(q1)
+    q2 = q2 / np.linalg.norm(q2)
+    dot = float(np.dot(q1, q2))
+    if dot < 0.0:
+        q2 = -q2
+        dot = -dot
+    dot = min(dot, 1.0)
+    theta_0 = float(np.arctan2(np.linalg.norm(q2 - dot * q1), dot))
+    ts = np.asarray(ts, dtype=np.float64)
+    if theta_0 == 0.0:
+        return np.tile(q1, (len(ts), 1))
+    interp = (
+        np.sin((1.0 - ts) * theta_0)[:, np.newaxis] * q1
+        + np.sin(ts * theta_0)[:, np.newaxis] * q2
+    ) / sin(theta_0)
+    result: npt.NDArray[np.float64] = interp / np.linalg.norm(
+        interp, axis=1, keepdims=True
+    )
+    return result
+
+
 def _batch_quat_slerp(
     q1: npt.NDArray[np.float64],
     q2: npt.NDArray[np.float64],
@@ -761,7 +850,7 @@ def _batch_quat_slerp(
 
     ts = np.linspace(0.0, 1.0, steps + 1)  # (N,)
 
-    if dot > 0.9995:
+    if dot > _SLERP_LINEAR_DOT:
         # Nearly identical quaternions — linear blend then normalise
         qs = q1 + ts[:, np.newaxis] * (q2 - q1)  # (N, 4)
         norms = np.linalg.norm(qs, axis=1, keepdims=True)
@@ -795,7 +884,7 @@ def _batch_quat_to_attitudes(
 
     dec_rad = np.arcsin(np.clip(bz, -1.0, 1.0))
     ra_rad = np.arctan2(by, bx) % (2.0 * np.pi)
-    near_pole = np.hypot(bx, by) < 1e-10
+    near_pole = np.hypot(bx, by) < POLE_NORM
     ra_rad[near_pole] = 0.0
 
     cra, sra = np.cos(ra_rad), np.sin(ra_rad)
@@ -846,6 +935,10 @@ def constraint_avoiding_waypoint(
     constraint_check_fn: Callable[[float, float, float], bool],
     margin_deg: float = 5.0,
     samples: int = 50,
+    constraint_check_many: Callable[
+        [Sequence[float], Sequence[float], float], Sequence[bool]
+    ]
+    | None = None,
 ) -> tuple[float, float] | None:
     """Return a waypoint (RA, Dec) that routes a slew around constraint violations.
 
@@ -882,6 +975,11 @@ def constraint_avoiding_waypoint(
                          that returns True if constraint is violated.
         margin_deg:      Extra buffer beyond the constraint boundary (degrees).
         samples:         Number of points to sample along the arc for violation check.
+        constraint_check_many: Optional check of many pointings at one time,
+                         with signature (ras, decs, time) -> violated flags,
+                         used in place of ``constraint_check_fn`` for each
+                         arc's samples together, which costs a fraction of
+                         checking them one by one.
 
     Returns:
         (waypoint_ra, waypoint_dec) in degrees if a validated waypoint is found,
@@ -894,7 +992,7 @@ def constraint_avoiding_waypoint(
     total_angle = float(np.arccos(np.clip(float(np.dot(a, b)), -1.0, 1.0)))
 
     # Handle degenerate cases
-    if total_angle < 1e-6:
+    if total_angle < _NO_ROTATION_RAD:
         # Points are essentially identical - no slew needed
         return None
 
@@ -902,7 +1000,7 @@ def constraint_avoiding_waypoint(
     n = vecnorm(np.cross(a, b))
     n_norm = np.linalg.norm(n)
 
-    if n_norm < 1e-12:
+    if n_norm < ROUNDOFF:
         # Points are antipodal (180° separation)
         # Any great circle works - choose one perpendicular to a convenient axis
         # Use the axis with smallest component of 'a' to maximize numerical stability
@@ -915,37 +1013,52 @@ def constraint_avoiding_waypoint(
             perp = np.array([0.0, 0.0, 1.0])
         n = vecnorm(np.cross(a, perp))
 
-    # Sample the arc and check for violations
-    violation_found = False
-    closest_violator = None
+    def arc_points(
+        start: npt.NDArray[np.float64],
+        finish: npt.NDArray[np.float64],
+        angle: float,
+        fractions: Sequence[float],
+    ) -> list[tuple[npt.NDArray[np.float64], float, float]]:
+        """The points of the arc from ``start`` to ``finish`` at each
+        fraction: the unit vector and its RA and Dec in degrees."""
+        points = []
+        for t in fractions:
+            if angle < _LINEAR_ARC_RAD:
+                # Near-identical points, use linear interpolation
+                vec = vecnorm(start + t * (finish - start))
+            else:
+                vec = (
+                    np.sin((1 - t) * angle) * start + np.sin(t * angle) * finish
+                ) / np.sin(angle)
+            radec = vec2radec(vec)
+            points.append(
+                (vec, float(np.rad2deg(radec[0])), float(np.rad2deg(radec[1])))
+            )
+        return points
 
-    for i in range(samples + 1):
-        t = i / samples
-        # SLERP between start and end vectors
-        if total_angle < 0.01:
-            # Near-identical points, use linear interpolation
-            sample_vec = vecnorm(a + t * (b - a))
-        else:
-            sin_total = np.sin(total_angle)
-            sample_vec = (
-                np.sin((1 - t) * total_angle) * a + np.sin(t * total_angle) * b
-            ) / sin_total
-
-        sample_radec = vec2radec(sample_vec)
-        sample_ra = float(np.rad2deg(sample_radec[0]))
-        sample_dec = float(np.rad2deg(sample_radec[1]))
-
-        # Check if this point violates the constraint
-        if constraint_check_fn(sample_ra, sample_dec, time):
-            violation_found = True
-            # Track the point with minimum distance from the arc plane
-            # (for now, just use the first violation)
-            if closest_violator is None:
-                closest_violator = sample_vec
-            break
-
-    if not violation_found or closest_violator is None:
+    def first_violation(
+        points: Sequence[tuple[npt.NDArray[np.float64], float, float]],
+    ) -> int | None:
+        """The index of the first point that violates the constraint."""
+        if constraint_check_many is not None and len(points) > 1:
+            flags = constraint_check_many(
+                [ra for _, ra, _ in points], [dec for _, _, dec in points], time
+            )
+            return next((k for k, flag in enumerate(flags) if flag), None)
+        for k, (_, ra, dec) in enumerate(points):
+            if constraint_check_fn(ra, dec, time):
+                return k
         return None
+
+    # Sample the arc and check for violations
+    violator = first_violation(
+        arc_points(a, b, total_angle, [i / samples for i in range(samples + 1)])
+    )
+    if violator is None:
+        return None
+    # Track the point with minimum distance from the arc plane
+    # (for now, just use the first violation)
+    closest_violator = arc_points(a, b, total_angle, [violator / samples])[0][0]
 
     # A violation was found. Compute waypoints perpendicular to the arc plane.
     # Use the closest violator as the reference point on the arc
@@ -979,41 +1092,20 @@ def constraint_avoiding_waypoint(
         if constraint_check_fn(w_ra, w_dec, time):
             return False
 
+        inner = [i / samples for i in range(1, samples)]  # Skip endpoints
         # Check start→waypoint arc
         angle_aw = float(np.arccos(np.clip(float(np.dot(a, w)), -1.0, 1.0)))
-        if angle_aw > 1e-6:
-            for i in range(1, samples):  # Skip endpoints
-                t = i / samples
-                if angle_aw < 0.01:
-                    sample_vec = vecnorm(a + t * (w - a))
-                else:
-                    sin_angle = np.sin(angle_aw)
-                    sample_vec = (
-                        np.sin((1 - t) * angle_aw) * a + np.sin(t * angle_aw) * w
-                    ) / sin_angle
-                sample_radec = vec2radec(sample_vec)
-                sample_ra = float(np.rad2deg(sample_radec[0]))
-                sample_dec = float(np.rad2deg(sample_radec[1]))
-                if constraint_check_fn(sample_ra, sample_dec, time):
-                    return False
+        if angle_aw > _NO_ROTATION_RAD and (
+            first_violation(arc_points(a, w, angle_aw, inner)) is not None
+        ):
+            return False
 
         # Check waypoint→end arc
         angle_wb = float(np.arccos(np.clip(float(np.dot(w, b)), -1.0, 1.0)))
-        if angle_wb > 1e-6:
-            for i in range(1, samples):  # Skip endpoints
-                t = i / samples
-                if angle_wb < 0.01:
-                    sample_vec = vecnorm(w + t * (b - w))
-                else:
-                    sin_angle = np.sin(angle_wb)
-                    sample_vec = (
-                        np.sin((1 - t) * angle_wb) * w + np.sin(t * angle_wb) * b
-                    ) / sin_angle
-                sample_radec = vec2radec(sample_vec)
-                sample_ra = float(np.rad2deg(sample_radec[0]))
-                sample_dec = float(np.rad2deg(sample_radec[1]))
-                if constraint_check_fn(sample_ra, sample_dec, time):
-                    return False
+        if angle_wb > _NO_ROTATION_RAD and (
+            first_violation(arc_points(w, b, angle_wb, inner)) is not None
+        ):
+            return False
 
         return True
 

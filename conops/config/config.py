@@ -18,6 +18,7 @@ from .frame import SpacecraftFrame
 from .groundstation import GroundStationRegistry
 from .instrument import Payload, Telescope
 from .observation_categories import ObservationCategories
+from .observation_groups import ObservationGroups
 from .observation_timing import ObservationTiming
 from .recorder import OnboardRecorder
 from .scheduler import SchedulerConfig
@@ -168,6 +169,13 @@ class MissionConfig(ConfigModel):
     observation_categories: ObservationCategories = Field(
         default_factory=ObservationCategories.default_categories,
         description="Observation Categories. Defines categories for different observation types with ID ranges",
+    )
+    observation_groups: ObservationGroups = Field(
+        default_factory=ObservationGroups,
+        description=(
+            "Observation Groups. Named sets of targets observed under one window "
+            "and one time budget, and preferred one after another"
+        ),
     )
     visualization: VisualizationConfig = Field(
         default_factory=VisualizationConfig,

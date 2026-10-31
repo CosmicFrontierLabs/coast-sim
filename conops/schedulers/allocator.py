@@ -226,6 +226,16 @@ class _Demand(BaseModel):
     remaining: float
     ss_min: float
     deadline: float | None
+    category: str | None = None
+    """The key of its category's cap where that has a time budget."""
+    group: str | None = None
+    """The key of its group's cap where that has a time budget."""
+
+    @property
+    def caps(self) -> tuple[str, ...]:
+        """The caps the demand counts against."""
+        return tuple(key for key in (self.category, self.group) if key is not None)
+
     spread: bool
     """Whether its exposure should be spread across bins, as for a cadence."""
     visible: dict[int, float]
@@ -567,21 +577,22 @@ class LongRangeAllocator:
             if (demand := self._demand(target, start, reserved, shares)) is not None
         ]
         budget = self._budget(start, demands, start_volume_gb)
+        caps = self._category_caps(targets, reserved)
         unplanned_set = set(unplanned)
         empty: dict[int, dict[int, float]] = {d.obsid: {} for d in demands}
         if self.solver == "greedy" or not demands:
             seconds = self._greedy(
-                demands, capacity, held, unplanned_set, empty, budget
+                demands, capacity, held, unplanned_set, empty, budget, caps
             )
         else:
             seconds, unsolved = self._solve(
-                demands, capacity, held, unplanned_set, budget
+                demands, capacity, held, unplanned_set, budget, caps
             )
             if unsolved:
                 # Levels the solver found no solution for go greedily into
                 # the room the solved levels leave.
                 seconds = self._greedy(
-                    unsolved, capacity, held, unplanned_set, seconds, budget
+                    unsolved, capacity, held, unplanned_set, seconds, budget, caps
                 )
         science = budget.science(seconds)
         allocation = Allocation(
@@ -611,6 +622,7 @@ class LongRangeAllocator:
         unplanned_set: Collection[int],
         allocated: Mapping[int, Mapping[int, float]],
         budget: _Budget,
+        caps: Mapping[str, float] | None = None,
     ) -> dict[int, dict[int, float]]:
         """Add ``demands`` to ``allocated`` in priority order, each where it fits.
 
@@ -623,6 +635,17 @@ class LongRangeAllocator:
         there allows, keeping every later bin's carry-over within the limit.
         """
         seconds = {obsid: dict(bins) for obsid, bins in allocated.items()}
+        # What each capped category has left: its budget less what is
+        # allocated to its requests already.
+        left: dict[str, float] = dict(caps or {})
+        by_obsid = {d.obsid: d for d in demands}
+        for obsid, per_bin in seconds.items():
+            demand = by_obsid.get(obsid)
+            if demand is None:
+                continue
+            for key in demand.caps:
+                if key in left:
+                    left[key] -= sum(per_bin.values())
         # Seconds allocated in each bin to unplanned requests, and to the rest.
         surprise = [0.0] * len(self.bins)
         planned = [0.0] * len(self.bins)
@@ -649,6 +672,9 @@ class LongRangeAllocator:
             given[k] = given.get(k, 0.0) + part
             load[k] += part
             budget.add(science, demand, k, part, first)
+            for key in demand.caps:
+                if key in left:
+                    left[key] -= part
 
         order = sorted(
             demands,
@@ -661,6 +687,12 @@ class LongRangeAllocator:
             for k, part in self._shares(demand).items():
                 pressure[k] -= part
             need = demand.remaining
+            capped = [left[key] for key in demand.caps if key in left]
+            if capped:
+                # No more than its category's and its group's budgets leave.
+                need = min(need, max(0.0, min(capped)))
+                if need < demand.ss_min:
+                    continue
             # As the MILP: nothing in a bin, or at least a snapshot, and a
             # cadence request no more than an even share in any bin.
             smallest = min(demand.ss_min, need)
@@ -699,6 +731,7 @@ class LongRangeAllocator:
         held: Sequence[float],
         unplanned: Collection[int],
         budget: _Budget,
+        caps: Mapping[str, float] | None = None,
     ) -> tuple[dict[int, dict[int, float]], list[_Demand]]:
         """Solve the allocation as a MILP with HiGHS, level by level.
 
@@ -729,6 +762,7 @@ class LongRangeAllocator:
         previous = self._previous.seconds if self._previous is not None else {}
         terms: dict[bool, list[variables.LinearTerm]] = {}
         planned_in: dict[int, list[variables.Variable]] = {}
+        capped: dict[str, list[variables.Variable]] = {}
         unplanned_in: dict[int, list[variables.Variable]] = {}
         planned_by_level: dict[bool, dict[int, list[variables.Variable]]]
         planned_by_level = {}
@@ -786,6 +820,15 @@ class LongRangeAllocator:
                     level_terms.append(variables.LinearTerm(stays, 0.01 * demand.value))
             if own:
                 model.add_linear_constraint(expressions.fast_sum(own) <= remaining)
+                for cap_key in demand.caps:
+                    if cap_key in (caps or {}):
+                        capped.setdefault(cap_key, []).extend(own)
+        for name, capped_x in capped.items():
+            # A category's time budget: its requests share what is left.
+            assert caps is not None
+            model.add_linear_constraint(
+                expressions.fast_sum(capped_x) <= max(0.0, caps[name])
+            )
         for k in range(len(self.bins)):
             planned_x = planned_in.get(k, [])
             if planned_x:
@@ -1013,6 +1056,30 @@ class LongRangeAllocator:
                 result[obsid][k] = float(round(value))
         return result, unsolved
 
+    def _category_caps(
+        self, targets: Sequence[Pointing], reserved: Mapping[int, float]
+    ) -> dict[str, float]:
+        """Seconds each category and each group with a time budget may still
+        be allocated: its budget less what its targets have collected and
+        have reserved, keyed ``category:<name>`` and ``group:<name>``."""
+        used: dict[str, float] = {}
+        caps: dict[str, float] = {}
+        for target in targets:
+            collected = getattr(target, "collected_seconds", 0.0)
+            seconds = float(collected) if isinstance(collected, (int, float)) else 0.0
+            seconds += reserved.get(int(target.obsid), 0.0)
+            category = self.merit_model.category(target)
+            if category.time_budget_seconds is not None:
+                key = f"category:{category.name}"
+                caps[key] = category.time_budget_seconds
+                used[key] = used.get(key, 0.0) + seconds
+            group = self.merit_model.group(target)
+            if group is not None and group.time_budget_seconds is not None:
+                key = f"group:{group.name}"
+                caps[key] = group.time_budget_seconds
+                used[key] = used.get(key, 0.0) + seconds
+        return {key: max(0.0, cap - used.get(key, 0.0)) for key, cap in caps.items()}
+
     def _demand(
         self,
         target: Pointing,
@@ -1032,6 +1099,15 @@ class LongRangeAllocator:
         opens = start
         if target.earliest_start is not None:
             opens = max(start, target.earliest_start)
+        # Its group's window narrows its own.
+        group = self.merit_model.group(target)
+        group_start, group_deadline = (
+            group.bounds if group is not None else (None, None)
+        )
+        if group_start is not None:
+            opens = max(opens, group_start)
+        if group_deadline is not None:
+            stop = min(stop, group_deadline)
         visible: dict[int, float] = {}
         for k, (b0, b1) in enumerate(self.bins):
             lo, hi = max(b0, opens), min(b1, stop)
@@ -1056,7 +1132,17 @@ class LongRangeAllocator:
             value=merit.value,
             remaining=remaining,
             ss_min=float(snapshot_min_seconds(target)),
-            deadline=target.deadline,
+            deadline=stop if np.isfinite(stop) else None,
+            category=(
+                f"category:{category.name}"
+                if category.time_budget_seconds is not None
+                else None
+            ),
+            group=(
+                f"group:{group.name}"
+                if group is not None and group.time_budget_seconds is not None
+                else None
+            ),
             spread=category.cadence_seconds is not None
             and self.merit_model.cadence_weight > 0.0,
             visible=visible,

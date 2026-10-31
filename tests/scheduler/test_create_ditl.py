@@ -278,6 +278,31 @@ class TestPlanned:
         assert ditl.plan.metadata["scheduler"] == "cp_sat"
         _run(ditl)
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ortools") is None, reason="needs OR-Tools"
+    )
+    def test_a_configured_deterministic_budget_repeats_the_plan(self) -> None:
+        """The notebooks set the planner through the configuration: the
+        deterministic budget set there, with one worker and a seed, gives
+        the same plan twice."""
+        plans = []
+        for _ in range(2):
+            config, targets = _setup(
+                SchedulerConfig(
+                    mode=SchedulerMode.PLANNED,
+                    kind=SchedulerKind.CP_SAT,
+                    solver_time_limit=30,
+                    solver_deterministic_time=0.5,
+                    workers=1,
+                    seed=1,
+                )
+            )
+            ditl = create_ditl(config, targets, BEGIN, END)
+            plans.append(
+                [(int(e.obsid), float(e.begin), float(e.end)) for e in ditl.plan]
+            )
+        assert plans[0] and plans[0] == plans[1]
+
     def test_without_passes_the_plan_has_none(self) -> None:
         config, targets = _setup(
             SchedulerConfig(mode=SchedulerMode.PLANNED, include_passes=False)

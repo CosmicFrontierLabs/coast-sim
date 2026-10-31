@@ -19,10 +19,13 @@ import random
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict
 
+from ..common import ObsType
 from ..config import MissionConfig
+from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
 from ..targets import Plan, Pointing
 from ..targets.plan_entry import snapshot_min_seconds
 from .battery import Additions
@@ -34,6 +37,15 @@ from .priority_scheduler import (
     program_shares,
 )
 from .recorder import RecorderAmount, amounts_equal, combine_amounts
+
+# A move is drawn uniformly from [0, 1) and its kind read off these
+# cumulative bounds: insert a snapshot, replace one, release one, remove
+# one, swap two, else move one.
+_INSERT_BELOW = 0.25
+_REPLACE_BELOW = 0.35
+_RELEASE_BELOW = 0.55
+_REMOVE_BELOW = 0.65
+_SWAP_BELOW = 0.85
 
 
 class _Snapshot(BaseModel):
@@ -62,6 +74,11 @@ class _State(BaseModel):
     """Merit-weighted science seconds."""
     programs: dict[str, float]
     """Science collected and planned so far, by program."""
+    categories: dict[str, float] = {}
+    """Science collected and planned so far, by category, for the
+    categories' time budgets."""
+    groups: dict[str, float] = {}
+    """The same by observation group, for the groups' time budgets."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
     volumes: tuple[RecorderAmount, ...]
@@ -87,9 +104,16 @@ class _Decoded(BaseModel):
         return self.states[-1]
 
 
-def _wants_more(request: _Request, remaining: float) -> bool:
-    """Whether ``remaining`` seconds are enough for another snapshot of ``request``."""
-    return remaining > 0 and remaining >= float(snapshot_min_seconds(request.target))
+def _wants_more(request: _Request, remaining: float, exposure: float) -> bool:
+    """Whether ``remaining`` seconds are enough for another snapshot of
+    ``request``, of ``exposure`` to place at the start: once some of the
+    exposure has been placed, a remainder of any length but shorter than
+    the step, which is rounding."""
+    if remaining <= 0:
+        return False
+    if remaining < exposure:
+        return remaining >= request.step
+    return remaining >= float(snapshot_min_seconds(request.target, request.step))
 
 
 class LocalSearchScheduler(PriorityScheduler):
@@ -152,9 +176,18 @@ class LocalSearchScheduler(PriorityScheduler):
         neighborhood: int = 3,
         history_length: int = 50,
         earliness_weight: float = 0.5,
+        start_plan: Plan | None = None,
         **options: object,
     ) -> None:
         super().__init__(config, targets, begin, end, **options)  # type: ignore[arg-type]
+        self.start_plan = start_plan
+        """A plan to start from where it scores higher than the priority-first
+        plan: its science entries decoded in time order at their own times,
+        such as the plan a dispatch run of the same requests executed. The
+        search, or the solver, then improves on the better of the two, so the
+        plan returned scores at least as well as either."""
+        self.seed_score: float | None = None
+        """Objective of ``start_plan`` decoded, where one was given."""
         if time_limit < 0:
             raise ValueError("time_limit must not be negative")
         if max_iterations is not None and max_iterations < 0:
@@ -208,15 +241,25 @@ class LocalSearchScheduler(PriorityScheduler):
             for n, span in enumerate(spans)
         }
         self._initial_last_visit = dict(self._last_visit)
+        self._initial_categories = dict(self._category_seconds)
+        self._initial_groups = dict(self._group_seconds)
         self._initial_volumes = tuple(self._volumes)
         self._initial_energy = tuple(self._energy)
 
         self._place_requests(self._with_allocated_time(requests))
         self._greedy_timeline = list(self.timeline)
-        science = [b for b in self._greedy_timeline if id(b.entry) not in fixed_entries]
+        # Not the locked entries, and not an activity placed again, as a
+        # copy, to hold the attitude of science placed before it.
+        science = [
+            b
+            for b in self._greedy_timeline
+            if not b.is_fixed and id(b.entry) not in fixed_entries
+        ]
         self.initial_score = self._timeline_score(science)
 
         self._fixed = fixed
+        if self.start_plan is not None:
+            self._settle_from(self.start_plan)
         # Released at their priority-first times, the snapshots decode to
         # the priority-first plan; moves release them one at a time.
         start = self._decode(
@@ -230,7 +273,116 @@ class LocalSearchScheduler(PriorityScheduler):
             ]
         )
         self.start_score = self._objective(start.final)
+        if self.start_plan is not None:
+            seeded = self._decode_plan(self.start_plan)
+            self.seed_score = self._objective(seeded.final)
+            if self.seed_score > self.start_score:
+                start, self.start_score = seeded, self.seed_score
         return start
+
+    def _settle_from(self, plan: Plan) -> None:
+        """Hold each fixed block that may begin late where ``plan`` held its
+        activity, within the block's reservation, and reserve it there: the
+        plan's science around the activity then decodes at its own times,
+        before and after the block as the plan had it. The fixed blocks
+        around it stand: a block whose held time the one before it, such as
+        a locked entry or science kept from the pass before, runs past is
+        held when that ends, and one that would then run into the block
+        after it is left where it was reserved."""
+        held = {
+            int(entry.obsid): float(entry.begin)
+            for entry in plan
+            if entry_obstype(entry) == ObsType.ACTIVITY
+        }
+        for index, block in enumerate(self._fixed):
+            activity = block.activity
+            if activity is None or activity.obsid is None:
+                continue
+            begin = held.get(int(activity.obsid))
+            if begin is None:
+                continue
+            if index > 0:
+                begin = max(begin, self._fixed[index - 1].end)
+            settled = self._copy_block(block)
+            self._settle_block(settled, begin)
+            following = self._fixed[index + 1] if index + 1 < len(self._fixed) else None
+            if following is not None and settled.end > following.ready:
+                continue
+            self._settle_block(block, begin)
+            block.latest_ready = block.ready
+
+    def _decode_plan(self, plan: Plan) -> _Decoded:
+        """Decode a plan's science as a start sequence: one snapshot per
+        observation, a visit's steps as one, each released at its entry's
+        start, for the requests being planned; entries of other targets,
+        such as the ToOs a dispatch run observed, are left out."""
+        snapshots: list[_Snapshot] = []
+        visit_of: int | None = None
+        """The target whose visit the last snapshot is, while its steps follow."""
+        entries = sorted(
+            (e for e in plan if entry_obstype(e) in PLAN_SCIENCE_OBSTYPES),
+            key=lambda e: float(e.begin),
+        )
+        for entry in entries:
+            obsid = int(entry.obsid)
+            request = self._by_obsid.get(obsid)
+            if request is None:
+                visit_of = None
+                continue
+            seconds = (
+                0.0
+                if entry.calibration
+                else entry.collection_seconds_between(
+                    float(entry.begin), float(entry.end)
+                )
+            )
+            sequence = request.target.sequence
+            if entry.step is not None and sequence is not None:
+                if visit_of == obsid and entry.step != sequence.steps[0].name:
+                    # Another step of the visit under way.
+                    last = snapshots[-1]
+                    snapshots[-1] = _Snapshot(
+                        obsid=obsid,
+                        seconds=last.seconds + seconds,
+                        release=last.release,
+                    )
+                    continue
+                visit_of = obsid
+                snapshots.append(
+                    _Snapshot(obsid=obsid, seconds=seconds, release=float(entry.begin))
+                )
+                continue
+            visit_of = None
+            if seconds > 0.0:
+                snapshots.append(
+                    _Snapshot(obsid=obsid, seconds=seconds, release=float(entry.begin))
+                )
+        # Each snapshot where the plan had it, before the plan's next one
+        # begins: one the timeline cannot take there is left out, where
+        # decoding it at its next fit would push everything after it later;
+        # so is one it cannot take at all, such as a remainder shorter than
+        # the request's minimum.
+        kept: list[_Snapshot] = []
+        states = [self._initial_state()]
+        for snapshot, following in pairwise([*snapshots, None]):
+            assert snapshot is not None
+            state = self._step(states[-1], snapshot)
+            if state.cursor == states[-1].cursor:
+                continue
+            block = state.timeline[state.cursor - 1]
+            assert snapshot.release is not None
+            before = (
+                following.release
+                if following is not None and following.release is not None
+                else self.ctx.uend
+            )
+            if float(block.entry.begin) >= max(
+                before, snapshot.release + self.ctx.step_size
+            ):
+                continue
+            kept.append(snapshot)
+            states.append(state)
+        return _Decoded.model_construct(sequence=kept, states=states)
 
     def _finish_best(self, best: _Decoded) -> Plan:
         """Return the best plan found, or the priority-first plan if better."""
@@ -336,7 +488,7 @@ class LocalSearchScheduler(PriorityScheduler):
         self.unplaced = [
             request.target
             for obsid, request in self._by_obsid.items()
-            if _wants_more(request, remaining[obsid])
+            if _wants_more(request, remaining[obsid], self._initial_remaining[obsid])
         ]
 
     # ── Decoding ─────────────────────────────────────────────────────────
@@ -353,6 +505,8 @@ class LocalSearchScheduler(PriorityScheduler):
             remaining=dict(self._initial_remaining),
             score=0.0,
             programs=dict(self._delivered),
+            categories=dict(self._initial_categories),
+            groups=dict(self._initial_groups),
             last_visit=dict(self._initial_last_visit),
             volumes=self._initial_volumes,
             energy=self._initial_energy,
@@ -374,11 +528,21 @@ class LocalSearchScheduler(PriorityScheduler):
         obsid = snapshot.obsid
         request = self._by_obsid[obsid]
         remaining = state.remaining[obsid]
-        if not _wants_more(request, remaining):
+        exposure = self._initial_remaining[obsid]
+        if not _wants_more(request, remaining, exposure):
             return state
 
         # _fit_in_gap sizes the snapshot from the request's remaining exposure.
         request.remaining = min(remaining, snapshot.seconds)
+        request.placed_before = remaining < exposure
+        request.budget_left = self._budget_left_in(
+            request, state.categories, state.groups
+        )
+        if (
+            request.budget_left is not None
+            and request.budget_left < request.budget_takes
+        ):
+            return state
         not_before = snapshot.release
         last = state.last_visit.get(obsid)
         if request.cadence is not None and last is not None:
@@ -445,6 +609,14 @@ class LocalSearchScheduler(PriorityScheduler):
             left[obsid] = remaining - _collection_seconds(block)
             programs = dict(state.programs)
             self._add_program_seconds(programs, request, block)
+            categories = dict(state.categories)
+            name = request.category.name
+            categories[name] = categories.get(name, 0.0) + _collection_seconds(block)
+            groups = dict(state.groups)
+            if request.group is not None:
+                groups[request.group.name] = groups.get(
+                    request.group.name, 0.0
+                ) + _collection_seconds(block)
             last_visit = state.last_visit
             if (
                 request.cadence is not None or request.timed
@@ -456,12 +628,36 @@ class LocalSearchScheduler(PriorityScheduler):
                 remaining=left,
                 score=score,
                 programs=programs,
+                categories=categories,
+                groups=groups,
                 last_visit=last_visit,
                 volumes=self._ledger.add_all(state.volumes, additions),
                 energy=self._charged_energy(placed),
                 allocated_left=allocated_left,
             )
         return state
+
+    @staticmethod
+    def _budget_left_in(
+        request: _Request,
+        categories: Mapping[str, float],
+        groups: Mapping[str, float] | None = None,
+    ) -> float | None:
+        """Science the request's category and group may still collect within
+        their time budgets, with ``categories`` and ``groups`` collected and
+        planned; None without a budget."""
+        lefts = []
+        cap = request.category.time_budget_seconds
+        if cap is not None:
+            lefts.append(max(0.0, cap - categories.get(request.category.name, 0.0)))
+        group = request.group
+        if group is not None and group.time_budget_seconds is not None:
+            lefts.append(
+                max(
+                    0.0, group.time_budget_seconds - (groups or {}).get(group.name, 0.0)
+                )
+            )
+        return min(lefts) if lefts else None
 
     def _same_state(self, a: _State, b: _State) -> bool:
         """Return whether decoding continues identically from two states.
@@ -539,6 +735,8 @@ class LocalSearchScheduler(PriorityScheduler):
                     remaining=later.remaining,
                     score=score,
                     programs=later.programs,
+                    categories=later.categories,
+                    groups=later.groups,
                     last_visit=later.last_visit,
                     volumes=tuple(
                         combine_amounts(combine_amounts(a, b), c, -1.0)
@@ -595,7 +793,7 @@ class LocalSearchScheduler(PriorityScheduler):
         size = len(sequence)
         kind = rng.random()
 
-        if kind < 0.25:
+        if kind < _INSERT_BELOW:
             # Insert a full-length snapshot of a request with exposure left.
             open_requests = self._open_requests(current)
             if not open_requests:
@@ -607,7 +805,7 @@ class LocalSearchScheduler(PriorityScheduler):
         if size == 0:
             return None
 
-        if kind < 0.35:
+        if kind < _REPLACE_BELOW:
             # Replace a snapshot with a full-length one of another request
             # with exposure left. Removing a snapshot can free time that only
             # a different target can use, as when the spacecraft waits on a
@@ -629,7 +827,7 @@ class LocalSearchScheduler(PriorityScheduler):
             changed[at] = self._released(rng.choice(others))
             return changed, at, at, 0
 
-        if kind < 0.55:
+        if kind < _RELEASE_BELOW:
             # Release a snapshot from its earlier time and length.
             at = rng.randrange(size)
             if sequence[at] == self._released(sequence[at].obsid):
@@ -638,7 +836,7 @@ class LocalSearchScheduler(PriorityScheduler):
             changed[at] = self._released(sequence[at].obsid)
             return changed, at, at, 0
 
-        if kind < 0.65:
+        if kind < _REMOVE_BELOW:
             # Remove a snapshot.
             at = rng.randrange(size)
             return [*sequence[:at], *sequence[at + 1 :]], at, at - 1, -1
@@ -651,7 +849,7 @@ class LocalSearchScheduler(PriorityScheduler):
             return None
         lo, hi = min(i, j), max(i, j)
         changed = list(sequence)
-        if kind < 0.85:
+        if kind < _SWAP_BELOW:
             changed[i], changed[j] = changed[j], changed[i]
         else:
             changed.insert(j, changed.pop(i))
@@ -665,7 +863,9 @@ class LocalSearchScheduler(PriorityScheduler):
         return [
             obsid
             for obsid, request in self._by_obsid.items()
-            if _wants_more(request, current.final.remaining[obsid])
+            if _wants_more(
+                request, current.final.remaining[obsid], self._initial_remaining[obsid]
+            )
         ]
 
     def _idle_before(self, current: _Decoded) -> list[float]:
