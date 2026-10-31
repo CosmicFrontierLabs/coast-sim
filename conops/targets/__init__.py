@@ -33,9 +33,10 @@ from .plan_metadata import (
     attach_tle_plan_metadata,
 )
 from .plan_schema import PlanEntrySchema, PlanSchema
-from .pointing import Pointing
+from .pointing import MovingPointing, Pointing
 from .sequence import ObservationSequence, SequenceStep
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
+from .track import TrackPoint, body_track, track_from_table
 from .visits import VisitWindow, cadence_windows, visit_windows
 
 __all__ = [
@@ -45,9 +46,13 @@ __all__ = [
     "assign_obsids",
     "ObservationSequence",
     "SequenceStep",
+    "MovingPointing",
+    "TrackPoint",
     "VisitWindow",
     "cadence_windows",
     "visit_windows",
+    "track_from_table",
+    "body_track",
     "PlanEntry",
     "instrument_modes_of",
     "TargetAttitudeSchema",
