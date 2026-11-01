@@ -34,7 +34,26 @@ class MomentumObservation:
     recovery: Slew
 
 
+@dataclass(frozen=True)
+class IdleMomentumCertificate:
+    """A certified hold followed by an escape at one fixed absolute time.
+
+    The departure is never slid forward on a cache hit. Execution must still
+    match the original attitude, integration history and planning inputs.
+    """
+
+    initial: AttitudeState
+    origin: MomentumForecast
+    departure: float
+    escape: Slew | None
+    context: tuple[object, ...]
+
+
 class MomentumObservationPlanner:
+    # Bound speculative work and how long an unchanged hold can reuse a proof.
+    # This is a planning horizon, not a relaxed physical sampling interval.
+    _IDLE_CERTIFICATE_SECONDS = 60.0
+
     def __init__(self, simulation: "QueueDITL"):
         self.sim = simulation
         self.acs = simulation.acs
@@ -147,6 +166,7 @@ class MomentumObservationPlanner:
                 hold_end,
                 initial=momentum,
                 trajectory=trajectory,
+                stop_on_violation=True,
             )
             if forecast.first_violation is not None:
                 continue
@@ -173,7 +193,7 @@ class MomentumObservationPlanner:
             return None
         start = request.start
         initial = self.executor.predict(start)
-        before = self.executor.forecast_momentum(start)
+        before = self.executor.forecast_momentum(start, stop_on_violation=True)
         if before.first_violation is not None:
             return None
         preferred = self.sim._ppt_optimum_roll(target, start)
@@ -208,6 +228,7 @@ class MomentumObservationPlanner:
                     slew.slewend,
                     initial=before,
                     trajectory=trajectory,
+                    stop_on_violation=True,
                 )
                 if arrival.first_violation is not None:
                     continue  # Only a momentum violation permits a slower cap.
@@ -229,7 +250,11 @@ class MomentumObservationPlanner:
                 minimum = collection_begin + target.snapshot_min_seconds + teardown
                 while end >= minimum:
                     held = self.budget.forecast(
-                        trajectory.state, end, trajectory=trajectory, initial=arrival
+                        trajectory.state,
+                        end,
+                        trajectory=trajectory,
+                        initial=arrival,
+                        stop_on_violation=True,
                     )
                     if held.first_violation is not None:
                         end = min(
@@ -288,9 +313,144 @@ class MomentumObservationPlanner:
                     return result
         return None
 
-    def idle_recovery(self, now: float) -> Slew | None:
-        """Wait one tick only with a feasible escape from that future state."""
+    def _idle_context(self) -> tuple[object, ...]:
+        """Physical inputs are immutable during a run; replacement invalidates.
+
+        Configuration is mutable, so include its values, not just identities.
+        Pass conflicts are checked separately against the current pass list.
+        """
+        return (
+            id(self.executor),
+            id(self.executor._trajectory),
+            id(self.budget),
+            id(self.budget.live),
+            tuple(map(id, self.budget.live.sources)),
+            id(self.budget.orbit),
+            id(self.budget.times),
+            id(self.budget.positions),
+            id(self.sim.ephem),
+            id(self.acs.ephem),
+            id(self.sim.constraint),
+            id(self.sim.constraint.ephem),
+            id(self.sim._idle_safety),
+            self.budget.capacity,
+            self.budget.step,
+            self.budget.inertia.tobytes(),
+            self.end,
+            self.sim.step_size,
+            len(self.acs.executed_commands),
+            self.sim.config.model_dump_json(
+                include={
+                    "spacecraft_bus",
+                    "payload",
+                    "solar_panel",
+                    "constraint",
+                    "attitude_constraint_scopes",
+                    "ground_stations",
+                }
+            ),
+        )
+
+    def _idle_certificate(self, now: float) -> IdleMomentumCertificate | None:
+        certificate = self.sim._momentum_idle_certificate
+        if certificate is None:
+            return None
+        # Drop before checking, so an exception or a failed match cannot leave
+        # a stale proof available to another planner instance.
+        self.sim._momentum_idle_certificate = None
+        state = self.executor.state
+        if (
+            not certificate.initial.utime <= now <= certificate.departure
+            or state.utime != now
+            or self.acs.command_queue
+            or certificate.context != self._idle_context()
+            or state != certificate.initial.coast(now)
+            or self.budget.current.path is not certificate.origin.path
+            or self.budget.current.first_violation is not None
+        ):
+            return None
+        expected = self.budget.forecast(
+            self.executor.predict,
+            now,
+            trajectory=self.executor._trajectory,
+            initial=certificate.origin,
+            stop_on_violation=True,
+        )
+        if (
+            expected.first_violation is not None
+            or self.budget.current.sample != expected.sample
+            or not self.budget.current.tracker.same_state(expected.tracker)
+            or not self.budget.live.same_state(expected.tracker)
+            or (
+                certificate.escape is not None
+                and not self.sim._idle_slew_fits_pass(certificate.escape)
+            )
+        ):
+            return None
+        self.sim._momentum_idle_certificate = certificate
+        return certificate
+
+    def _remember_idle(self, forecast: MomentumForecast, escape: Slew | None) -> None:
         initial = self.executor.state
+        if (
+            any(initial.angular_velocity_body)
+            or self.executor.next_rest_time(initial.utime) != initial.utime
+            or (
+                self.executor._trajectory is not None
+                and self.executor._trajectory.end > initial.utime
+            )
+            or self.acs.command_queue
+            or self.budget.current.path is not forecast.path
+        ):
+            return
+        self.sim._momentum_idle_certificate = IdleMomentumCertificate(
+            initial=initial,
+            origin=self.budget.current,
+            departure=forecast.utime,
+            escape=escape,
+            context=self._idle_context(),
+        )
+
+    def _extend_idle_certificate(
+        self, now: float, hold: AttitudeTrajectory, escape: Slew
+    ) -> None:
+        """Try the known destination later, without another candidate search.
+
+        Only replace the one-tick proof after certifying both the entire
+        longer hold and an escape from its predicted momentum at departure.
+        A failed extension leaves the original one-tick proof intact.
+        """
+        ticks = max(1, floor(self._IDLE_CERTIFICATE_SECONDS / self.sim.step_size))
+        departure = min(self.end, now + ticks * self.sim.step_size)
+        if departure <= escape.slewstart or not self._safe(
+            hold, departure, ACSMode.IDLE
+        ):
+            return
+        forecast = self.executor.forecast_momentum(departure, stop_on_violation=True)
+        if forecast.first_violation is not None:
+            return
+        if departure == self.end:
+            self._remember_idle(forecast, None)
+            return
+        later = self.recovery(
+            self.executor.predict(departure),
+            forecast,
+            (escape.endra, escape.enddec, escape.endroll),
+        )
+        if later is not None:
+            self._remember_idle(forecast, later)
+
+    def idle_recovery(self, now: float) -> Slew | None:
+        """Wait only along a certified hold with a feasible future escape."""
+        initial = self.executor.state
+        certificate = self._idle_certificate(now)
+        next_tick = min(self.end, now + self.sim.step_size)
+        if certificate is not None and next_tick <= certificate.departure:
+            return None
+        # At expiry, re-certify this destination before searching the grid.
+        # If waiting has become impossible, the original escape still starts
+        # exactly now and can be dispatched without changing its trajectory.
+        self.sim._momentum_idle_certificate = None
         planner = self.sim._idle_safety
         # With no external torque, a rest hold preserves the momentum norm.
         # A geometry certificate to run-end then proves no escape is needed.
@@ -305,12 +465,13 @@ class MomentumObservationPlanner:
             # reserve. The envelope includes possible torque growth during both
             # the hold and that maneuver, so this shortcut cannot spend the
             # momentum needed to leave. Near capacity we retain the full search.
-            escape = self.budget.idle_escape_duration
+            escape_duration = self.budget.idle_escape_duration
             violation = planner.first_violation(initial.attitude, now)
-            deadline = min(self.end, violation - escape - 2 * planner.step)
+            deadline = min(self.end, violation - escape_duration - 2 * planner.step)
             demand_bound = (
                 self.budget.current.sample.stored_momentum_norm_n_m_s
-                + self.budget.max_external_torque * max(0.0, deadline - now + escape)
+                + self.budget.max_external_torque
+                * max(0.0, deadline - now + escape_duration)
                 + self.budget.idle_escape_momentum
             )
             if (
@@ -318,8 +479,7 @@ class MomentumObservationPlanner:
                 and demand_bound <= self.budget.capacity
             ):
                 return None
-        next_tick = min(self.end, now + self.sim.step_size)
-        forecast = self.executor.forecast_momentum(next_tick)
+        forecast = self.executor.forecast_momentum(next_tick, stop_on_violation=True)
         hold = AttitudeTrajectory.turn_from_state(
             initial, initial.attitude, self.sim.config.spacecraft_bus.attitude_control
         )
@@ -327,21 +487,41 @@ class MomentumObservationPlanner:
             hold, next_tick, ACSMode.IDLE
         )
         if can_wait:
-            if (
-                next_tick == self.end
-                or self._idle_escape(self.executor.predict(next_tick), forecast)
-                is not None
-            ):
+            if next_tick == self.end:
+                self._remember_idle(forecast, None)
+                return None
+            escape = None
+            if certificate is not None and certificate.escape is not None:
+                prior = certificate.escape
+                escape = self.recovery(
+                    self.executor.predict(next_tick),
+                    forecast,
+                    (prior.endra, prior.enddec, prior.endroll),
+                )
+            if escape is None:
+                escape = self._idle_escape(self.executor.predict(next_tick), forecast)
+            if escape is not None:
+                self._remember_idle(forecast, escape)
+                self._extend_idle_certificate(now, hold, escape)
                 return None
             # No escape is required if the current hold itself remains safe
             # through run-end (including its accumulated external torque).
-            if self._safe(hold, self.end, ACSMode.IDLE) and (
-                self.executor.forecast_momentum(self.end).first_violation is None
-            ):
-                return None
+            if self._safe(hold, self.end, ACSMode.IDLE):
+                remaining = self.executor.forecast_momentum(
+                    self.end, stop_on_violation=True
+                )
+                if remaining.first_violation is None:
+                    self._remember_idle(remaining, None)
+                    return None
         # The full-speed time reserve is not sufficient once momentum caps a
         # recovery's speed. Leave now if waiting would lose a feasible escape.
-        result = self._idle_escape(initial, self.budget.current)
+        result = (
+            certificate.escape
+            if certificate is not None and certificate.departure == now
+            else None
+        )
+        if result is None:
+            result = self._idle_escape(initial, self.budget.current)
         if result is not None:
             return result
         # Geometry/pass conflicts are ordinary idle planning failures. Waiting
@@ -351,7 +531,10 @@ class MomentumObservationPlanner:
             deadline = min(self.end, planner.departure_deadline(initial.attitude, now))
             if (
                 next_tick < deadline
-                and self.executor.forecast_momentum(deadline).first_violation is None
+                and self.executor.forecast_momentum(
+                    deadline, stop_on_violation=True
+                ).first_violation
+                is None
             ):
                 return None
         self.acs.report_idle_safety_fault(
