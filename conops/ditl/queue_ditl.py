@@ -44,7 +44,10 @@ from ..simulation.acs_command import ACSCommand
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
 from ..simulation.momentum_budget import MomentumLimitError
-from ..simulation.momentum_planning import MomentumObservationPlanner
+from ..simulation.momentum_planning import (
+    IdleMomentumCertificate,
+    MomentumObservationPlanner,
+)
 from ..simulation.passes import Pass, pass_slew_trigger_buffer
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.slew import Slew
@@ -297,6 +300,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._temporary_rejected_ppts: list[tuple[Pointing, bool]] | None = None
         self._retry_ppt_fetch_requested = False
         self._momentum_recovery: Slew | None = None
+        self._momentum_idle_certificate: IdleMomentumCertificate | None = None
 
         # Track whether the last PPT fetch attempt was unsuccessful (no target dispatched).
         # Set True when the queue is empty or all candidates are rejected; False on
@@ -929,6 +933,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._ppt_unavailable = None
         self._ppt_optimum_roll_cache.clear()
         self._momentum_recovery = None
+        self._momentum_idle_certificate = None
 
         # If begin/end datetimes are naive, assume UTC by making them timezone-aware
         if self.begin.tzinfo is None:
@@ -1924,8 +1929,8 @@ class QueueDITL(DITLMixin, DITLStats):
         self._momentum_recovery = admitted.recovery
         return admitted.slew
 
-    def _validate_idle_slew(self, slew: Slew, hold_end: float) -> bool:
-        """The same pass, motion and hold geometry for every idle recovery."""
+    def _idle_slew_fits_pass(self, slew: Slew) -> bool:
+        """Check current pass deadlines, including for a retained escape proof."""
         destination = (slew.endra, slew.enddec, slew.endroll)
         next_pass = self.acs.passrequests.next_pass(slew.slewstart)
         if next_pass is not None and any(
@@ -1935,8 +1940,14 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         ):
             return False
+        return True
+
+    def _validate_idle_slew(self, slew: Slew, hold_end: float) -> bool:
+        """The same pass, motion and hold geometry for every idle recovery."""
+        destination = (slew.endra, slew.enddec, slew.endroll)
         return (
-            self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING) is None
+            self._idle_slew_fits_pass(slew)
+            and self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING) is None
             and self._check_attitude_hold_window(
                 slew.slewend, hold_end, destination, ACSMode.IDLE
             )
