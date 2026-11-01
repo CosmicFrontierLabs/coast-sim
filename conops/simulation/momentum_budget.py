@@ -78,7 +78,11 @@ class MomentumBudget:
             settings.max_sample_interval_s, settings.max_attitude_step_deg / fastest
         )
         self.times = np.array([t.timestamp() for t in ephem.timestamp])
-        self.positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=float)
+        # np.interp requires contiguous coordinate arrays. Pack the columns
+        # once instead of copying the entire orbit on every scalar lookup.
+        self.positions = np.array(
+            position_vectors(ephem, "gcrs"), dtype=float, order="F", copy=True
+        )
         if (
             len(self.times) < 2
             or self.positions.shape != (len(self.times), 3)
@@ -89,6 +93,8 @@ class MomentumBudget:
             raise ValueError(
                 "Momentum enforcement requires finite, ordered orbit samples"
             )
+        self.times.flags.writeable = False
+        self.positions.flags.writeable = False
         # Do not pretend sub-sampling motion repairs an under-sampled orbit.
         if (
             settings.gravity_gradient_enabled
@@ -114,6 +120,17 @@ class MomentumBudget:
             initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
+        # Give the initial coast a stable integration grid too. Speculative
+        # holds and subsequent execution then share cells without advancing
+        # or replacing the live forecast during planning.
+        path = _MomentumPath(
+            None,
+            initial.coast,
+            (self.capacity, self.step, self.inertia.tobytes()),
+            [replace(self.current, tracker=tracker.copy())],
+            [initial.utime],
+        )
+        self.current = replace(self.current, path=path)
         slowest_fraction = settings.slew_rate_fractions[-1]
         slow_limits = acs.model_copy(
             update={
@@ -289,8 +306,15 @@ class MomentumBudget:
         *,
         trajectory: AttitudeTrajectory | None,
         initial: MomentumForecast | None = None,
+        stop_on_violation: bool = False,
     ) -> MomentumForecast:
-        """Share integration knots across admission, holds and execution ticks."""
+        """Share integration knots across admission, holds and execution ticks.
+
+        Admission may opt out of integrating the rest of a rejected path. In
+        that mode a rejected result can precede ``end`` and its peak covers
+        only that prefix. Accepted results and the default endpoint/peak
+        contract are unchanged. A later full forecast can extend the path.
+        """
         base = self.current if initial is None else initial
         if not np.isfinite(end) or end < base.utime:
             raise ValueError("Momentum forecast time must be finite and monotonic")
@@ -334,6 +358,8 @@ class MomentumBudget:
         boundaries = trajectory.boundaries if trajectory is not None else ()
         origin_time = path.times[0]
         while path.times[-1] < end:
+            if stop_on_violation and path.nodes[-1].first_violation is not None:
+                return replace(path.nodes[-1], path=path)
             last = path.times[-1]
             next_time = (
                 origin_time + (floor((last - origin_time) / self.step) + 1) * self.step

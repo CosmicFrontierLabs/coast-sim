@@ -123,6 +123,27 @@ class StoredMomentumTracker:
             setattr(result, name, None if value is None else value.copy())
         return result
 
+    def same_state(self, other: StoredMomentumTracker) -> bool:
+        """Exact integration state equality for reuse of a speculative path.
+
+        Equal momentum norms alone do not establish the same physical state;
+        both the inertial vector and the preceding torque must match.
+        """
+        return (
+            self._previous_utime == other._previous_utime
+            and self.gravity_gradient_enabled == other.gravity_gradient_enabled
+            and self.max_sample_interval_s == other.max_sample_interval_s
+            and all(
+                np.array_equal(getattr(self, name), getattr(other, name))
+                for name in (
+                    "_momentum_eci_n_m_s",
+                    "_previous_torque_eci_n_m",
+                    "inertia_tensor_body_kg_m2",
+                    "initial_momentum_body_n_m_s",
+                )
+            )
+        )
+
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state."""
         if not np.isfinite(elapsed_s) or elapsed_s <= 0.0:

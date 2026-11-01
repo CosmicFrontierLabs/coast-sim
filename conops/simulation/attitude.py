@@ -472,12 +472,15 @@ class AttitudeExecutor:
             self.momentum.commit(self.forecast_momentum(utime))
         self._state = state
 
-    def forecast_momentum(self, end: float) -> "MomentumForecast":
+    def forecast_momentum(
+        self, end: float, *, stop_on_violation: bool = False
+    ) -> "MomentumForecast":
         assert self.momentum is not None
         return self.momentum.forecast(
             self.predict,
             end,
             trajectory=self._trajectory,
+            stop_on_violation=stop_on_violation,
         )
 
     def check_momentum(
