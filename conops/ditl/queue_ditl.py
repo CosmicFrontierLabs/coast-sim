@@ -753,7 +753,7 @@ class QueueDITL(DITLMixin, DITLStats):
             config.housekeeping_generated(span, mode=ACSMode.SCIENCE),
         )
         ppt = self.ppt
-        if ppt is not None and ppt.collection_end is not None:
+        if ppt is not None and not ppt.calibration and ppt.collection_end is not None:
             until = min(float(ppt.collection_end), later)
             if collection_stop is not None:
                 until = min(until, collection_stop)
@@ -1301,6 +1301,8 @@ class QueueDITL(DITLMixin, DITLStats):
         reason: str | None = None
         if end > self.uend:
             reason = "the run ends first"
+        elif not self._roll_allowed(ppt, execution_time):
+            reason = "its roll is beyond the ACS limit from the power-optimal roll now"
         elif not ppt.visible(slew_end, end):
             reason = "the step's pointing is not visible throughout"
         elif self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING):

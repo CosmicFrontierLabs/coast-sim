@@ -4,11 +4,18 @@ from datetime import timedelta
 
 import pytest
 
-from conops import create_ditl
+from conops import DITL, create_ditl
 from conops.common import ObsType
-from conops.config import MissionConfig, ObservationTiming
-from conops.ditl import QueueDITL
-from conops.targets import ObservationSequence, Pointing, SequenceStep
+from conops.config import (
+    HousekeepingData,
+    MissionConfig,
+    ObservationTiming,
+    ScienceData,
+)
+from conops.ditl import QueueDITL, RollingHorizonDITL
+from conops.schedulers import PriorityScheduler
+from conops.schedulers.context import SchedulingContext
+from conops.targets import ObservationSequence, Plan, Pointing, SequenceStep
 
 from .planning_scenario import BEGIN, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -144,6 +151,36 @@ class TestModel:
 
 
 class TestDispatch:
+    def test_a_later_step_cannot_substitute_for_an_inadmissible_absolute_roll(
+        self,
+    ) -> None:
+        config = _config(1)
+        config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg = 15.0
+        target = Pointing(
+            config=config,
+            obsid=500,
+            name="Roll sequence",
+            ra=TARGET[0],
+            dec=TARGET[1],
+            sequence=ObservationSequence(
+                steps=[
+                    SequenceStep(name="first", duration_seconds=300),
+                    SequenceStep(
+                        name="offset", duration_seconds=300, roll_offset_deg=120
+                    ),
+                ]
+            ),
+        )
+        end = BEGIN + timedelta(hours=1)
+        ctx = SchedulingContext(config, BEGIN, end, step_size=STEP)
+        target.roll_deg = ctx.optimum_roll(target, T0)
+        ditl = create_ditl(config, [target], BEGIN, end)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert any(e.step == "first" for e in ditl.plan)
+        assert not any(e.step == "offset" for e in ditl.plan)
+        assert any("beyond the ACS limit" in e.description for e in ditl.log.events)
+
     def _run(self, visits: int = 1, **kwargs) -> QueueDITL:
         config = _config(HOURS)
         config.payload.observation_timing = TIMING
@@ -238,3 +275,71 @@ class TestDispatch:
         burst = [e for e in ditl.plan if e.obsid == 9000]
         assert burst and float(burst[0].begin) >= float(steps[-1].end)
         assert not any("cut short" in e.description for e in ditl.log.events)
+
+
+@pytest.mark.parametrize("engine", ["planned", "dispatch", "rolling"])
+@pytest.mark.parametrize("fixed_gb", [0.0, 0.2])
+def test_calibration_collects_time_without_generating_science_data(
+    engine: str, fixed_gb: float
+) -> None:
+    config = _config(1)
+    config.spacecraft_bus.data_generation = HousekeepingData()
+    for instrument in config.payload.instruments:
+        instrument.data_generation.housekeeping = HousekeepingData()
+        instrument.data_generation.science = ScienceData(
+            rate_gbps=0.001, per_observation_gb=fixed_gb
+        )
+    target = Pointing(
+        config=config,
+        obsid=500,
+        name="Calibration and science",
+        ra=TARGET[0],
+        dec=TARGET[1],
+        sequence=ObservationSequence(
+            steps=[
+                SequenceStep(name="calibration", duration_seconds=600, science=False),
+                SequenceStep(name="science", duration_seconds=600),
+            ]
+        ),
+    )
+    end = BEGIN + timedelta(hours=1)
+    scheduler = PriorityScheduler(config, [target], BEGIN, end, step_size=STEP)
+    plan = scheduler.schedule()
+    assert [e.step for e in plan] == ["calibration", "science"]
+    expected_gb = 0.6 + fixed_gb
+    assert sum(scheduler._volumes) == pytest.approx(expected_gb)
+    if engine == "planned":
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=Plan.model_validate_json(plan.model_dump_json()),
+            begin=BEGIN,
+            end=end,
+        )
+    elif engine == "dispatch":
+        ditl = create_ditl(config, [target], BEGIN, end)
+    else:
+        ditl = RollingHorizonDITL(
+            config,
+            [target],
+            begin=BEGIN,
+            end=end,
+            horizon=timedelta(hours=1),
+            replan_interval=timedelta(minutes=5),
+        )
+    ditl.step_size = STEP
+    assert ditl.calc()
+    entries = _steps(ditl.plan)
+    assert [e.step for e in entries] == ["calibration", "science"]
+    assert entries[0].exposure == pytest.approx(600, abs=STEP)
+    assert entries[1].exposure == pytest.approx(600, abs=STEP)
+    assert ditl.recorder.current_volume_gb == pytest.approx(expected_gb)
+    if engine == "dispatch":
+        collected = ditl.queue.targets[0]
+    elif engine == "rolling":
+        collected = target
+    else:
+        assert ditl.validate_plan_matches_execution() == []
+        return
+    assert collected.calibration_seconds == pytest.approx(600, abs=STEP)
+    assert collected.collected_seconds == pytest.approx(600, abs=STEP)

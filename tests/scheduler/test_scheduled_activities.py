@@ -119,6 +119,32 @@ class TestModel:
 
 
 class TestPlanning:
+    @pytest.mark.parametrize(
+        "begin, duration, expected_begin, expected_end",
+        [
+            (-600, 1200, 0, 600),
+            (HOURS * HOUR - 600, 1200, HOURS * HOUR - 600, HOURS * HOUR),
+            (-600, HOURS * HOUR + 1200, 0, HOURS * HOUR),
+        ],
+    )
+    def test_an_activity_is_clipped_to_the_horizon(
+        self, begin: float, duration: float, expected_begin: float, expected_end: float
+    ) -> None:
+        config = _config(HOURS)
+        activity = ScheduledActivity(
+            name="Maintenance", begin=T0 + begin, duration_seconds=duration
+        )
+        plan = PriorityScheduler(
+            config, _targets(config), BEGIN, END, step_size=STEP, activities=[activity]
+        ).schedule()
+        entries = _activities(plan)
+        assert len(entries) == 1
+        assert float(entries[0].begin) + entries[0].slewtime <= T0 + expected_begin
+        assert float(entries[0].begin) >= T0
+        assert float(entries[0].end) == T0 + expected_end
+        for entry in _science(plan):
+            assert not _overlaps(entry, activity)
+
     def test_the_plan_reserves_the_activities_and_executes(self) -> None:
         config = _config(HOURS)
         scheduler = PriorityScheduler(
@@ -198,6 +224,33 @@ class TestDispatch:
 
 
 class TestRolling:
+    def test_an_activity_in_progress_is_reserved_across_horizons(self) -> None:
+        config = _config(2)
+        activity = ScheduledActivity(
+            name="Maintenance", begin=T0 - 600, duration_seconds=2400
+        )
+        ditl = RollingHorizonDITL(
+            config,
+            [_target(config, 100, *PATCH[0], minutes=60, snapshot=5)],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            horizon=timedelta(minutes=20),
+            replan_interval=timedelta(minutes=10),
+            activities=[activity],
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        entries = _activities(ditl.plan)
+        assert entries
+        assert float(entries[0].begin) == T0
+        assert float(entries[-1].end) == activity.end
+        for earlier, later in zip(entries, entries[1:]):
+            assert float(earlier.end) == float(later.begin)
+        assert _science(ditl.plan)
+        for entry in _science(ditl.plan):
+            assert not _overlaps(entry, activity)
+
     def test_each_plan_reserves_the_activities(self) -> None:
         config = _config(HOURS)
         ditl = RollingHorizonDITL(

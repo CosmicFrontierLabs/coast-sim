@@ -64,6 +64,7 @@ def _chains(plan: Plan | list) -> list[list]:
 
 def _check_chain(chain: list, timing: ObservationTiming = TIMING) -> None:
     assert [e.step for e in chain] == [s.name for s in SEQUENCE.steps]
+    assert all(e.visit_begin == float(chain[0].begin) for e in chain)
     assert [e.calibration for e in chain] == [not s.science for s in SEQUENCE.steps]
     # Contiguous: each step's slew starts where the last step's collection ends.
     for earlier, later in zip(chain, chain[1:]):
@@ -213,7 +214,7 @@ class TestCpSat:
 
 
 class TestRolling:
-    def test_each_step_is_credited_to_the_target(self) -> None:
+    def test_an_urgent_too_waits_for_the_committed_visit(self) -> None:
         config = _timed_config()
         targets = _targets(config)
         ditl = RollingHorizonDITL(
@@ -222,14 +223,50 @@ class TestRolling:
             begin=BEGIN,
             end=END,
             horizon=timedelta(hours=3),
-            replan_interval=timedelta(hours=2),
+            replan_interval=timedelta(minutes=10),
+        )
+        ditl.step_size = STEP
+        ditl.submit_too(
+            9000,
+            *PATCH[4],
+            merit=1000.0,
+            exptime=10 * MIN,
+            name="Burst",
+            submit_time=BEGIN + timedelta(minutes=15),
+            deadline=BEGIN + timedelta(hours=1),
+            interrupt=True,
+        )
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        chains = _chains(ditl.plan)
+        assert len(chains) == 1
+        _check_chain(chains[0])
+        burst = [e for e in ditl.plan if e.obsid == 9000]
+        assert burst and float(burst[0].begin) >= float(chains[0][-1].end)
+        assert all(r.interrupted_obsid != 500 for r in ditl.replans)
+
+    @pytest.mark.parametrize("replan_minutes", [120, 10])
+    @pytest.mark.parametrize("visits", [1, 2])
+    def test_each_step_is_credited_to_the_target(
+        self, replan_minutes: int, visits: int
+    ) -> None:
+        config = _timed_config()
+        targets = _targets(config, visits=visits)
+        ditl = RollingHorizonDITL(
+            config,
+            targets,
+            begin=BEGIN,
+            end=END,
+            horizon=timedelta(hours=3),
+            replan_interval=timedelta(minutes=replan_minutes),
         )
         ditl.step_size = STEP
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
         chains = _chains(ditl.plan)
-        assert len(chains) >= 1
-        _check_chain(chains[0])
+        assert len(chains) == visits
+        for chain in chains:
+            _check_chain(chain)
         campaign = targets[0]
         assert campaign.collected_seconds == pytest.approx(
             SCIENCE * len(chains), abs=2 * STEP

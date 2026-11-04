@@ -176,6 +176,11 @@ class PlanEntry(BaseModel):
         exclude_if=lambda v: v is None,
         description="The sequence step this entry observes, for a sequence target",
     )
+    visit_begin: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="The first step's slew start, shared by every entry in a sequence visit",
+    )
     calibration: bool = Field(
         default=False,
         exclude_if=lambda v: not v,

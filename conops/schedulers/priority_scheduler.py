@@ -447,7 +447,7 @@ class PriorityScheduler:
                 if gspass.requires_tracking:
                     self._place_pass(gspass)
         for activity in self.activities:
-            if self.ctx.ustart <= activity.begin < self.ctx.uend:
+            if activity.begin < self.ctx.uend and activity.end > self.ctx.ustart:
                 self._place_activity(activity)
         self._ledger = self._recorder_ledger()
         self._volumes = self._ledger.initial_volumes(
@@ -596,6 +596,9 @@ class PriorityScheduler:
     def _finish(self, timeline: Sequence[_Block]) -> Plan:
         """Record and return the plan for a finished timeline, with its charging."""
         timeline = self._plan_charging(list(timeline))
+        for block in timeline:
+            for step in block.steps:
+                step.visit_begin = float(block.entry.begin)
         self.plan = Plan(
             entries=[
                 step for block in timeline for step in (block.steps or [block.entry])
@@ -1225,6 +1228,11 @@ class PriorityScheduler:
         hold for the activity's length is not used; the plan then leaves
         the activity out and says so.
         """
+        begin = max(activity.begin, self.ctx.ustart)
+        end = min(activity.end, self.ctx.uend)
+        activity = activity.model_copy(
+            update={"begin": begin, "duration_seconds": end - begin}
+        )
         before = [b for b in self.timeline if b.end <= activity.begin]
         attitude = (
             before[-1].attitude_out

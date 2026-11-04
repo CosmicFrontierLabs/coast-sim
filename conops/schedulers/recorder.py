@@ -262,6 +262,8 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
 
     def science_volume(self, entry: PlanEntry, collection_seconds: float) -> float:
         """What a snapshot of ``entry`` collecting for some seconds generates."""
+        if entry.calibration:
+            return 0.0
         return self.config.science_generated(collection_seconds, entry.science_data)
 
     def science_additions(

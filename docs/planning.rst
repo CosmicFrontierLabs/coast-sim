@@ -101,8 +101,10 @@ How a plan is built
    :class:`~conops.targets.ScheduledActivity`) are reserved the same way: each is a
    fixed block from its start for its duration, in ``IDLE`` mode, holding the attitude
    the timeline has when it starts as reserved, so no science is placed across it and
-   the slews around it are planned. A maintenance window, a calibration that needs the
-   spacecraft still or an engineering block is an activity; ``DITL`` commands the
+   the slews around it are planned. An activity overlapping a planning horizon is
+   reserved for its intersection with that horizon, including when already underway.
+   A maintenance window, a calibration that needs the spacecraft still or an
+   engineering block is an activity; ``DITL`` commands the
    plan's activity entries, and the plan validator checks that no science, contact or
    charge ran during one. Dispatch takes the same list: it ends the observation under
    way when an activity begins, marking it interrupted so it is revisited, holds the
@@ -294,6 +296,8 @@ is recorded on the target, which is revisited for the rest from its first step.
 Each step is its own plan entry with the target's obsid, its ``step`` name and, for
 a calibration step, ``calibration`` set; the target is credited the science steps'
 collection and, separately, the calibration time.
+Calibration steps generate housekeeping data but no science data, including no
+fixed science readout amount.
 
 The planners place a visit as one block of steps. The priority-first scheduler
 builds the chain from a candidate start: the first step's collection begins its
@@ -308,7 +312,9 @@ visit as one block, and CP-SAT models it as one task whose length includes the
 calibration, the slews between steps and any step setup, arriving at the first
 step's attitude and leaving from the last's. A rolling run credits each executed
 step to its target, science or calibration, and ``DITL`` commands the steps as it
-commands any science entries.
+commands any science entries. Each planned step carries the same ``visit_begin``
+time so rolling replans keep every remaining step once the visit is committed.
+An urgent ToO waits for that visit to finish before it can begin.
 
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much the recorder can take

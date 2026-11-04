@@ -788,7 +788,9 @@ class DITLMixin:
         # step: ACS science pointing can include payload setup and cleanup.
         # What an observation has generated is its rate for the seconds it
         # has collected plus its fixed amount, so the step adds the increase.
-        if collection_seconds > 0:
+        if collection_seconds > 0 and not (
+            self.ppt is not None and self.ppt.calibration
+        ):
             science = self.ppt.science_data if self.ppt is not None else None
             observation = (
                 (id(self.ppt), float(self.ppt.begin)) if self.ppt is not None else None
