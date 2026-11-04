@@ -554,30 +554,32 @@ class Payload(ConfigModel):
 
     def telescope_for_target(
         self, instrument_name: str | None = None
-    ) -> Telescope | None:
-        """Resolve the telescope used by one target.
+    ) -> Instrument | None:
+        """Resolve the instrument that observes one target.
 
-        A name that does not identify exactly one telescope is an error.
-        Anything else that cannot be resolved to a single telescope retains
-        legacy body-+X target behavior.
+        A name identifies exactly one configured instrument, a telescope or
+        not; a name that does not is an error. Without a name, the payload's
+        single telescope, or None where it has none or several, which keeps
+        the body-+X target behaviour. A plain instrument has no mounting of
+        its own, so a target naming one points the body boresight at it.
         """
+        if instrument_name is not None:
+            matches = [
+                instrument
+                for instrument in self.instruments
+                if instrument.name == instrument_name
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"target instrument {instrument_name!r} does not identify "
+                    "exactly one configured instrument"
+                )
+            return matches[0]
         telescopes = [
             instrument
             for instrument in self.instruments
             if isinstance(instrument, Telescope)
         ]
-        if instrument_name is not None:
-            matches = [
-                telescope
-                for telescope in telescopes
-                if telescope.name == instrument_name
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"target instrument {instrument_name!r} does not identify "
-                    "exactly one configured telescope"
-                )
-            return matches[0]
         if len(telescopes) > 1:
             return None
         return telescopes[0] if telescopes else None

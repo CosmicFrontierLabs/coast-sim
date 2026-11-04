@@ -196,10 +196,10 @@ peak:
 * each contact removes what its rate and length allow, and no more than is there,
   so what it cannot remove carries over to the segments after it;
 * housekeeping is counted at the nominal rate throughout, and at the ``PASS`` rate
-  during contacts, since the plan does not know when the spacecraft will be in
+  during spacecraft tracking, since the plan does not know when the spacecraft will be in
   other modes. It is counted on the simulation's step grid, as the simulation
   generates it: each step counts whole at the rate of the mode it starts in;
-* the slew into a contact, which ACS flies in ``PASS`` mode too, adds the
+* when a pass requires a spacecraft slew, ACS flies it in ``PASS`` mode too, adding the
   difference between the two rates for the steps it is under way. How long it is
   depends on where the spacecraft is before it, so the schedulers add it with the
   contact, as they add science, and recompute it whenever a snapshot placed before
@@ -209,6 +209,20 @@ peak:
 * a contact downlinks for the part of its link inside the horizon, and what the
   step its link ends in generates after the link stays on the recorder, as the
   simulation stores it after the downlink.
+
+All ground-station passes are booked by :class:`~conops.simulation.PassTimes`
+(see :doc:`communications`). A pass that requires no spacecraft tracking does
+not block science: its usable link spans downlink at the station's rate while
+housekeeping stays at the nominal rate. A snapshot that does not fit before
+such a pass is tried after it within the same timeline gap.
+The schedulers and :class:`~conops.ditl.RollingHorizonDITL`
+take the coverage from the configuration, or from ``coverage=`` where the caller
+has it: a rolling run builds it once and gives it to every plan. Where the antenna is
+re-pointed within contacts (see :doc:`communications`), a target whose category sets
+``antenna_repoints: forbidden`` has its visibility windows cut at each repoint, so every
+scheduler places its snapshots between repoints as it places them between constraint
+violations, and dispatch starts such an observation only when its minimum snapshot
+fits before the next repoint and ends it there.
 
 The arithmetic is not particular to the recorder. Anything a spacecraft
 accumulates between the events that remove it, and must keep within a limit
@@ -255,7 +269,10 @@ fit stays shortened through admission, which asks the room again with the slew i
 flies. A Target of Opportunity admitted ahead of the observation under way, to start
 once that observation's cleanup is over, is admitted against the volume projected to
 then: the science the observation still collects and the housekeeping of the steps
-between. The log says how many were passed over and how much room there was. A contact during the snapshot is not counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
+between. Passes that require no spacecraft tracking have no ingress slew;
+housekeeping stays at the waiting rate, and each usable link span downlinks at
+its mean rate for its length.
+The log says how many were passed over and how much room there was. A contact during the snapshot is not counted on. ``config.targets.data_volume_weight`` adds a price on top, in merit
 points per gigabit of science data, so that high-data science gives way to low-data
 science before the recorder is full rather than only once it is (see
 :doc:`configuration`).
@@ -655,7 +672,7 @@ each request's remaining exposure to collect in which bin:
   generates housekeeping, at the ``PASS`` rate during its contacts, plus the science
   data of the requests allocated to it: each target's rate for its allocated seconds
   and its fixed amount per observation, once per bin. Its contacts, from the same
-  pass prediction the schedulers use, take off what they can, and what they cannot
+  booked ground-station passes the schedulers use, take off what they can, and what they cannot
   is carried on the recorder into the next bin, where it must stay within the
   recorder's planning limit (see `Planning within the recorder`_). The allocation
   starts from what is on the recorder, so a run that begins with a full recorder

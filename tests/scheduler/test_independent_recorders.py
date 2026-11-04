@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 from pydantic import ValidationError
 
-from conops.common.enums import ACSMode
+from conops.common.enums import ACSMode, AntennaType
 from conops.config import (
     BandCapability,
     CommunicationsSystem,
@@ -30,7 +30,7 @@ from conops.ditl.ditl_mixin import DITLMixin
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedgers, contact_downlink_gb
 from conops.simulation.passes import Pass, PassTimes
-from conops.targets import PlanEntry, Pointing, TargetQueue
+from conops.targets import Plan, PlanEntry, Pointing, TargetQueue
 
 from .planning_scenario import BEGIN, make_config
 from .test_recorder_constraint import (
@@ -339,7 +339,10 @@ def test_station_normalization_on_assignment_and_duplicate_routes():
         ("Ka", {"payload": 0.3, "bus": 0.3}, "FAST"),
     ],
 )
-def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
+@pytest.mark.parametrize("precomputed", [False, True])
+def test_pass_selection_uses_routed_downlink_volume(
+    band, shares, selected, precomputed
+):
     c = config()
     c.constraint.ephem = make_config(1).constraint.ephem
     c.spacecraft_bus.communications.band_capabilities.append(
@@ -366,15 +369,92 @@ def test_pass_selection_uses_routed_downlink_volume(band, shares, selected):
         )
     passes = PassTimes(config=c)
     passes.passes = [
-        Pass(station=station, begin=1000, length=600) for station in ("GS", "FAST")
+        Pass(
+            station=station,
+            begin=1000,
+            length=length,
+            requires_tracking=not precomputed,
+            downlink_volume_gb=length * 0.1 if precomputed else None,
+        )
+        for station, length in (("GS", 600), ("FAST", 720))
     ]
     passes._deconflict_overlapping_passes()
+    assert [p.station for p in passes.passes] == [selected]
+
+
+@pytest.mark.parametrize(
+    "ranged_rates, selected", [([10, 20], "GS"), ([80, 100], "FAST")]
+)
+@pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+@pytest.mark.parametrize("clip_seconds", [0, 30])
+def test_predicted_pass_selection_integrates_the_reserved_band(
+    ranged_rates, selected, antenna_type, clip_seconds
+):
+    import numpy as np
+
+    from conops.simulation.passes import StationGeometry
+
+    c = config()
+    c.constraint.ephem = make_config(1).constraint.ephem
+    c.spacecraft_bus.communications.antenna_pointing.antenna_type = antenna_type
+    c.spacecraft_bus.communications.band_capabilities.append(
+        BandCapability(band="S", downlink_rate_mbps=300)
+    )
+    c.ground_stations.add(
+        GroundStation(
+            code="FAST",
+            name="FAST",
+            latitude_deg=0,
+            longitude_deg=0,
+            bands=[
+                BandCapability(
+                    band="Ka",
+                    downlink_rate_mbps=300,
+                    downlink_rate_vs_range_km=[
+                        (1000, ranged_rates[0]),
+                        (2000, ranged_rates[1]),
+                    ],
+                ),
+                BandCapability(band="S", downlink_rate_mbps=500),
+            ],
+        )
+    )
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.25, "bus": 0.25}),
+        DownlinkRoute(station="FAST", band="Ka", shares={"payload": 1}),
+    ]
+    passes = PassTimes(c)
+    times = np.array([t.timestamp() for t in passes.ephem.timestamp])
+    directions = np.tile([1.0, 0.0, 0.0], (10, 1))
+    geometry = StationGeometry(
+        np.full(10, 90.0), np.repeat([1000.0, 2000.0], 5), directions
+    )
+    with patch.object(PassTimes, "station_geometry", return_value=geometry):
+        for station in c.ground_stations.stations:
+            contact, safe = passes._build_pass(station, 0, 0, 10, times, -directions)
+            assert safe
+            passes.passes.append(contact)
+        assert [p.downlink_volume_gb for p in passes.passes] == pytest.approx([60, 180])
+        for contact in passes.passes:
+            contact.begin += clip_seconds
+            contact.length -= 2 * clip_seconds
+        seconds_per_rate = (600 - 2 * clip_seconds) / 2
+        assert [
+            passes._pass_selection_key(p)[0] / 1000 for p in passes.passes
+        ] == pytest.approx(
+            [
+                50 * seconds_per_rate * 2 / 1000,
+                sum(ranged_rates) * seconds_per_rate / 1000,
+            ]
+        )
+        passes._deconflict_overlapping_passes()
     assert [p.station for p in passes.passes] == [selected]
 
 
 def runtime(c):
     d = object.__new__(QueueDITL)
     d.config = c
+    d.plan = Plan()
     d.uend = 1000
     d.ustart = 0
     d.step_size = 10
@@ -429,6 +509,7 @@ def test_dispatch_room_and_rolling_state_remain_separate():
     assert projected["bus"] == pytest.approx(7.11)
     rolling = object.__new__(RollingHorizonDITL)
     rolling.config = c
+    rolling.coverage = None
     rolling.step_size = 10
     rolling.ustart = 0
     projected = rolling._recorder_volume_at(0, 10, [])
@@ -643,3 +724,81 @@ def test_nested_config_also_rejects_ambiguous_storage():
 
     with pytest.raises(ValueError, match="either recorder or data_storage"):
         Wrapped.model_validate({"config": {"recorder": {}, "data_storage": storage()}})
+
+
+def test_coverage_respects_store_shares_and_range_dependent_routed_band(monkeypatch):
+    import numpy as np
+
+    from conops.simulation.coverage import ContactSpan, StationCoverage
+
+    c = config()
+    c.data_storage.downlinks = [
+        DownlinkRoute(station="GS", band="Ka", shares={"payload": 0.75, "bus": 0.25})
+    ]
+    c.spacecraft_bus.communications.band_capabilities[0].downlink_rate_vs_range_km = [
+        (1000, 100),
+        (2000, 40),
+    ]
+    coverage = object.__new__(StationCoverage)
+    coverage.repointing = False
+    coverage.config = c
+    coverage.times = np.array([0.0, 10.0, 20.0])
+    coverage.step_size = 10.0
+    coverage.stations = c.ground_stations.stations
+    coverage.rates = np.array([100.0])
+    coverage._ranged = [False]
+    coverage.range_km = np.array([[1000.0, 2000.0, 2000.0]])
+    coverage.contacts = [ContactSpan(0, 20, "GS", 100)]
+    coverage._begins = [0.0]
+    queries = []
+    views = c.recorder_views()
+    for view in views.values():
+        original = view.downlink_rate
+
+        def counted_rate(*args, original=original):
+            queries.append(args)
+            return original(*args)
+
+        monkeypatch.setattr(view, "downlink_rate", counted_rate)
+    ledgers = RecorderLedgers(c, 0, 20, [], coverage=coverage)
+    computed = len(queries)
+    assert computed > 0
+    for _ in range(10):
+        coverage.recorder_spans(views["payload"], 5, 20)
+    assert len(queries) == computed
+    expected = {"payload": 1.05, "bus": 0.35}
+    for name, ledger, _ in ledgers.members:
+        assert sum(ledger.downlink_gb) == pytest.approx(expected[name])
+    # Solver/retry boundaries coalesce the link, while the exact walk still
+    # integrates the rate change at 10 seconds inside that segment.
+    assert ledgers.next_contact(-1) == 20
+    assert ledgers.next_contact(0) == 20
+    assert ledgers.next_contact(10) == 20
+    assert ledgers.next_contact(20) is None
+
+    from conops.schedulers import LongRangeAllocator
+
+    allocator = object.__new__(LongRangeAllocator)
+    allocator.config = c
+    allocator.ctx = SimpleNamespace(coverage=coverage)
+    allocator.bins = [(0, 10), (10, 20)]
+    budget = allocator._budget(
+        0, [SimpleNamespace(obsid=1, generated={"payload": (1, 0)})], None
+    )
+    assert budget.stores["payload"].downlink == pytest.approx([0.75, 0.3])
+
+    d = runtime(c)
+    d.coverage = coverage
+    d._log_repoints = Mock()
+    for view in c.recorder_views().values():
+        view.recorder.current_volume_gb = 5
+    generated, downlinked = d._process_data_management(
+        0, ACSMode.IDLE, 20, collection_seconds=0
+    )
+    assert downlinked == pytest.approx(1.4)
+    assert generated == pytest.approx(0.22)
+    assert c.recorder_views()["payload"].recorder.current_volume_gb == pytest.approx(
+        3.95
+    )
+    assert c.recorder_views()["bus"].recorder.current_volume_gb == pytest.approx(4.87)
+    d._log_repoints.assert_called_once_with(0, 20, 0)

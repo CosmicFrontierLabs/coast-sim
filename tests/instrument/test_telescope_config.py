@@ -501,6 +501,16 @@ class TestTelescopeConstraint:
         payload = Payload(instruments=[scope])
         assert payload.telescope_for_target(None) is scope
 
+    def test_a_target_can_name_a_plain_instrument(self) -> None:
+        """A name resolves any configured instrument, not only a telescope;
+        without a name the single telescope is still the default."""
+        cam = Instrument(name="Camera")
+        scope = Telescope(name="T1")
+        payload = Payload(instruments=[cam, scope])
+        assert payload.telescope_for_target("Camera") is cam
+        assert payload.telescope_for_target("T1") is scope
+        assert payload.telescope_for_target(None) is scope
+
     def test_combined_skips_non_telescope_instruments(self) -> None:
         cam = Instrument(name="Camera")
         scope = Telescope(constraint=self._sun_constraint())

@@ -12,7 +12,7 @@ Overview
 
 The primary models are:
 
-* :class:`~conops.targets.PlanEntry` — a single observation or ground-station-pass entry.
+* :class:`~conops.targets.PlanEntry` — a spacecraft activity, such as an observation or ground-station tracking.
 * :class:`~conops.targets.Plan` — the top-level plan, including its entries, file metadata,
   and optional execution timeseries.
 
@@ -66,11 +66,13 @@ passed to the constructor or assigned before :meth:`~conops.ditl.ditl.DITL.calc`
 
 :class:`~conops.ditl.ditl.DITL` commands every entry when its ``begin`` is reached:
 science entries (``PPT``, ``AT``, ``TOO``) slew to the target and collect until ``end``;
-ground-station entries (``GSP``) slew onto the pass tracking profile, start the contact at
+ground-station tracking entries (``GSP``) slew onto the pass tracking profile, start the contact at
 ``contact_begin`` and end it at ``end``; charging entries (``CHARGE``) charge until ``end``.
 Passes are predicted from the configured ground stations and matched to ``GSP`` entries by
 station and contact window; passes not in the plan are skipped.  Entries
-of any other type are logged and skipped.
+of any other type are logged and skipped. Booked pass windows that require no
+spacecraft tracking are stored in ``ground_contacts`` and used for downlink
+without adding activities to the spacecraft timeline.
 
 Executing a plan saved by :class:`~conops.ditl.queue_ditl.QueueDITL` with the same
 configuration and ephemeris reproduces that run's timeline.  To list where execution differed
@@ -211,6 +213,12 @@ Metadata Fields
    * - ``num_entries``
      - int
      - Total number of entries in the file.
+   * - ``ground_contacts``
+     - array | null
+     - Booked passes that require no spacecraft tracking, as
+       ``[begin_unix_seconds, end_unix_seconds, station_code]`` rows. An empty
+       array reserves no station time. If absent, bookings are predicted from
+       the configuration. Saved bookings are replayed without a new scheduling draw.
    * - ``attitude_timeseries_file``
      - string | null
      - Filename (no path) of the sibling attitude-timeseries JSON file written alongside
@@ -395,7 +403,7 @@ Entry Fields
 Ground Station Pass (GSP) Entries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Ground station pass entries (``obstype="GSP"``) represent commanded communication windows
+Ground station pass entries (``obstype="GSP"``) represent spacecraft tracking activities
 with ground stations. Unlike science observations, these entries capture the reservation
 and execution of data downlink passes.
 

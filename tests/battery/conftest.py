@@ -11,6 +11,7 @@ from conops import (
     Constraint,
     EmergencyCharging,
     MissionConfig,
+    Plan,
     QueueDITL,
     SolarPanel,
     SolarPanelSet,
@@ -190,6 +191,7 @@ def queue_ditl(mock_config):
         self.ephem = ephem or Mock()  # Mock ephem
         self.calculate_field_of_regard = calculate_field_of_regard
         self.acs = Mock()
+        self.plan = Plan()
         self._init_subsystems()
 
     with patch(

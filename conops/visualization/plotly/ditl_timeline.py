@@ -18,6 +18,14 @@ from conops.ditl.queue_ditl import QueueDITL
 from ...common import ACSMode, ObsType
 from ...config import ObservationCategories
 from ...config.visualization import VisualizationConfig
+from ...simulation.coverage import StationCoverage
+from ..contacts import (
+    ContactBar,
+    contact_alphas,
+    contact_bars,
+    run_window,
+    station_colors,
+)
 
 # Mapping of matplotlib color names to CSS color names that Plotly accepts
 MATPLOTLIB_TO_PLOTLY_COLORS = {
@@ -72,6 +80,19 @@ def _convert_matplotlib_color_to_plotly(color: str) -> str:
 def _bar_hover_template(label: str, start: float, duration: float) -> str:
     """Build hover text for a single timeline bar."""
     return f"{label}<br>Start: {start:.2f}h<br>Duration: {duration:.2f}h<extra></extra>"
+
+
+def _contact_hover_template(bar: ContactBar) -> str:
+    """Hover text for a contact bar: the span, or the hour and its share."""
+    if bar.fraction >= 1.0:
+        return (
+            f"Contact: {bar.station}<br>Start: {bar.start:.2f}h<br>"
+            f"Duration: {bar.duration:.2f}h<br>Rate: {bar.rate_mbps:g} Mbps<extra></extra>"
+        )
+    return (
+        f"Contact: {bar.station}<br>Hour from: {bar.start:.2f}h<br>"
+        f"In contact: {bar.fraction:.0%}<br>Rate: {bar.rate_mbps:g} Mbps<extra></extra>"
+    )
 
 
 def _extract_observations(
@@ -296,10 +317,26 @@ def _extract_eclipses(
     return eclipse_segments
 
 
+def _extract_contacts(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[ContactBar]:
+    """Usable link spans for passes without spacecraft tracking.
+
+    Tracking activities are plotted by ``_extract_ground_passes``.
+    """
+    coverage = getattr(ditl, "coverage", None)
+    if not isinstance(coverage, StationCoverage):
+        return []
+    window = run_window(ditl)
+    if window is None:
+        return []
+    return contact_bars(coverage, window[0], window[1], t_start, offset_hours)
+
+
 def _extract_ground_passes(
     ditl: QueueDITL | DITL, t_start: float, offset_hours: float
 ) -> list[tuple[float, float]]:
-    """Extract ground station pass times from ACS pass list."""
+    """Extract spacecraft tracking intervals from the ACS pass list."""
     if not hasattr(ditl, "acs") or ditl.acs is None:
         return []
 
@@ -629,6 +666,27 @@ def plot_ditl_timeline_plotly(
                 hovertemplate=_bar_hover_template("Ground Contact", start, duration),
             )
         )
+
+    # Usable links during ground-station passes, coloured by station. On
+    # a long run each bar is an hour, as opaque as its fraction in contact.
+    contacts = _extract_contacts(ditl, t_start, offset_hours)
+    if contacts:
+        colors = station_colors(bar.station for bar in contacts)
+        alphas = dict(zip(contacts, contact_alphas(contacts)))
+        for station, color in colors.items():
+            bars = [bar for bar in contacts if bar.station == station]
+            fig.add_trace(
+                go.Bar(
+                    x=[bar.duration for bar in bars],
+                    y=cast(Any, ["Ground Contact"] * len(bars)),
+                    orientation="h",
+                    marker=dict(color=color, opacity=[alphas[bar] for bar in bars]),
+                    name=f"Contact: {station}",
+                    base=[bar.start for bar in bars],
+                    width=0.8,
+                    hovertemplate=[_contact_hover_template(bar) for bar in bars],
+                )
+            )
 
     # Plot orbit markers if requested
     if show_orbit_numbers:

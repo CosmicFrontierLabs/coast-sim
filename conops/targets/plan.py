@@ -197,6 +197,14 @@ class Plan(BaseModel):
     roll_reference_axis: Literal["+Z"] = "+Z"
     roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     metadata: dict[str, object] | None = None
+    ground_contacts: list[tuple[float, float, str]] | None = Field(
+        default=None,
+        description=(
+            "Booked ground-station passes without spacecraft tracking, "
+            "as (begin Unix seconds, end Unix seconds, station code). "
+            "None predicts bookings; an empty list reserves no station time."
+        ),
+    )
     entries: list[SerializeAsAny[PlanEntry]] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True

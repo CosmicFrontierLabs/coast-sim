@@ -73,6 +73,20 @@ This approach is ideal for rapid prototyping and testing different configuration
    # Analyze
    ditl.plot()
 
+Ground-Station Passes with Three Antenna Types
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Antenna_Types_Example.ipynb``
+
+This notebook compares fixed, omni, and gimballed antennas over the same day in LEO:
+
+* Booking passes before execution with the same ``PassTimes`` API
+* Comparing spacecraft tracking, science collection, downlink, and recorder volume
+* Showing gimbal repoint outages and the effect of restricted antenna reach
+* Checking station scheduling probability and preserving saved bookings for replay
+
+See :doc:`communications` and :doc:`planning` for reference.
+
 Dynamic Merit and Targets of Opportunity
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

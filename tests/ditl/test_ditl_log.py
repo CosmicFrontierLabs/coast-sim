@@ -28,6 +28,17 @@ class TestDITLLogBasicMethods:
         log.clear()
         assert len(log) == 0
 
+    def test_iterates_over_events_in_order(self):
+        """A pydantic model iterates over its fields; a log iterates over its events."""
+        log = DITLLog()
+        log.log_event(utime=1000.0, event_type="INFO", description="first")
+        log.log_event(utime=2000.0, event_type="INFO", description="second")
+        assert [e.description for e in log] == ["first", "second"]
+        assert list(log) == log.events
+        assert list(DITLLog()) == []
+        # Serialisation still sees the fields.
+        assert set(log.model_dump()) == {"events", "run_id", "store"}
+
 
 class TestDITLLogWithStorePersistsEvents:
     @pytest.fixture

@@ -156,6 +156,9 @@ def _hinted_only(monkeypatch: pytest.MonkeyPatch) -> None:
         solver: cp_model.CpSolver, model: cp_model.CpModel
     ) -> cp_model_helper.CpSolverStatus:
         solver.parameters.fix_variables_to_their_hinted_value = True
+        # Check hint feasibility regardless of CI load; the scheduler's short
+        # per-chunk search budget can expire before the fixed hint is checked.
+        solver.parameters.max_time_in_seconds = float("inf")
         return solve(solver, model)
 
     monkeypatch.setattr(cp_model.CpSolver, "solve", hinted_only)

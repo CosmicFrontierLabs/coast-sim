@@ -177,13 +177,19 @@ def _along_sun_path(
     return positions
 
 
-def _week_targets(config: MissionConfig, seed: int = 1234) -> list[Pointing]:
-    """300 random targets, half due within the week, oversubscribing it, and
+def _week_targets(
+    config: MissionConfig,
+    seed: int = 1234,
+    *,
+    count: int = 300,
+    exposure_scale: int = 1,
+) -> list[Pointing]:
+    """Random targets, half due within the week, oversubscribing it, and
     two programs by the Sun's 45-degree avoidance zone: Early targets just
     ahead of it, which it covers as the week goes on, and Late ones behind."""
     rng = np.random.default_rng(seed)
     targets = []
-    for k in range(300):
+    for k in range(count):
         value = float(rng.integers(10, 100))
         deadline = None
         if rng.random() < 0.5:
@@ -199,7 +205,7 @@ def _week_targets(config: MissionConfig, seed: int = 1234) -> list[Pointing]:
             ss_max=1200,
             deadline=deadline,
         )
-        target.exptime = int(rng.choice((600, 1200, 2400)))
+        target.exptime = exposure_scale * int(rng.choice((600, 1200, 2400)))
         targets.append(target)
     for first_obsid, elongations, group_seed in (
         (40000, (46.0, 52.0), seed + 5),
@@ -240,12 +246,18 @@ Week = tuple[MissionConfig, list[Pointing], LongRangeAllocator, Allocation]
 
 @pytest.fixture(scope="module")
 def week() -> Week:
-    """The week allocated with the default solver, the MILP."""
+    """A full, oversubscribed week with fewer independent MILP decisions.
+
+    Longer requests preserve the competing demand without hundreds of binary
+    variables turning an optimality regression into a solver time-limit test.
+    The data-budget scenarios retain the larger target population.
+    """
     if not HAS_ORTOOLS:
         pytest.skip("needs OR-Tools")
     config = _week_config()
-    targets = _week_targets(config)
+    targets = _week_targets(config, count=60, exposure_scale=4)
     allocator = LongRangeAllocator(config, BEGIN, BEGIN + timedelta(days=DAYS))
+    assert sum(t.exptime for t in targets) > DAYS * 0.75 * 0.9 * 24 * HOUR
     return config, targets, allocator, allocator.allocate(targets, T0)
 
 
@@ -712,7 +724,9 @@ class TestLongRangeAllocator:
         assert allocated >= 0.9 * sum(float(t.exptime or 0) for t in early)
 
     def test_allocates_from_the_start_time_and_minus_reserved(self, week: Week) -> None:
-        _, targets, allocator, _ = week
+        config, targets, _, _ = week
+        # Keep the shared first allocation and its solver status unchanged.
+        allocator = LongRangeAllocator(config, BEGIN, BEGIN + timedelta(days=DAYS))
         later = T0 + 36 * HOUR
         first = targets[0]
         reserved = {int(first.obsid): float(first.exptime or 0)}

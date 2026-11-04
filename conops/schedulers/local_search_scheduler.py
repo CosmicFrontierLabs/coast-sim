@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..targets import Plan, Pointing
+from ..targets.plan_entry import snapshot_min_seconds
 from .battery import Additions
 from .priority_scheduler import (
     PriorityScheduler,
@@ -32,9 +33,7 @@ from .priority_scheduler import (
     _Request,
     program_shares,
 )
-
-_VOLUME_TOLERANCE_GB = 1e-9
-"""Within which two ledgers' volumes are the same, allowing for rounding."""
+from .recorder import RecorderAmount, amounts_equal, combine_amounts
 
 
 class _Snapshot(BaseModel):
@@ -65,8 +64,8 @@ class _State(BaseModel):
     """Science collected and planned so far, by program."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
-    volumes: tuple[float, ...]
-    """Science volume planned in each segment of the recorder ledger."""
+    volumes: tuple[RecorderAmount, ...]
+    """Science production planned in each segment of the recorder ledger."""
     energy: tuple[Additions, ...]
     """What the plan draws from the battery, by segment of the battery ledger."""
     allocated_left: dict[tuple[int, int], float]
@@ -90,7 +89,7 @@ class _Decoded(BaseModel):
 
 def _wants_more(request: _Request, remaining: float) -> bool:
     """Whether ``remaining`` seconds are enough for another snapshot of ``request``."""
-    return remaining > 0 and remaining >= float(request.target.ss_min)
+    return remaining > 0 and remaining >= float(snapshot_min_seconds(request.target))
 
 
 class LocalSearchScheduler(PriorityScheduler):
@@ -461,8 +460,7 @@ class LocalSearchScheduler(PriorityScheduler):
         ):
             return False
         if self._ledger.active and any(
-            abs(x - y) > _VOLUME_TOLERANCE_GB
-            for x, y in zip(a.volumes, b.volumes, strict=True)
+            not amounts_equal(x, y) for x, y in zip(a.volumes, b.volumes, strict=True)
         ):
             return False
         if self._battery.active and a.energy != b.energy:
@@ -525,7 +523,7 @@ class LocalSearchScheduler(PriorityScheduler):
                     programs=later.programs,
                     last_visit=later.last_visit,
                     volumes=tuple(
-                        a + b - c
+                        combine_amounts(combine_amounts(a, b), c, -1.0)
                         for a, b, c in zip(
                             here.volumes, later.volumes, there.volumes, strict=True
                         )

@@ -20,6 +20,7 @@ from ..config.constraint import attitude_constraint_name_for_scopes
 from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
+from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
@@ -62,9 +63,11 @@ class SchedulingContext:
         simulation_start: datetime | None = None,
         simulation_end: datetime | None = None,
         passes: Sequence[Pass] | None = None,
+        coverage: StationCoverage | None = None,
     ) -> None:
         self._passes: list[Pass] | None = list(passes) if passes is not None else None
         """The run's predicted ground passes, when the caller has them."""
+        self._coverage = coverage
         ephem = config.constraint.ephem
         if ephem is None:
             raise ValueError("config.constraint.ephem must be set to plan")
@@ -259,19 +262,69 @@ class SchedulingContext:
             else self.config.constraint.roll_independent_constraint
         )
         if constraint is None:
-            return [(self.ustart, self.uend)]
-        result = constraint.evaluate(
-            ephemeris=self.ephem,
-            target_ra=target.ra,
-            target_dec=target.dec,
-            target_roll=None,
-        )
-        return [
-            (window.start_time.timestamp(), window.end_time.timestamp())
-            for window in result.visibility
-        ]
+            windows = [(self.ustart, self.uend)]
+        else:
+            result = constraint.evaluate(
+                ephemeris=self.ephem,
+                target_ra=target.ra,
+                target_dec=target.dec,
+                target_roll=None,
+            )
+            windows = [
+                (window.start_time.timestamp(), window.end_time.timestamp())
+                for window in result.visibility
+            ]
+        return self.without_repoints(target, windows)
+
+    def without_repoints(
+        self, target: PlanEntry, windows: list[tuple[float, float]]
+    ) -> list[tuple[float, float]]:
+        """``windows`` less the antenna repoints, for a target whose category
+        forbids a repoint during an observation; unchanged otherwise."""
+        coverage = self.coverage
+        if coverage is None or not coverage.repoints:
+            return windows
+        if self.config.observation_categories.antenna_repoints(int(target.obsid)) != (
+            "forbidden"
+        ):
+            return windows
+        return cut_windows(windows, coverage.repoint_cuts(self.ustart, self.uend))
 
     # ── Ground passes ─────────────────────────────────────────────────────
+
+    @property
+    def passes(self) -> list[Pass] | None:
+        """Supplied bookings; None predicts them, while [] books no passes."""
+        return self._passes
+
+    @passes.setter
+    def passes(self, passes: Sequence[Pass] | None) -> None:
+        self._passes = list(passes) if passes is not None else None
+        self._coverage = None
+
+    @property
+    def coverage(self) -> StationCoverage | None:
+        """Link coverage for passes without spacecraft tracking, or None
+        when passes require tracking activities.
+
+        Built from the configuration unless the caller gave it, which takes
+        a while for a long run (see
+        :class:`~conops.simulation.coverage.StationCoverage`).
+        """
+        if self._coverage is None:
+            self._coverage = StationCoverage.for_config(
+                self.config,
+                scheduled_passes=(
+                    [(p.begin, p.end, p.station) for p in self._passes]
+                    if self._passes is not None
+                    else None
+                ),
+            )
+        return self._coverage
+
+    @coverage.setter
+    def coverage(self, coverage: StationCoverage | None) -> None:
+        self._coverage = coverage
 
     def predict_passes(self) -> Sequence[Pass]:
         """Predict the ground passes in the horizon, as DITL will when executing.
@@ -287,6 +340,13 @@ class SchedulingContext:
                 gspass
                 for gspass in self._passes
                 if self.ustart <= gspass.begin and gspass.end <= self.uend
+            ]
+        coverage = self.coverage
+        if coverage is not None:
+            return [
+                p
+                for p in coverage.pass_times.passes
+                if self.ustart <= p.begin and p.end <= self.uend
             ]
         passtimes = PassTimes(config=self.config)
         # PassTimes.get counts days from midnight UTC of the start date.

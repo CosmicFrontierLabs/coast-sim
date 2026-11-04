@@ -1,11 +1,21 @@
 """Shared pytest fixtures for test suite."""
 
+import os
 from unittest.mock import Mock
 
+import matplotlib
 import pytest
 import rust_ephem
 
 import conops
+
+matplotlib.use("Agg")
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_auto_num_workers(config):
+    """Bound concurrency so solver threads and CI hosts are not oversubscribed."""
+    return min(8, os.cpu_count() or 1)
 
 
 @pytest.fixture

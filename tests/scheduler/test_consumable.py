@@ -18,6 +18,12 @@ def _ledger(removals, *, limit=80.0, start=0.0, rate=0.001):
 
 
 class TestSegments:
+    def test_instantaneous_removals_include_the_horizons_final_boundary(self):
+        ledger = _ledger([Removal(200.0, 200.0, 20.0), Removal(1000.0, 1000.0, 5.0)])
+        # Neither future transmission can lower a preceding segment's peak.
+        assert ledger.peaks((30.0, 0.0, 0.0)) == pytest.approx([30.2, 11.0, 6.0])
+        assert ledger.levels((30.0, 0.0, 0.0))[-1] == pytest.approx(6.0)
+
     def test_removals_cut_the_horizon_into_segments(self) -> None:
         ledger = _ledger([Removal(600.0, 700.0, 30.0), Removal(200.0, 300.0, 20.0)])
         assert ledger.segments == 3

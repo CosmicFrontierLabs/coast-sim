@@ -36,6 +36,7 @@ from ..config import MissionConfig
 from ..config.acs import scheduled_slew_time
 from ..simulation.slew import Slew
 from ..targets import Plan, Pointing
+from ..targets.plan_entry import snapshot_min_seconds
 from .context import Attitude
 from .local_search_scheduler import (
     LocalSearchScheduler,
@@ -44,7 +45,7 @@ from .local_search_scheduler import (
     _State,
 )
 from .priority_scheduler import _Block, _Request, program_shares
-from .recorder import RecorderLedger
+from .recorder import RecorderLedger, combine_amounts
 
 if TYPE_CHECKING:
     from ortools.sat.python import cp_model
@@ -85,7 +86,7 @@ class _ChunkRecorder(NamedTuple):
     """
 
     edges: list[int]
-    """Where each segment after the first starts: its contact's acquisition."""
+    """Recorder segment boundaries relative to the chunk origin."""
     entering: int
     """The volume entering the first segment, after its contact."""
     accrual: list[int]
@@ -1170,25 +1171,34 @@ class CpSatScheduler(LocalSearchScheduler):
         for snapshot in later:
             assert snapshot.release is not None
             target = self._by_obsid[snapshot.obsid].target
-            segment = ledger.segment(snapshot.release)
-            volumes[segment] += ledger.science_volume(target, snapshot.seconds)
+            block = next(
+                b
+                for b in self._greedy_timeline
+                if int(b.entry.obsid) == snapshot.obsid
+                and float(b.entry.begin) == snapshot.release
+            )
+            assert block.entry.collection_begin is not None
+            for segment, volume in ledger.science_additions(
+                target, snapshot.seconds, float(block.entry.collection_begin)
+            ):
+                volumes[segment] = combine_amounts(volumes[segment], volume)
         first = ledger.segment(origin_time)
-        levels = ledger.peaks(volumes)
-        entering = levels[first] - ledger.accrual[first] - volumes[first]
+        entering = ledger.level_at(volumes, origin_time)
+        accrual, fixed, removal = ledger.model_vectors(volumes, origin_time)
         limit = ledger.limit
         assert limit is not None
-        # What adds data rounds up and what removes it rounds down, so the
-        # model's volumes are never below the ledger's, and a plan the model
-        # keeps a kilobit under the limit passes the decoder's exact check.
+        # Round production up and credits down in the coarse chunk model.
+        # Decoding checks every candidate's concurrent production and downlink
+        # against the exact ledger before keeping it.
         return _ChunkRecorder(
             edges=[
                 int(round(bound - origin_time))
                 for bound in ledger.bounds[first + 1 : -1]
             ],
             entering=_kb_up(entering),
-            accrual=[_kb_up(x) for x in ledger.accrual[first:]],
-            fixed=[_kb_up(x) for x in volumes[first:]],
-            removal=[_kb_down(x) for x in ledger.removal[first:]],
+            accrual=[_kb_up(x) for x in accrual],
+            fixed=[_kb_up(x) for x in fixed],
+            removal=[_kb_down(x) for x in removal],
             removal_accrual=[_kb_up(x) for x in ledger.removal_accrual[first:]],
             limit=_kb_down(limit) - 1,
             setup=int(np.ceil(self.ctx.setup_seconds)),
@@ -1412,7 +1422,7 @@ class CpSatScheduler(LocalSearchScheduler):
             # A snapshot must collect something, as in the priority-first
             # scheduler, even with an ss_min of zero; this also keeps the
             # snapshot counts below from dividing by zero.
-            shortest = max(1, int(np.ceil(float(target.ss_min))))
+            shortest = max(1, int(np.ceil(snapshot_min_seconds(target))))
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue

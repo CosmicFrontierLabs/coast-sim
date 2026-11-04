@@ -17,7 +17,7 @@ from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
-from ..schedulers.recorder import RecorderLedger
+from ..schedulers.recorder import RecorderAmount, RecorderLedger, combine_amounts
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing
@@ -118,7 +118,7 @@ class RollingHorizonDITL(DITL):
             immediate replan.
         allow_interrupts: Whether a rapid replan may cut short the
             observation in progress.
-        include_passes: Whether plans reserve ground-station passes.
+        include_passes: Whether plans reserve spacecraft tracking activities for passes.
         scheduler: Scheduler class that builds each plan:
             :class:`~conops.schedulers.PriorityScheduler` or a subclass such as
             :class:`~conops.schedulers.LocalSearchScheduler` or
@@ -270,7 +270,7 @@ class RollingHorizonDITL(DITL):
         one left off: targets keep their collected science, and ToOs already
         in the target pool are neither added again nor re-run.
         """
-        self.plan = Plan()
+        self.plan = Plan(ground_contacts=self._booked_ground_contacts())
         self.replans = []
         self._next_replan = None
         # The passes belong to the interval: a later one predicts its own.
@@ -559,13 +559,24 @@ class RollingHorizonDITL(DITL):
             # contact the plans hold comes from them, so they are also the
             # passes to command, and DITL need not predict them again.
             self._run_passes = list(
-                SchedulingContext(self.config, self.begin, self.end).predict_passes()
+                self.coverage.pass_times.passes
+                if self.coverage is not None
+                else SchedulingContext(
+                    self.config, self.begin, self.end
+                ).predict_passes()
             )
             self._predicted_passes = list(self._run_passes)
         reserved = self._reserved_seconds(leading, utime)
         options = dict(self.scheduler_options)
         used = None
         if self.allocator is not None:
+            if self.allocator.passes is None and self._run_passes is not None:
+                # The allocator's data budget predicts the run's passes for
+                # itself otherwise; they are the ones just predicted.
+                self.allocator.passes = list(self._run_passes)
+            if self.coverage is not None:
+                # The run's coverage, so the allocator does not build its own.
+                self.allocator.ctx.coverage = self.coverage
             # Allocated from the exposure that remains, so nothing is used.
             self.allocation = self.allocator.allocate(
                 self.targets,
@@ -604,6 +615,7 @@ class RollingHorizonDITL(DITL):
             start_deficit_wh=start_deficit_wh,
             start_drive_state=start_drive_state,
             passes=self._run_passes,
+            coverage=self.coverage,
             **options,  # type: ignore[arg-type]
         )
         return (
@@ -711,19 +723,6 @@ class RollingHorizonDITL(DITL):
         if start <= utime:
             return now
         contacts = [e for e in committed if entry_obstype(e) == ObsType.GSP]
-        science: list[tuple[float, float]] = []
-        for entry in committed:
-            if entry.collection_begin is None or entry.collection_end is None:
-                continue
-            begin = max(float(entry.collection_begin), utime)
-            end = min(float(entry.collection_end), start)
-            if end <= begin:
-                continue
-            volume = config.science_generated(end - begin, entry.science_data)
-            if float(entry.collection_begin) < utime:
-                # Already collecting: its fixed amount is on the recorder.
-                volume -= config.science_generated(0.0, entry.science_data)
-            science.append((begin, volume))
         ledger = RecorderLedger(
             config,
             utime,
@@ -732,14 +731,29 @@ class RollingHorizonDITL(DITL):
             start_volume_gb=now,
             step_size=self.step_size,
             origin=self.ustart,
+            coverage=self.coverage,
         )
-        volumes = [0.0] * ledger.segments
-        for begin, volume in science:
-            volumes[ledger.segment(begin)] += volume
+        volumes: list[RecorderAmount] = [0.0] * ledger.segments
+        for entry in committed:
+            if entry.collection_begin is None or entry.collection_end is None:
+                continue
+            begin = max(float(entry.collection_begin), utime)
+            end = min(float(entry.collection_end), start)
+            if end <= begin:
+                continue
+            for segment, volume in ledger.science_additions(
+                entry,
+                end - begin,
+                begin,
+                # Already collecting: its fixed amount is on the recorder.
+                include_fixed=float(entry.collection_begin) >= utime,
+            ):
+                volumes[segment] = combine_amounts(volumes[segment], volume)
         for entry in contacts:
             # The slew into a contact still to come, flown in PASS mode.
-            volumes[ledger.ingress_segment(entry)] += ledger.ingress_volume(entry)
-        return ledger.peaks(volumes)[-1]
+            k = ledger.ingress_segment(entry)
+            volumes[k] = combine_amounts(volumes[k], ledger.ingress_volume(entry))
+        return ledger.level_at(volumes, start)
 
     def _battery_start(
         self, utime: float, start: float, committed: Sequence[PlanEntry]
