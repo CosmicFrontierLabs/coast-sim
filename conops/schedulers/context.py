@@ -17,6 +17,7 @@ from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
 from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
+from ..config.observation_timing import ObservationTiming, timing_for
 from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
@@ -24,7 +25,7 @@ from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import PlanEntry
+from ..targets import PlanEntry, Pointing
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -90,9 +91,12 @@ class SchedulingContext:
         self.step_size = int(step_size if step_size is not None else ephem.step_size)
         if self.step_size <= 0:
             raise ValueError("step_size must be positive")
-        timing = config.payload.observation_timing
-        self.setup_seconds = float(timing.setup_seconds)
-        self.post_collection_seconds = float(timing.post_collection_seconds)
+        bound = ObservationTiming.bound(config.observation_timings())
+        self.setup_seconds = float(bound.setup_seconds)
+        """The longest setup any observation can have: a bound where the
+        observation is not known. :meth:`setup_for` gives an observation's own."""
+        self.post_collection_seconds = float(bound.post_collection_seconds)
+        """The longest cleanup and handoff any observation can have."""
         self._initial_acs: ACS | None = None
         self._initial_attitudes: list[Attitude] = []
         # Quaternion slews do not depend on when they start, so one slew per
@@ -142,7 +146,7 @@ class SchedulingContext:
             self._initial_attitudes.append((float(ra), float(dec), float(roll)))
         return self._initial_attitudes[index]
 
-    def instrument_roll(self, target: PlanEntry, utime: float) -> float:
+    def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
         return optimum_roll(
             target.ra,
@@ -152,6 +156,32 @@ class SchedulingContext:
             self.config.solar_panel,
             self.config.constraint,
             telescope=target.science_telescope(),
+        )
+
+    def instrument_roll(self, target: PlanEntry, utime: float) -> float:
+        """The instrument roll a target is observed at, at ``utime``: the
+        power-optimal roll, or the roll the target asks for (see
+        :meth:`Pointing.requested_roll`). An absolute roll beyond the ACS
+        limit from the optimum gives the optimum here; :meth:`roll_allowed`
+        says whether the target can be observed at that time at all."""
+        optimum = self.optimum_roll(target, utime)
+        if not isinstance(target, Pointing):
+            # A plan entry, or a test double, has no roll request.
+            return optimum
+        roll = target.requested_roll(
+            optimum,
+            self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
+        )
+        return optimum if roll is None else float(roll)
+
+    def roll_allowed(self, target: PlanEntry, utime: float) -> bool:
+        """Whether the roll ``target`` asks for is within the ACS limit of the
+        power-optimal roll at ``utime``; True without a request."""
+        if not isinstance(target, Pointing):
+            return True
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        return (
+            target.requested_roll(self.optimum_roll(target, utime), limit) is not None
         )
 
     def slew(
@@ -325,6 +355,18 @@ class SchedulingContext:
     @coverage.setter
     def coverage(self, coverage: StationCoverage | None) -> None:
         self._coverage = coverage
+
+    # ── Observation timing ────────────────────────────────────────────────
+
+    def timing_for(self, obsid: int) -> ObservationTiming:
+        """The setup, cleanup and handoff budgets of observation ``obsid``."""
+        return timing_for(self.config, obsid)
+
+    def setup_for(self, obsid: int) -> float:
+        return float(self.timing_for(obsid).setup_seconds)
+
+    def post_collection_for(self, obsid: int) -> float:
+        return float(self.timing_for(obsid).post_collection_seconds)
 
     def predict_passes(self) -> Sequence[Pass]:
         """Predict the ground passes in the horizon, as DITL will when executing.

@@ -10,7 +10,7 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType
-from ..config import MissionConfig, ScienceData
+from ..config import MissionConfig, ObservationTiming, ScienceData
 from ..config.data_storage import DataStorage, RecorderView
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
@@ -20,7 +20,7 @@ from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import RecorderAmount, RecorderLedger, combine_amounts
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry, Pointing
+from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
 from ..targets.merit import MeritModel
 from .ditl import DITL
 from .ditl_log import DITLLog
@@ -160,6 +160,7 @@ class RollingHorizonDITL(DITL):
         allocation: Allocation | None = None,
         allocation_bonus: float = 0.5,
         calculate_field_of_regard: bool = False,
+        activities: Sequence[ScheduledActivity] = (),
     ) -> None:
         if horizon <= timedelta(0) or replan_interval <= timedelta(0):
             raise ValueError("horizon and replan_interval must be positive")
@@ -176,6 +177,8 @@ class RollingHorizonDITL(DITL):
             calculate_field_of_regard=calculate_field_of_regard,
         )
         self.targets = list(targets)
+        self.activities = assign_obsids(activities)
+        """Fixed-time activities every plan reserves."""
         self.horizon = horizon
         self.replan_interval = replan_interval
         self.commit_lead_time = commit_lead_time
@@ -298,7 +301,10 @@ class RollingHorizonDITL(DITL):
         target = self._target_for(int(entry.obsid))
         if target is None:
             return
-        target.record_collection(stop, stop - start)
+        if entry.calibration:
+            target.record_calibration(stop, stop - start)
+        else:
+            target.record_collection(stop, stop - start)
         self._first_collection.setdefault(int(entry.obsid), start)
         for too in self.too_register:
             if too.obsid == entry.obsid:
@@ -359,7 +365,9 @@ class RollingHorizonDITL(DITL):
             next_effect = (
                 self._plan_start(utime if scheduled else self._next_replan)
                 + Slew.duration_upper_bound(self.config.spacecraft_bus.attitude_control)
-                + self.config.payload.observation_timing.setup_seconds
+                + ObservationTiming.bound(
+                    self.config.observation_timings()
+                ).setup_seconds
                 + self.step_size
             )
             urgent = [
@@ -391,7 +399,7 @@ class RollingHorizonDITL(DITL):
     def _plan_start(self, plan_time: float) -> float:
         """Return when a plan built at ``plan_time`` could take over."""
         cutoff = self._cutoff(plan_time)
-        committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
+        committed, _ = self._partition_plan(cutoff)
         start_state = self._start_state(committed, plan_time, cutoff)
         return start_state.time if start_state is not None else cutoff
 
@@ -403,6 +411,15 @@ class RollingHorizonDITL(DITL):
     def _cutoff(self, utime: float) -> float:
         """Return the first step a new plan can change."""
         return self._ceil_step(utime + self.commit_lead_time.total_seconds())
+
+    def _partition_plan(self, cutoff: float) -> tuple[list[PlanEntry], list[PlanEntry]]:
+        """Keep every step of a visit whose first command is committed."""
+        committed: list[PlanEntry] = []
+        dropped: list[PlanEntry] = []
+        for entry in self.plan.entries:
+            begin = entry.visit_begin if entry.visit_begin is not None else entry.begin
+            (committed if float(begin) < cutoff else dropped).append(entry)
+        return committed, dropped
 
     def _replan(
         self, utime: float, reason: ReplanReason, triggers: Sequence[TOORequest]
@@ -448,7 +465,7 @@ class RollingHorizonDITL(DITL):
         committed, dropped, new_entries, unplaced = planned
         planning_seconds = time.perf_counter() - began
 
-        self._splice(committed, dropped, new_entries, cutoff)
+        self._splice(committed, dropped, new_entries)
         record = ReplanRecord(
             utime=utime,
             reason=reason,
@@ -544,8 +561,7 @@ class RollingHorizonDITL(DITL):
         committed and dropped entries, the new entries and how many targets
         could not be placed.
         """
-        committed = [e for e in self.plan.entries if float(e.begin) < cutoff]
-        dropped = [e for e in self.plan.entries if float(e.begin) >= cutoff]
+        committed, dropped = self._partition_plan(cutoff)
         leading = [*committed, *pinned]
         start_state = self._start_state(leading, utime, cutoff)
         start = start_state.time if start_state is not None else cutoff
@@ -616,6 +632,7 @@ class RollingHorizonDITL(DITL):
             start_drive_state=start_drive_state,
             passes=self._run_passes,
             coverage=self.coverage,
+            activities=self.activities,
             **options,  # type: ignore[arg-type]
         )
         return (
@@ -645,7 +662,13 @@ class RollingHorizonDITL(DITL):
             ),
             None,
         )
-        if not self.allow_interrupts or not too.interrupt or entry is None:
+        if (
+            not self.allow_interrupts
+            or not too.interrupt
+            or entry is None
+            or entry.visit_begin is not None
+        ):
+            # A sequence visit completes as one committed block.
             return None
         category = self.merit_model.categories.get_category(int(entry.obsid))
         if not category.interruptible:
@@ -670,7 +693,7 @@ class RollingHorizonDITL(DITL):
         end = cut
         collection = None
         if entry.collection_begin is not None and entry.collection_end is not None:
-            post = self.config.payload.observation_timing.post_collection_seconds
+            post = self._timing_for(entry).post_collection_seconds
             begin = min(float(entry.collection_begin), cut)
             # Science before ``utime`` is already collected, so collection
             # cannot stop before then; cleanup follows wherever it stops.
@@ -927,7 +950,7 @@ class RollingHorizonDITL(DITL):
         used: dict[int, dict[int, float]] = {}
         for entry in committed:
             begin, end = entry.collection_begin, entry.collection_end
-            if begin is None or end is None:
+            if entry.calibration or begin is None or end is None:
                 continue
             for k, (b0, b1) in enumerate(allocation.bins):
                 if b0 <= begin < b1:
@@ -943,7 +966,7 @@ class RollingHorizonDITL(DITL):
         """Exposure committed entries will still collect after ``utime``, by obsid."""
         reserved: dict[int, float] = {}
         for entry in committed:
-            if entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES:
+            if entry.calibration or entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES:
                 continue
             remaining = entry.collection_seconds_between(utime, float(entry.end))
             if remaining > 0:
@@ -973,7 +996,6 @@ class RollingHorizonDITL(DITL):
         committed: Sequence[PlanEntry],
         dropped: Sequence[PlanEntry],
         new_entries: Sequence[PlanEntry],
-        cutoff: float,
     ) -> None:
         """Replace the uncommitted part of the plan, in the plan and the executor."""
         dropped_ids = {id(e) for e in dropped}
@@ -985,7 +1007,7 @@ class RollingHorizonDITL(DITL):
         pending = [
             e
             for e in self._entries_to_command[self._next_entry_index :]
-            if id(e) not in dropped_ids and float(e.begin) < cutoff
+            if id(e) not in dropped_ids
         ]
         self._entries_to_command = [
             *commanded,

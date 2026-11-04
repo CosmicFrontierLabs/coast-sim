@@ -11,8 +11,11 @@ from pydantic import (
 
 from ..common import unixtime2date
 from ..common.enums import ObsType
+from ..config.acs import AttitudeControlSystem
+from ..config.observation_timing import ObservationTiming, timing_for
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
+from .sequence import ObservationSequence
 
 
 class Pointing(PlanEntry):
@@ -50,6 +53,37 @@ class Pointing(PlanEntry):
             "Seconds of collection the visit selected now may have, set by "
             "the queue when the recorder holds less than the whole snapshot; "
             "None for the whole snapshot"
+        ),
+    )
+    sequence: ObservationSequence | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "The steps a visit of this target observes, in order; None for a "
+            "plain pointing held for a snapshot"
+        ),
+    )
+    visits: int = Field(
+        default=1,
+        ge=1,
+        exclude_if=lambda v: v == 1,
+        description="How many visits of the sequence are wanted",
+    )
+    roll_deg: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "The instrument roll to observe at, in degrees, instead of the "
+            "power-optimal roll; the target is observed only when the "
+            "constraints allow it and it is within the ACS roll limit"
+        ),
+    )
+    roll_offset_deg: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "An offset from the power-optimal roll to observe at, in degrees; "
+            "it must be within the ACS roll limit"
         ),
     )
     _done: bool = PrivateAttr(default=False)
@@ -95,6 +129,113 @@ class Pointing(PlanEntry):
     @fom.setter
     def fom(self, value: float) -> None:
         self.merit = value
+
+    @model_validator(mode="after")
+    def _sequence_sets_the_snapshot(self) -> "Pointing":
+        """A sequence target's snapshot is one visit's science: no more and
+        no less, and its exposure is its visits' science unless given."""
+        if self.sequence is not None:
+            science = self.sequence.science_seconds
+            self.ss_min = science
+            self.ss_max = science
+            if self.exptime is None:
+                self.exptime = self.visits * science
+        return self
+
+    def step_pointing(self, index: int) -> "Pointing":
+        """The pointing step ``index`` of this target's sequence observes: at
+        the step's pointing and with its instrument, for its duration, carrying
+        this target's obsid and merit."""
+        assert self.sequence is not None
+        step = self.sequence.steps[index]
+        ra, dec = self.sequence.pointing_of(index, self.ra, self.dec)
+        base = timing_for(self.config, int(self.obsid))
+        roll_deg, roll_offset = self._step_roll_request(step.roll_offset_deg)
+        pointing = Pointing(
+            config=self.config,
+            ra=ra,
+            dec=dec,
+            obsid=self.obsid,
+            name=f"{self.name}: {step.name}",
+            merit=self.merit,
+            instrument_name=(
+                step.instrument_name
+                if step.instrument_name is not None
+                else self.instrument_name
+            ),
+            science_data=dict(self.science_data) if step.science else {},
+            # A step is never selected on its own, so it has no minimum: what
+            # it collects to the tick is kept, and the visit checks the rest.
+            ss_min=0,
+            ss_max=step.duration_seconds,
+            step=step.name,
+            calibration=not step.science,
+            roll_deg=roll_deg,
+            roll_offset_deg=roll_offset,
+        )
+        pointing.exptime = step.duration_seconds
+        pointing.merit_breakdown = self.merit_breakdown
+        pointing._step_timing = self.sequence.step_timing(base, index)
+        if self.ephem is not None:
+            pointing.visibility()
+        return pointing
+
+    def _step_roll_request(
+        self, offset: float | None
+    ) -> tuple[float | None, float | None]:
+        """The roll request a step carries, as ``(roll_deg, roll_offset_deg)``:
+        this target's, with the step's offset added to an absolute roll or
+        to the offset."""
+        if offset is None:
+            return self.roll_deg, self.roll_offset_deg
+        if self.roll_deg is not None:
+            return (self.roll_deg + offset) % 360.0, None
+        return None, (self.roll_offset_deg or 0.0) + offset
+
+    def sequence_overhead_seconds(
+        self, acs: AttitudeControlSystem, timing: ObservationTiming
+    ) -> float:
+        """Seconds a visit takes beyond its science and the visit's own setup
+        and cleanup; 0 for a plain pointing."""
+        if self.sequence is None:
+            return 0.0
+        return self.sequence.overhead_seconds(acs, timing, self.ra, self.dec)
+
+    @model_validator(mode="after")
+    def _one_roll_request(self) -> "Pointing":
+        if self.roll_deg is not None and self.roll_offset_deg is not None:
+            raise ValueError("give roll_deg or roll_offset_deg, not both")
+        return self
+
+    @property
+    def commands_roll(self) -> bool:
+        """Whether this target asks for a roll other than the power-optimal one."""
+        return self.roll_deg is not None or self.roll_offset_deg is not None
+
+    def requested_roll(self, optimum: float, max_delta: float | None) -> float | None:
+        """The roll this target is observed at, given the power-optimal roll
+        ``optimum`` and the ACS limit ``max_delta`` from it.
+
+        The optimum itself without a request; the optimum plus the offset;
+        or the absolute roll, where it is within the limit, else None: the
+        target cannot be observed at that time. An offset beyond the limit
+        is a configuration error.
+        """
+        if self.roll_offset_deg is not None:
+            if max_delta is not None and abs(self.roll_offset_deg) > max_delta + 1e-9:
+                raise ValueError(
+                    f"roll_offset_deg {self.roll_offset_deg} exceeds the ACS "
+                    f"max_roll_from_optimum_deg {max_delta}"
+                )
+            return (optimum + self.roll_offset_deg) % 360.0
+        if self.roll_deg is not None:
+            roll = self.roll_deg % 360.0
+            if max_delta is not None:
+                delta = abs((roll - optimum + 180.0) % 360.0 - 180.0)
+                if delta > max_delta + 1e-9:
+                    return None
+            return roll
+        return optimum
 
     @model_validator(mode="after")
     def _check_start_before_deadline(self) -> "Pointing":

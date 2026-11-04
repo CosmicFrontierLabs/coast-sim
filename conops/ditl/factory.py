@@ -9,7 +9,7 @@ from ..config import MissionConfig
 from ..config.scheduler import AllocationSettings, SchedulerMode
 from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.registry import scheduler_class
-from ..targets import Plan, Pointing, Queue
+from ..targets import Plan, Pointing, Queue, ScheduledActivity
 from .ditl import DITL
 from .queue_ditl import QueueDITL
 from .rolling_ditl import RollingHorizonDITL
@@ -21,6 +21,7 @@ def create_ditl(
     begin: datetime | None = None,
     end: datetime | None = None,
     ephem: rust_ephem.Ephemeris | None = None,
+    activities: Sequence[ScheduledActivity] = (),
 ) -> QueueDITL | DITL | RollingHorizonDITL:
     """Return a simulation of ``targets`` scheduled as ``config.scheduler`` says.
 
@@ -78,6 +79,7 @@ def create_ditl(
             end=end,
             allocator=allocator,
             allocation_bonus=steering.bonus,
+            activities=activities,
         )
         queue_targets(queue_ditl, targets)
         return queue_ditl
@@ -93,6 +95,7 @@ def create_ditl(
             begin,
             end,
             include_passes=settings.include_passes,
+            activities=activities,
             **options,  # type: ignore[arg-type]
         )
         ditl = DITL(config=config, plan=builder.schedule(), begin=begin, end=end)
@@ -117,6 +120,7 @@ def create_ditl(
         scheduler_options=options,
         allocator=allocator,
         allocation_bonus=steering.bonus,
+        activities=activities,
     )
     rolling.step_size = int(ephemeris.step_size)
     return rolling

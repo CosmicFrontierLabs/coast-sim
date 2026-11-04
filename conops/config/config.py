@@ -17,6 +17,7 @@ from .fault_management import FaultManagement
 from .groundstation import GroundStationRegistry
 from .instrument import Payload
 from .observation_categories import ObservationCategories
+from .observation_timing import ObservationTiming
 from .recorder import OnboardRecorder
 from .scheduler import SchedulerConfig
 from .solar_panel import SolarPanelSet
@@ -233,6 +234,24 @@ class MissionConfig(ConfigModel):
         | None,
     ) -> dict[str, list[AttitudeConstraintScope]]:
         return _normalize_attitude_constraint_scopes(value)
+
+    def observation_timing_for(self, obsid: int) -> ObservationTiming:
+        """The setup, cleanup and handoff budgets of the observation ``obsid``:
+        its category's where that sets them, else the payload's."""
+        timing = self.observation_categories.get_category(int(obsid)).observation_timing
+        return timing if timing is not None else self.payload.observation_timing
+
+    def observation_timings(self) -> list[ObservationTiming]:
+        """Every timing an observation can have: the payload's and each
+        category's own."""
+        return [
+            self.payload.observation_timing,
+            *(
+                category.observation_timing
+                for category in self.observation_categories.categories
+                if category.observation_timing is not None
+            ),
+        ]
 
     def attitude_constraint_scopes_for_mode(
         self, mode: ACSMode | int

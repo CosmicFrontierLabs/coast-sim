@@ -148,6 +148,8 @@ class PlanExecutionValidator:
                 mismatches.extend(self._gsp_entry_mismatches(entry, tolerance_deg))
             elif obstype == ObsType.CHARGE and self.check_charges:
                 mismatches.extend(self._charge_entry_mismatches(entry, tolerance_deg))
+            elif obstype == ObsType.ACTIVITY:
+                mismatches.extend(self._activity_entry_mismatches(entry))
         mismatches.extend(self.attitude_constraint_mismatches())
         mismatches.extend(self.unplanned_execution_mismatches())
         return mismatches
@@ -511,6 +513,30 @@ class PlanExecutionValidator:
             ):
                 return True
         return False
+
+    def _activity_entry_mismatches(
+        self, entry: PlanEntry
+    ) -> list[PlanExecutionMismatch]:
+        """Check that no science, contact or charge ran during an activity.
+
+        From the end of its slew to its end the spacecraft holds in ``IDLE``
+        mode, or in ``SAA`` mode where it crosses the SAA; a slew away under
+        idle safety is allowed.
+        """
+        start = float(entry.begin) + max(0.0, float(entry.slewtime))
+        end = float(entry.end)
+        mismatches: list[PlanExecutionMismatch] = []
+        if end <= start:
+            return mismatches
+        for i in self._window_indices(start, end):
+            mode = self._mode_at_index(i)
+            if mode in (ACSMode.SCIENCE, ACSMode.PASS, ACSMode.CHARGING):
+                mismatches.append(
+                    self._mode_mismatch(
+                        entry, self.utime[i], mode, ACSMode.IDLE, "activity"
+                    )
+                )
+        return mismatches
 
     def _charge_entry_mismatches(
         self, entry: PlanEntry, tolerance_deg: float

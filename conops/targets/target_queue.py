@@ -12,15 +12,18 @@ from ..config import (
     AttitudeControlSystem,
     Constraint,
     MissionConfig,
+    ObservationTiming,
     ScienceData,
 )
 from ..config.acs import scheduled_slew_time
 from ..config.config import housekeeping_while_waiting
 from ..config.data_storage import RecorderView
+from ..config.observation_categories import ObservationCategories
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
 from .plan_entry import snapshot_min_seconds
+from .sequence import ObservationSequence
 
 if TYPE_CHECKING:
     from ..simulation.coverage import StationCoverage
@@ -167,6 +170,8 @@ class TargetQueue:
         deadline: float | None = None,
         earliest_start: float | None = None,
         science_data: Mapping[str, ScienceData] | None = None,
+        sequence: ObservationSequence | None = None,
+        visits: int = 1,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -207,11 +212,38 @@ class TargetQueue:
             deadline=deadline,
             earliest_start=earliest_start,
             science_data=dict(science_data or {}),
+            sequence=sequence,
+            visits=visits,
         )
-        pointing.exptime = exptime
+        pointing.exptime = (
+            visits * sequence.science_seconds if sequence is not None else exptime
+        )
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
+
+    def _timing(self, target: Pointing) -> ObservationTiming:
+        """The timing budgets of ``target``: its category's where that sets
+        them, else the queue's, which is the payload's unless changed."""
+        categories = getattr(self.config, "observation_categories", None)
+        obsid = getattr(target, "obsid", None)
+        # A test double's target has no number for an obsid.
+        if isinstance(categories, ObservationCategories) and isinstance(
+            obsid, (int, float)
+        ):
+            timing = categories.get_category(int(obsid)).observation_timing
+            if timing is not None:
+                return timing
+        return self.observation_timing
+
+    def _visit_overhead(self, target: Pointing) -> float:
+        """Seconds a visit of a sequence target takes beyond its science and
+        the payload's budgets; 0 for a plain pointing or a test double."""
+        overhead = getattr(target, "sequence_overhead_seconds", None)
+        if getattr(target, "sequence", None) is None or not callable(overhead):
+            return 0.0
+        seconds = overhead(self.acs_config, self._timing(target))
+        return float(seconds) if isinstance(seconds, (int, float)) else 0.0
 
     def _repoints_forbidden(self, target: Pointing) -> bool:
         """Whether an antenna repoint must not fall in an observation of ``target``."""
@@ -270,11 +302,18 @@ class TargetQueue:
         end = float(visibility_window[1])
         if deadline is not None:
             end = min(end, float(deadline))
-        collection_start, collection_end = self.observation_timing.collection_window(
+        collection_start, collection_end = self._timing(target).collection_window(
             utime, float(target.slewtime if slewtime is None else slewtime), end
         )
         window_seconds = max(0.0, collection_end - collection_start)
         max_snapshot = float(target.ss_max)
+        overhead = self._visit_overhead(target)
+        if overhead > 0.0:
+            # A sequence visit runs whole or not at all: its science, with
+            # the calibration and slews between its steps around it.
+            if window_seconds < max_snapshot + overhead:
+                return 0.0
+            return max_snapshot
         remaining_exposure = target.exptime
         if remaining_exposure is None:
             return min(window_seconds, max_snapshot)
@@ -301,7 +340,8 @@ class TargetQueue:
         zero_slew_endtime = (
             utime
             + float(snapshot_min_seconds(target))
-            + self.observation_timing.total_seconds
+            + self._timing(target).total_seconds
+            + self._visit_overhead(target)
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -353,7 +393,8 @@ class TargetQueue:
         zero_slew_endtime = (
             utime
             + float(snapshot_min_seconds(target))
-            + self.observation_timing.total_seconds
+            + self._timing(target).total_seconds
+            + self._visit_overhead(target)
         )
         if zero_slew_endtime > last_unix:
             zero_slew_endtime = last_unix
@@ -546,19 +587,19 @@ class TargetQueue:
             # A target must start collecting by its deadline.
             if (
                 target.deadline is not None
-                and utime
-                + float(target.slewtime)
-                + self.observation_timing.setup_seconds
+                and utime + float(target.slewtime) + self._timing(target).setup_seconds
                 > target.deadline
             ):
                 continue
 
             # Calculate observation window
+            timing = self._timing(target)
             endtime = (
                 utime
                 + target.slewtime
                 + snapshot_min_seconds(target)
-                + self.observation_timing.total_seconds
+                + timing.total_seconds
+                + self._visit_overhead(target)
             )
 
             # If the end time exceeds ephemeris, clamp it
@@ -571,9 +612,7 @@ class TargetQueue:
                 # Not during a repoint, and the minimum snapshot before the
                 # next one; the window then ends where the repoint begins.
                 assert self.coverage is not None
-                collection_start = (
-                    utime + target.slewtime + self.observation_timing.setup_seconds
-                )
+                collection_start = utime + target.slewtime + timing.setup_seconds
                 cut = self.coverage.next_repoint_cut(collection_start)
                 if cut is not None and (
                     cut[0] <= collection_start
@@ -585,7 +624,7 @@ class TargetQueue:
                         float(visibility_window[0]),
                         min(
                             float(visibility_window[1]),
-                            cut[0] + self.observation_timing.post_collection_seconds,
+                            cut[0] + timing.post_collection_seconds,
                         ),
                     ]
             if visibility_window:
@@ -615,9 +654,10 @@ class TargetQueue:
                     utime
                     + target.slewtime
                     + collection
-                    + self.observation_timing.total_seconds,
+                    + timing.total_seconds
+                    + self._visit_overhead(target),
                 )
-                target.set_collection_window(self.observation_timing)
+                target.set_collection_window(timing)
                 terms = merit_model.value_terms(
                     target,
                     utime,
@@ -762,7 +802,7 @@ class TargetQueue:
         config = self.config if config is None else config
         assert config is not None
         step = self._step_size()
-        timing = self.observation_timing
+        timing = self._timing(target)
         base = config.science_generated(0.0, target.science_data)
         fixed = (
             base
