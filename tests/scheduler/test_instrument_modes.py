@@ -11,14 +11,17 @@ from conops.common import ACSMode
 from conops.config import (
     ConcurrencyRules,
     DataGeneration,
+    DataStorage,
+    DataStore,
     Instrument,
     InstrumentMode,
     MissionConfig,
+    OnboardRecorder,
     Payload,
     PowerDraw,
     ScienceData,
 )
-from conops.schedulers import PriorityScheduler
+from conops.schedulers import CpSatScheduler, LocalSearchScheduler, PriorityScheduler
 from conops.targets import (
     ObservationSequence,
     Plan,
@@ -167,6 +170,54 @@ class TestRequests:
 
 
 class TestExecution:
+    @pytest.mark.parametrize(
+        "scheduler_class", [PriorityScheduler, LocalSearchScheduler, CpSatScheduler]
+    )
+    def test_sequence_modes_survive_scheduling_and_replay(
+        self, scheduler_class
+    ) -> None:
+        if scheduler_class is CpSatScheduler:
+            pytest.importorskip("ortools")
+        config = _ruled_config()
+        target = Pointing(
+            config=config,
+            obsid=1,
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            instrument_modes={"camera": "SCIENCE"},
+            sequence=ObservationSequence(
+                steps=[
+                    SequenceStep(name="image", duration_seconds=300),
+                    SequenceStep(
+                        name="spectrum",
+                        duration_seconds=300,
+                        instrument_modes={"spectrograph": "SCIENCE"},
+                    ),
+                ]
+            ),
+        )
+        options = {} if scheduler_class is PriorityScheduler else {"time_limit": 0.0}
+        if scheduler_class is CpSatScheduler:
+            options["solver_time_limit"] = 1.0
+        plan = scheduler_class(
+            config, [target], BEGIN, END, step_size=STEP, **options
+        ).schedule()
+        expected = [{"camera": "SCIENCE"}, {"spectrograph": "SCIENCE"}]
+        assert [e.instrument_modes for e in plan if e.obsid == 1] == expected
+        replay = Plan.model_validate_json(plan.model_dump_json())
+        assert [e.instrument_modes for e in replay if e.obsid == 1] == expected
+        ditl = DITL(
+            config=config,
+            ephem=config.constraint.ephem,
+            plan=replay,
+            begin=BEGIN,
+            end=END,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        assert _payload_power(ditl)[int(ACSMode.SCIENCE)] == {100.0, 160.0}
+
     def test_the_payload_draws_the_observations_modes_while_observing(self) -> None:
         """Observing with the camera only: 80 W plus the spectrograph's
         20 W idle during science, 30 W idle in every other mode."""
@@ -355,6 +406,71 @@ class TestLedger:
 
 
 class TestScienceData:
+    @pytest.mark.parametrize("dispatch", [False, True])
+    @pytest.mark.parametrize("fixed", [False, True])
+    @pytest.mark.parametrize("named_recorders", [False, True])
+    def test_explicit_idle_generates_no_science(
+        self, dispatch: bool, fixed: bool, named_recorders: bool
+    ) -> None:
+        config = _moded_config()
+        data = (
+            ScienceData(per_observation_gb=0.6)
+            if fixed
+            else ScienceData(rate_gbps=0.001)
+        )
+        for instrument in config.payload.instruments:
+            instrument.data_generation = DataGeneration(science=data)
+        if named_recorders:
+            config.data_storage = DataStorage(
+                stores={
+                    name: DataStore(
+                        owner="spacecraft_bus" if name == "bus" else "payload",
+                        recorder=OnboardRecorder(capacity_gb=100, current_volume_gb=0),
+                    )
+                    for name in ("bus", "camera", "spectrograph")
+                },
+                bus_housekeeping="bus",
+                instrument_science={name: name for name in ("camera", "spectrograph")},
+                instrument_housekeeping=dict.fromkeys(
+                    ("camera", "spectrograph"), "bus"
+                ),
+                downlinks=[],
+            )
+        target = _target(config, 1, *PATCH[0], minutes=10, snapshot=10)
+        target.instrument_modes = {"camera": "SCIENCE", "spectrograph": "IDLE"}
+        if dispatch:
+            ditl = create_ditl(config, [target], BEGIN, END)
+        else:
+            scheduler = PriorityScheduler(config, [target], BEGIN, END, step_size=STEP)
+            plan = scheduler.schedule()
+            entry = next(e for e in plan if e.obsid == 1)
+            if named_recorders:
+                ledger = next(
+                    ledger
+                    for name, ledger, _ in scheduler._ledger.members
+                    if name == "spectrograph"
+                )
+                assert ledger.science_volume(entry, 600.0) == 0.0
+            else:
+                assert scheduler._ledger.science_volume(entry, 600.0) == pytest.approx(
+                    0.6
+                )
+            replay = Plan.model_validate_json(plan.model_dump_json())
+            ditl = DITL(
+                config=config,
+                ephem=config.constraint.ephem,
+                plan=replay,
+                begin=BEGIN,
+                end=END,
+            )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert max(ditl.recorder_volume_gb) == pytest.approx(0.6, abs=0.001)
+        if named_recorders:
+            views = config.recorder_views()
+            assert views["camera"].recorder.current_volume_gb == pytest.approx(0.6)
+            assert views["spectrograph"].recorder.current_volume_gb == 0.0
+
     def test_an_observation_generates_only_what_it_uses(self) -> None:
         """Both instruments generate 1 Mbps in SCIENCE; a camera-only
         observation puts half as much on the recorder as one using both,
@@ -432,7 +548,14 @@ class TestConcurrency:
             unnamed.check_instrument_modes()
         with pytest.raises(ValueError, match="allows 1"):
             PriorityScheduler(config, [unnamed], BEGIN, END, step_size=STEP).schedule()
+        # Factory dispatch binds the runtime payload before queue ingestion.
+        unbound = Pointing.model_validate_json(unnamed.model_dump_json())
+        assert unbound.config is None
+        with pytest.raises(ValueError, match="allows 1"):
+            create_ditl(config, [unbound], BEGIN, END)
         queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        with pytest.raises(ValueError, match="allows 1"):
+            queue.append(unnamed)
         with pytest.raises(ValueError, match="allows 1"):
             queue.add(ra=PATCH[0][0], dec=PATCH[0][1], obsid=3, merit=1.0)
         queue.add(

@@ -126,6 +126,18 @@ def _imager() -> Instrument:
 
 
 class TestScienceData:
+    @pytest.mark.parametrize("modes", [{}, {"imager": "IDLE"}])
+    @pytest.mark.parametrize("override", [False, True])
+    def test_idle_suppresses_rates_and_fixed_readouts(self, modes, override) -> None:
+        instrument = _imager()
+        data = ScienceData(rate_gbps=0.01, per_observation_gb=0.5)
+        instrument.data_generation = DataGeneration(science=data)
+        instrument.mode("IDLE").science_data = data
+        payload = Payload(instruments=[instrument])
+        science = {"imager": data} if override else {}
+        assert payload.science_generated(0.0, science, modes) == 0.0
+        assert payload.science_generated(100.0, science, modes) == 0.0
+
     def test_a_mode_sets_what_the_instrument_generates(self) -> None:
         """In SCIENCE the imager generates its default; in FULL its mode's
         rate; an instrument with modes that the observation does not use

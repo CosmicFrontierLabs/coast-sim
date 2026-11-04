@@ -889,8 +889,9 @@ class Payload(ConfigModel):
                 name; instruments not named generate their own.
             instrument_modes: The mode each instrument is in during the
                 observation, by name. An instrument with modes that is not
-                named generates nothing, and one that is generates its
-                mode's science data, or its own where the mode sets none.
+                named or is explicitly IDLE generates nothing. An active
+                one generates its mode's science data, or its own where the
+                mode sets none.
                 None: every instrument generates its own, as an instrument
                 without modes always does.
 
@@ -913,17 +914,18 @@ class Payload(ConfigModel):
     ) -> ScienceData | None:
         """What ``instrument`` generates while the observation collects:
         the target's own for it, else its mode's, else its default; None
-        when it has modes and the observation does not use it."""
+        when it has modes and is omitted or explicitly IDLE."""
+        mode = None
+        if instrument.modes and instrument_modes is not None:
+            name = instrument_modes.get(instrument.name)
+            if name is None or name == IDLE_MODE:
+                return None
+            mode = instrument.mode(name)
         own = science.get(instrument.name)
         if own is not None:
             return own
-        if instrument.modes and instrument_modes is not None:
-            name = instrument_modes.get(instrument.name)
-            if name is None:
-                return None
-            mode = instrument.mode(name)
-            if mode is not None and mode.science_data is not None:
-                return mode.science_data
+        if mode is not None and mode.science_data is not None:
+            return mode.science_data
         return instrument.data_generation.science
 
     def data_generated(

@@ -154,6 +154,9 @@ class TargetQueue:
         return len(self.targets)
 
     def append(self, target: Pointing) -> None:
+        # The factory binds the runtime configuration before appending its
+        # request copies; unnamed modes must satisfy that payload's rules.
+        target.check_instrument_modes()
         self.targets.append(target)
 
     def add(
