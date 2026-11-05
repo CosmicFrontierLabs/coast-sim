@@ -32,7 +32,7 @@ from .instrument import (
 )
 from .momentum import StoredMomentumConfig
 from .observation_categories import ObservationCategories, ObservationCategory
-from .observation_timing import ObservationTiming
+from .observation_timing import BudgetStep, ObservationTiming
 from .power import PowerDraw
 from .radiator import (
     DefaultRadiatorConfiguration,
@@ -107,6 +107,7 @@ __all__ = [
     "TelescopeType",
     "ObservationCategories",
     "ObservationCategory",
+    "BudgetStep",
     "ObservationTiming",
     "OnboardRecorder",
     "Payload",

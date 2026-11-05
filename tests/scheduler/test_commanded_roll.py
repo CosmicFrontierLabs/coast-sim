@@ -4,8 +4,9 @@ roll, or at an absolute roll, within the ACS roll limit."""
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 
-from conops import DITL, create_ditl
+from conops import DITL, QueueDITL, create_ditl
 from conops.config import MissionConfig
 from conops.schedulers import PriorityScheduler
 from conops.schedulers.context import SchedulingContext
@@ -133,6 +134,23 @@ class TestPlanning:
 
 
 class TestDispatch:
+    def test_the_queue_adds_a_target_with_its_roll_request(self) -> None:
+        config = _config(1)
+        ditl = create_ditl(config, [], BEGIN, BEGIN + timedelta(hours=1))
+        assert isinstance(ditl, QueueDITL)
+        offset = ditl.queue.add(
+            ra=PATCH[0][0], dec=PATCH[0][1], obsid=1, roll_offset_deg=10.0
+        )
+        absolute = ditl.queue.add(
+            ra=PATCH[1][0], dec=PATCH[1][1], obsid=2, roll_deg=200.0
+        )
+        plain = ditl.queue.add(ra=PATCH[2][0], dec=PATCH[2][1], obsid=3)
+        assert (offset.roll_deg, offset.roll_offset_deg) == (None, 10.0)
+        assert (absolute.roll_deg, absolute.roll_offset_deg) == (200.0, None)
+        assert not plain.commands_roll
+        with pytest.raises(ValidationError, match="not both"):
+            ditl.queue.add(ra=0.0, dec=0.0, obsid=4, roll_deg=1.0, roll_offset_deg=1.0)
+
     def test_dispatch_observes_at_the_requested_roll(self) -> None:
         config = _config(HOURS)
         config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg = 15.0
