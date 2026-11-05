@@ -295,7 +295,7 @@ class TestCollectionTimeWeight:
         room, or with room enough, it is selected whole."""
         utime = 1762924800.0
         queue_instance.config.science_generated = Mock(
-            side_effect=lambda seconds, science=None: (
+            side_effect=lambda seconds, science=None, instrument_modes=None: (
                 0.1 * seconds if science is not None else 0.0
             )
         )
@@ -333,7 +333,7 @@ class TestCollectionTimeWeight:
         there is none."""
         utime = 1762924800.0
         queue_instance.config.science_generated = Mock(
-            side_effect=lambda seconds, science=None: (
+            side_effect=lambda seconds, science=None, modes=None: (
                 0.1 * seconds if science is not None else 0.0
             )
         )
@@ -370,7 +370,7 @@ class TestCollectionTimeWeight:
         utime = 1762924800.0
         queue_instance.slew_distance_weight = 0.1
         queue_instance.config.science_generated = Mock(
-            side_effect=lambda seconds, science=None: (
+            side_effect=lambda seconds, science=None, instrument_modes=None: (
                 0.1 * seconds if science is not None else 0.0
             )
         )
@@ -393,7 +393,7 @@ class TestCollectionTimeWeight:
         its place at a tenth of the price."""
         utime = 1762924800.0
         queue_instance.config.science_generated = Mock(
-            side_effect=lambda seconds, science=None: (
+            side_effect=lambda seconds, science=None, instrument_modes=None: (
                 0.1 * seconds if science is not None else 0.0
             )
         )

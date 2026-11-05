@@ -19,6 +19,7 @@ from conops.config import (
     GroundStationRegistry,
     HousekeepingData,
     Instrument,
+    InstrumentMode,
     MissionConfig,
     ObservationTiming,
     OnboardRecorder,
@@ -888,3 +889,77 @@ def test_sequence_steps_use_each_stores_contact_segment():
     volumes = ledger.add_all([0.0] * ledger.segments, scheduler._block_additions(block))
     # Two payload snapshots, one on either side of contact; no bus science.
     assert volumes == pytest.approx((2.0, 3.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    "modes,overrides,expected",
+    [
+        ({"camera": "FULL"}, None, 6.0),
+        ({}, None, 0.0),
+        (None, None, 3.0),
+        ({"camera": "FULL"}, {"camera": ScienceData(rate_gbps=0.2)}, 2.0),
+    ],
+)
+def test_recorder_views_apply_instrument_modes_before_routing(
+    modes, overrides, expected
+):
+    c = config()
+    c.payload.instruments[0].modes = [
+        InstrumentMode(name="IDLE", power_w=0),
+        InstrumentMode(name="SCIENCE", power_w=1),
+        InstrumentMode(
+            name="FULL",
+            power_w=2,
+            science_data=ScienceData(rate_gbps=0.5, per_observation_gb=1),
+        ),
+    ]
+    views = c.recorder_views()
+    assert views["payload"].science_generated(10, overrides, modes) == pytest.approx(
+        expected
+    )
+    assert views["bus"].science_generated(10, overrides, modes) == 0
+    assert c.science_generated(10, overrides, modes) == pytest.approx(expected)
+
+
+def test_mode_data_agrees_between_store_admission_projection_and_execution():
+    c = config()
+    c.payload.instruments[0].modes = [
+        InstrumentMode(name="IDLE", power_w=0),
+        InstrumentMode(name="SCIENCE", power_w=1),
+        InstrumentMode(
+            name="FULL",
+            power_w=2,
+            science_data=ScienceData(rate_gbps=0.5, per_observation_gb=1),
+        ),
+    ]
+    target = Pointing(
+        begin=0,
+        end=20,
+        collection_begin=0,
+        collection_end=20,
+        instrument_modes={"camera": "FULL"},
+    )
+    queue = TargetQueue(c)
+    assert queue.collection_within(target, {"payload": 6, "bus": 8}) == pytest.approx(
+        10
+    )
+    ledger = RecorderLedgers(c, 0, 100, [])
+    assert ledger.science_additions(target, 10, 0) == [(0, 6), (1, 0)]
+    d = runtime(c)
+    d.ppt = target
+    # Projection carries future rate data; the fixed amount is already reserved.
+    assert d._recorder_volume_at(0, 10) == pytest.approx({"payload": 5, "bus": 0.11})
+    rolling = object.__new__(RollingHorizonDITL)
+    rolling.config = c
+    rolling.coverage = None
+    rolling.step_size = 10
+    rolling.ustart = 0
+    for tick in (0, 10):
+        projected = rolling._recorder_volume_at(tick, tick + 10, [target])
+        d._process_data_management(tick, ACSMode.SCIENCE, 10, collection_seconds=10)
+        assert projected == pytest.approx(
+            {n: v.recorder.current_volume_gb for n, v in c.recorder_views().items()}
+        )
+    views = c.recorder_views()
+    assert views["payload"].recorder.current_volume_gb == pytest.approx(11)
+    assert views["bus"].recorder.current_volume_gb == pytest.approx(0.22)

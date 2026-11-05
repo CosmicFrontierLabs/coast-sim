@@ -22,6 +22,7 @@ from ..config.data_storage import RecorderView
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.coverage import StationCoverage
 from ..targets import PlanEntry
+from ..targets.plan_entry import instrument_modes_of
 from .consumable import ConsumableLedger, Removal
 
 
@@ -264,7 +265,9 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         """What a snapshot of ``entry`` collecting for some seconds generates."""
         if entry.calibration:
             return 0.0
-        return self.config.science_generated(collection_seconds, entry.science_data)
+        return self.config.science_generated(
+            collection_seconds, entry.science_data, instrument_modes_of(entry)
+        )
 
     def science_additions(
         self,

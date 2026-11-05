@@ -22,7 +22,7 @@ from ..config.observation_categories import ObservationCategories
 from ..ditl.ditl_log import DITLLog
 from . import Pointing
 from .merit import MeritBreakdown, MeritModel
-from .plan_entry import snapshot_min_seconds
+from .plan_entry import instrument_modes_of, snapshot_min_seconds
 from .sequence import ObservationSequence
 
 if TYPE_CHECKING:
@@ -154,6 +154,9 @@ class TargetQueue:
         return len(self.targets)
 
     def append(self, target: Pointing) -> None:
+        # The factory binds the runtime configuration before appending its
+        # request copies; unnamed modes must satisfy that payload's rules.
+        target.check_instrument_modes()
         self.targets.append(target)
 
     def add(
@@ -172,6 +175,7 @@ class TargetQueue:
         science_data: Mapping[str, ScienceData] | None = None,
         sequence: ObservationSequence | None = None,
         visits: int = 1,
+        instrument_modes: Mapping[str, str] | None = None,
     ) -> Pointing:
         """Add a pointing target to the queue.
 
@@ -192,6 +196,8 @@ class TargetQueue:
                 may begin
             science_data: Science data observing the target generates, keyed
                 by instrument name; other instruments generate their own
+            instrument_modes: The instruments the observation uses and the
+                mode each is in, by name; instruments not named idle
 
         Returns:
             The added target.
@@ -214,10 +220,13 @@ class TargetQueue:
             science_data=dict(science_data or {}),
             sequence=sequence,
             visits=visits,
+            instrument_modes=dict(instrument_modes or {}),
         )
         pointing.exptime = (
             visits * sequence.science_seconds if sequence is not None else exptime
         )
+        # A request naming no modes uses every instrument with modes.
+        pointing.check_instrument_modes()
         pointing.visibility()
         self.targets.append(pointing)
         return pointing
@@ -803,7 +812,8 @@ class TargetQueue:
         assert config is not None
         step = self._step_size()
         timing = self._timing(target)
-        base = config.science_generated(0.0, target.science_data)
+        modes = instrument_modes_of(target)
+        base = config.science_generated(0.0, target.science_data, modes)
         fixed = (
             base
             + self._housekeeping_excess_gb(
@@ -814,7 +824,7 @@ class TargetQueue:
             )
         )
         per_second = (
-            config.science_generated(1.0, target.science_data)
+            config.science_generated(1.0, target.science_data, modes)
             - base
             + self._housekeeping_excess_gb(ACSMode.SCIENCE, 1.0, config)
         )
@@ -856,7 +866,9 @@ class TargetQueue:
         rates: its rate for the seconds plus its fixed amount per observation."""
         assert self.config is not None
         return float(
-            self.config.science_generated(collection_seconds, target.science_data)
+            self.config.science_generated(
+                collection_seconds, target.science_data, instrument_modes_of(target)
+            )
         )
 
     def _select(self, target: Pointing, breakdown: MeritBreakdown) -> None:
