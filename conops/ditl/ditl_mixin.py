@@ -1,6 +1,7 @@
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,9 +10,10 @@ import rust_ephem
 from pydantic import BaseModel, ConfigDict
 
 from conops.common.enums import ACSMode, ObsType
-from conops.common.vector import quaternion_attitude_delta
+from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
+from ..common.ephemeris import position_vectors, velocity_vectors
 from ..config import (
     FaultManagementRun,
     MissionConfig,
@@ -22,16 +24,73 @@ from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs import ACS
+from ..simulation.attitude import slew_angular_velocity
 from ..simulation.coverage import StationCoverage
-from ..simulation.momentum import MomentumSample, StoredMomentumTracker
-from ..simulation.momentum_budget import MomentumLimitError
+from ..simulation.momentum import (
+    MomentumSample,
+    StoredMomentumTracker,
+    build_torque_sources,
+    slew_sample_interval_s,
+    tracker_from_config,
+)
+from ..simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
+from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
+
+
+class _MomentumInputs:
+    """The orbit at one momentum sample: what the tracker was given at a
+    step, kept so the orbit can be interpolated along a slew within the next."""
+
+    def __init__(
+        self,
+        utime: float,
+        position_eci_km: npt.NDArray[np.float64],
+        sun_eci_km: npt.NDArray[np.float64] | None,
+        position_ecef_km: npt.NDArray[np.float64] | None,
+        velocity_eci_km_s: npt.NDArray[np.float64] | None = None,
+    ) -> None:
+        self.utime = float(utime)
+        self.position_eci_km = position_eci_km
+        self.sun_eci_km = sun_eci_km
+        self.position_ecef_km = position_ecef_km
+        self.velocity_eci_km_s = velocity_eci_km_s
+
+    def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
+        """The orbit ``fraction`` of the way from this sample to ``later``."""
+
+        def lerp(
+            a: npt.NDArray[np.float64] | None, b: npt.NDArray[np.float64] | None
+        ) -> npt.NDArray[np.float64] | None:
+            if a is None or b is None:
+                return None
+            return a + fraction * (b - a)
+
+        return _MomentumInputs(
+            self.utime + fraction * (later.utime - self.utime),
+            np.asarray(lerp(self.position_eci_km, later.position_eci_km)),
+            lerp(self.sun_eci_km, later.sun_eci_km),
+            lerp(self.position_ecef_km, later.position_ecef_km),
+            lerp(self.velocity_eci_km_s, later.velocity_eci_km_s),
+        )
+
+
+class MomentumProfile(NamedTuple):
+    """A momentum forecast: the sample times, the stored momentum's norm at
+    each, what the wheels hold at each (the stored momentum less the body's
+    own along a slew, where slew momentum counts; the stored momentum
+    otherwise) and the momentum at the end in inertial coordinates."""
+
+    times: npt.NDArray[np.float64]
+    norms: npt.NDArray[np.float64]
+    demands: npt.NDArray[np.float64]
+    end_eci_n_m_s: npt.NDArray[np.float64] | None
 
 
 class _AttitudeRateViolation(BaseModel):
@@ -114,13 +173,14 @@ class DITLMixin:
         """The mode each instrument is in at this step: the observation's
         while ACS is in SCIENCE mode, a calibration step's own during a
         setup or cleanup step at ``utime``, a scheduled activity's while ACS
-        holds for it in IDLE mode, else None, when every instrument idles or
-        holds a mode named like the ACS mode."""
+        holds for it in IDLE mode, or in DESAT for a thruster dump, else
+        None, when every instrument idles or holds a mode named like the
+        ACS mode."""
         try:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
             return None
-        if acs_mode is ACSMode.IDLE:
+        if acs_mode in (ACSMode.IDLE, ACSMode.DESAT):
             # Dispatch holds the activity itself; a plan holds its entry.
             active = getattr(self, "_active_activity", None)
             modes = getattr(active, "instrument_modes", None)
@@ -405,54 +465,57 @@ class DITLMixin:
     def _build_stored_momentum_tracker(self) -> StoredMomentumTracker | None:
         attitude_control = self.config.spacecraft_bus.attitude_control
         momentum_config = getattr(attitude_control, "stored_momentum", None)
-        if getattr(momentum_config, "capacity_enabled", False) is True:
-            # Enforcement owns integration at actual trajectory boundaries,
-            # independently of housekeeping cadence. Do not integrate twice.
-            return None
-        if getattr(momentum_config, "gravity_gradient_enabled", False) is not True:
+        if getattr(momentum_config, "enabled", False) is not True:
             return None
         assert momentum_config is not None
         inertia = getattr(self.config.spacecraft_bus, "inertia_tensor_body_kg_m2", None)
         if inertia is None:
             raise ValueError(
-                "inertia_tensor_body_kg_m2 is required when gravity-gradient "
-                "momentum tracking is enabled"
+                "inertia_tensor_body_kg_m2 is required when stored-momentum "
+                "tracking is enabled"
             )
-        # A coupled-axis ellipsoid cannot exceed its fastest principal rate.
-        # Bound possible motion, not just endpoint separation: a complete slew
-        # can occur between samples even when both endpoint torques are zero.
-        fastest_rate = (
-            max(attitude_control.max_slew_rate_body)
-            if attitude_control.max_slew_rate_body is not None
-            else attitude_control.max_slew_rate
-        )
-        if not math.isfinite(fastest_rate) or fastest_rate <= 0.0:
-            raise ValueError(
-                "momentum tracking requires a finite positive maximum slew rate"
-            )
+        self._momentum_slew_sample_s = slew_sample_interval_s(self.config)
         return StoredMomentumTracker(
             inertia_tensor_body_kg_m2=inertia,
             initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
-            max_sample_interval_s=min(
-                momentum_config.max_sample_interval_s,
-                momentum_config.max_attitude_step_deg / fastest_rate,
-            ),
+            sources=build_torque_sources(self.config),
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
-        """Reload run inputs and fail before execution if sampling is too coarse."""
-        self._stored_momentum_tracker = self._build_stored_momentum_tracker()
-        if self._stored_momentum_tracker is not None:
-            self._stored_momentum_tracker.validate_sample_interval(self.step_size)
-            self._stored_momentum_tracker.validate_sample_interval(self.ephem.step_size)
+        """Reload the run's inputs. Where the capacity is enforced, the
+        executor's budget integrates into this tracker, so the ACS is given
+        it before the budget exists, or the budget adopts it."""
+        tracker = self._build_stored_momentum_tracker()
+        self._stored_momentum_tracker = tracker
+        self._momentum_previous: _MomentumInputs | None = None
+        acs = getattr(self, "acs", None)
+        if acs is None:
+            return
+        acs.momentum_tracker = tracker
+        budget = getattr(acs, "momentum_budget", None)
+        executor = getattr(acs, "_executor", None)
+        if tracker is not None and isinstance(budget, MomentumBudget) and executor:
+            budget.adopt(tracker, executor.state)
 
     def _update_stored_momentum(
         self,
         utime: float,
         position_eci_km: npt.NDArray[np.float64],
         attitude_quaternion_eci_to_body: npt.NDArray[np.float64],
+        index: int | None = None,
     ) -> MomentumSample | None:
-        """Advance the tracker using values already computed for housekeeping."""
+        """Advance the tracker to this step using values already computed for
+        housekeeping; ``index`` is the ephemeris sample, for the Sun vector
+        and eclipse.
+
+        The step is the ephemeris resolution, which may be far coarser than
+        a slew. Where the attitude moved during the step, the slew flown is
+        sampled from the ACS at the configured attitude step, with the orbit
+        interpolated between the step's ends, so the torque along the slew is
+        integrated whatever the resolution. Where the capacity is enforced,
+        the executor's budget integrates into the same tracker instead, at
+        the motion's own boundaries, and its last sample is reported.
+        """
         if (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
             is True
@@ -461,12 +524,253 @@ class DITLMixin:
             if budget is None:
                 raise ValueError("Momentum enforcement has not been initialized")
             return budget.current.sample
-        if self._stored_momentum_tracker is None:
+        tracker = self._stored_momentum_tracker
+        if tracker is None:
             return None
-        return self._stored_momentum_tracker.update(
+        sun_eci_km: npt.NDArray[np.float64] | None = None
+        position_ecef_km: npt.NDArray[np.float64] | None = None
+        velocity_eci_km_s: npt.NDArray[np.float64] | None = None
+        sunlit = True
+        if index is not None:
+            velocities = velocity_vectors(self.ephem)
+            if velocities is not None and index < len(velocities):
+                velocity_eci_km_s = np.asarray(velocities[index], dtype=np.float64)
+            sun_positions = position_vectors(self.ephem, "sun")
+            if index < len(sun_positions):
+                sun_eci_km = (
+                    np.asarray(sun_positions[index], dtype=np.float64) - position_eci_km
+                )
+            sunlit = not bool(getattr(self.acs, "in_eclipse", False))
+            # A test double's ephemeris may have no Earth-fixed positions.
+            ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
+            if ecef is not None and index < len(ecef):
+                position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
+        inputs = _MomentumInputs(
+            utime, position_eci_km, sun_eci_km, position_ecef_km, velocity_eci_km_s
+        )
+        previous = getattr(self, "_momentum_previous", None)
+        self._momentum_previous = inputs
+        elapsed = utime - previous.utime if previous is not None else 0.0
+        if (
+            previous is not None
+            and elapsed > self._momentum_slew_sample_s
+            and self.acs.attitude_moved(previous.utime, utime)
+        ):
+            count = math.ceil(elapsed / self._momentum_slew_sample_s)
+            for k in range(1, count):
+                fraction = k / count
+                between = previous.between(inputs, fraction)
+                ra, dec, roll = self.acs.executed_attitude(between.utime)
+                tracker.update(
+                    utime=between.utime,
+                    position_eci_km=between.position_eci_km,
+                    attitude_quaternion_eci_to_body=attitude_to_quat(ra, dec, roll),
+                    sun_eci_km=between.sun_eci_km,
+                    sunlit=sunlit,
+                    velocity_eci_km_s=between.velocity_eci_km_s,
+                    position_ecef_km=between.position_ecef_km,
+                    angular_velocity_body_rad_s=self._body_rate_rad_s(between.utime),
+                )
+        return tracker.update(
             utime=utime,
             position_eci_km=position_eci_km,
             attitude_quaternion_eci_to_body=attitude_quaternion_eci_to_body,
+            sun_eci_km=sun_eci_km,
+            sunlit=sunlit,
+            velocity_eci_km_s=velocity_eci_km_s,
+            position_ecef_km=position_ecef_km,
+            angular_velocity_body_rad_s=self._body_rate_rad_s(utime),
+        )
+
+    def _body_rate_rad_s(self, utime: float) -> npt.NDArray[np.float64]:
+        """The body's angular velocity as executed at ``utime``, in radians
+        per second, for the momentum it carries while it turns. At rest
+        where the ACS gives none (a test double has no motion)."""
+        executed = getattr(self.acs, "executed_angular_velocity", None)
+        try:
+            rate = np.asarray(
+                executed(utime) if callable(executed) else None, dtype=np.float64
+            )
+        except (TypeError, ValueError):
+            return np.zeros(3, dtype=np.float64)
+        if rate.shape != (3,) or not np.all(np.isfinite(rate)):
+            return np.zeros(3, dtype=np.float64)
+        return np.deg2rad(rate)
+
+    def _slew_momentum_enabled(self) -> bool:
+        """Whether the momentum of slews counts against the capacity."""
+        return bool(
+            self.config.spacecraft_bus.attitude_control.stored_momentum.slew_momentum_enabled
+        )
+
+    def _momentum_demand_n_m_s(self, tracker: StoredMomentumTracker) -> float:
+        """What is checked against the capacity: what the wheels hold where
+        the momentum of slews counts, the stored momentum otherwise."""
+        if self._slew_momentum_enabled():
+            return tracker.actuator_momentum_norm_n_m_s
+        return tracker.stored_momentum_norm_n_m_s
+
+    def _dump_level_n_m_s(self) -> float | None:
+        """The stored momentum at which a thruster dump is called for, if
+        the configuration has thrusters and a capacity."""
+        momentum_config = self.config.spacecraft_bus.attitude_control.stored_momentum
+        return momentum_config.dump_level_n_m_s
+
+    def _unload_stored_momentum(self, utime: float, obsid: int | None) -> None:
+        """A thruster dump ends: take the stored momentum out of the wheels."""
+        tracker = self._stored_momentum_tracker
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        if tracker is None or dump is None:
+            return
+        before = tracker.stored_momentum_norm_n_m_s
+        tracker.unload(dump.residual_fraction)
+        budget = getattr(self.acs, "momentum_budget", None)
+        executor = getattr(self.acs, "_executor", None)
+        if isinstance(budget, MomentumBudget) and executor is not None:
+            # Enforcement forecasts from the emptied wheels from here on.
+            budget.unloaded(executor.state)
+        self.log.log_event(
+            utime=utime,
+            event_type="MOMENTUM",
+            description=(
+                f"Thruster dump unloads {before:.3f} N m s of stored momentum "
+                f"to {tracker.stored_momentum_norm_n_m_s:.3f} N m s"
+            ),
+            obsid=obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        self.fault_management.clear_momentum_capacity(
+            utime=utime, stored_n_m_s=tracker.stored_momentum_norm_n_m_s
+        )
+
+    def _momentum_at_capacity(self, utime: float, obsid: int | None) -> bool:
+        """Whether what the wheels hold has reached their capacity: the
+        stored momentum, plus the body's own along a slew where slew
+        momentum counts. The first time, fault management records it, with
+        the observation under way if any: an emergency dump interrupting an
+        observation is what the planning level exists to prevent."""
+        tracker = self._stored_momentum_tracker
+        capacity = (
+            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
+        )
+        if tracker is None or capacity is None:
+            return False
+        stored = self._momentum_demand_n_m_s(tracker)
+        if stored < capacity:
+            return False
+        self.fault_management.report_momentum_capacity(
+            utime=utime, stored_n_m_s=stored, capacity_n_m_s=capacity, obsid=obsid
+        )
+        return True
+
+    def _momentum_ephem_utimes(self) -> npt.NDArray[np.float64]:
+        """The ephemeris sample times in Unix seconds, cached per ephemeris."""
+        timestamps = self.ephem.timestamp
+        cached = getattr(self, "_momentum_utimes_cache", None)
+        if cached is not None and cached[0] is timestamps:
+            utimes: npt.NDArray[np.float64] = cached[1]
+            return utimes
+        utimes = np.array([t.timestamp() for t in timestamps], dtype=np.float64)
+        self._momentum_utimes_cache = (timestamps, utimes)
+        return utimes
+
+    def _forecast_momentum(
+        self,
+        begin: float,
+        end: float,
+        attitude_at: Callable[[float], tuple[float, float, float]],
+        *,
+        start_eci_n_m_s: npt.ArrayLike | None,
+        slew: Slew | None = None,
+    ) -> MomentumProfile:
+        """Forecast the stored momentum from ``begin`` to ``end`` at the
+        attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
+        wheels where None: the sample times, the norm at each, what the
+        wheels hold at each, and the momentum at the end in inertial
+        coordinates. Held attitudes are sampled at the run's step and
+        ``slew`` at the configured attitude step, with the orbit interpolated
+        between ephemeris samples, as the run integrates; where the momentum
+        of slews counts, the body's rate along ``slew`` is what the wheels
+        give up to it. Empty where momentum is not tracked."""
+        empty = np.empty(0, dtype=np.float64)
+        forecast = tracker_from_config(self.config)
+        if forecast is None or end <= begin:
+            return MomentumProfile(empty, empty, empty, None)
+        if start_eci_n_m_s is not None:
+            forecast.start_from_eci(start_eci_n_m_s)
+        else:
+            forecast.reset()
+        samples = np.arange(begin, end, self.step_size)
+        if len(samples) == 0 or samples[-1] < end:
+            samples = np.append(samples, end)
+        slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
+        rate_at: Callable[[float], npt.NDArray[np.float64]] | None = None
+        if slew is not None and slew.slewtime > 0.0 and slew_sample > 0.0:
+            along = np.arange(
+                max(begin, float(slew.slewstart)),
+                min(end, float(slew.slewend)),
+                slew_sample,
+            )
+            samples = np.unique(np.concatenate([samples, along]))
+            if self._slew_momentum_enabled():
+                rate_at = slew_angular_velocity(slew)
+        utimes = self._momentum_ephem_utimes()
+        positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
+        suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
+        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
+        ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
+        velocities = velocity_vectors(self.ephem)
+
+        def interpolate(
+            table: npt.NDArray[np.float64], at: float
+        ) -> npt.NDArray[np.float64]:
+            return np.array(
+                [np.interp(at, utimes, table[:, k]) for k in range(3)], dtype=np.float64
+            )
+
+        norms: list[float] = []
+        demands: list[float] = []
+        for at in samples:
+            position = interpolate(positions, float(at))
+            # Eclipse is known at the ephemeris samples: the nearest one.
+            nearest = int(np.clip(np.searchsorted(utimes, at), 0, len(utimes) - 1))
+            if nearest > 0 and abs(utimes[nearest - 1] - at) < abs(
+                utimes[nearest] - at
+            ):
+                nearest -= 1
+            sample = forecast.update(
+                utime=float(at),
+                position_eci_km=position,
+                attitude_quaternion_eci_to_body=attitude_to_quat(
+                    *attitude_at(float(at))
+                ),
+                sun_eci_km=interpolate(suns, float(at)) - position,
+                sunlit=not self.config.constraint.in_eclipse(
+                    0.0, 0.0, float(utimes[nearest])
+                ),
+                velocity_eci_km_s=(
+                    interpolate(velocities, float(at))
+                    if velocities is not None
+                    else None
+                ),
+                position_ecef_km=(
+                    interpolate(ecefs, float(at)) if ecefs is not None else None
+                ),
+                angular_velocity_body_rad_s=(
+                    rate_at(float(at)) if rate_at is not None else None
+                ),
+            )
+            norms.append(sample.stored_momentum_norm_n_m_s)
+            demands.append(
+                sample.actuator_momentum_norm_n_m_s
+                if sample.actuator_momentum_norm_n_m_s is not None
+                else sample.stored_momentum_norm_n_m_s
+            )
+        return MomentumProfile(
+            np.asarray(samples, dtype=np.float64),
+            np.array(norms, dtype=np.float64),
+            np.array(demands, dtype=np.float64),
+            forecast.momentum_eci_n_m_s,
         )
 
     def _solar_array_drive_telemetry(self) -> list[SolarArrayDriveAngle] | None:

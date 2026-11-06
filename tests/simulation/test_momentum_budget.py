@@ -40,7 +40,9 @@ def setup_budget(
                 slew_acceleration=1.0,
                 settle_time=90,
                 stored_momentum=StoredMomentumConfig(
-                    capacity_n_m_s=capacity, gravity_gradient_enabled=gravity
+                    capacity_n_m_s=capacity,
+                    gravity_gradient_enabled=gravity,
+                    enforce_capacity=True,
                 ),
             ),
         )
@@ -338,7 +340,9 @@ def test_capacity_requires_inertia_even_without_external_torque():
     with pytest.raises(ValueError, match="inertia_tensor"):
         SpacecraftBus(
             attitude_control=AttitudeControlSystem(
-                stored_momentum=StoredMomentumConfig(capacity_n_m_s=5)
+                stored_momentum=StoredMomentumConfig(
+                    capacity_n_m_s=5, enforce_capacity=True
+                )
             )
         )
 
@@ -456,3 +460,151 @@ def test_fixed_axis_bound_covers_changing_quadratic_momentum(coefficients):
     assert budget._fixed_axis_within_limit(initial.coast, 0, duration, coefficients)
     budget.capacity = peak * 0.999
     assert not budget._fixed_axis_within_limit(initial.coast, 0, duration, coefficients)
+
+
+# ── The budget on the configured torque sources ───────────────────────────
+
+
+def _orbit_config(**momentum):
+    from rust_ephem import TLEEphemeris
+
+    from conops.config import StoredMomentumConfig as _Config
+
+    begin = datetime(2025, 11, 1, tzinfo=timezone.utc)
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            inertia_tensor_body_kg_m2=np.diag([1000.0, 1200.0, 800.0]),
+            attitude_control=AttitudeControlSystem(
+                max_slew_rate=0.5,
+                slew_acceleration=0.25,
+                settle_time=30.0,
+                stored_momentum=_Config(
+                    capacity_n_m_s=50.0, enforce_capacity=True, **momentum
+                ),
+            ),
+        )
+    )
+    config.constraint.ephem = TLEEphemeris(
+        tle="examples/example.tle",
+        begin=begin,
+        end=begin + timedelta(hours=2),
+        step_size=10,
+    )
+    return config
+
+
+def test_the_budget_integrates_the_configured_sources():
+    """Enforcement integrates the same sources the simulation does, from
+    the ephemeris's Sun, velocity and Earth-fixed positions, not the
+    gravity gradient alone."""
+    config = _orbit_config(
+        gravity_gradient_enabled=True,
+        solar_radiation_pressure_enabled=True,
+        aerodynamic_drag_enabled=True,
+        residual_dipole_body_a_m2=(1.0, 0.0, 0.0),
+    )
+    ephem = config.constraint.ephem
+    executor = AttitudeExecutor(ephem.timestamp[0].timestamp(), (80.0, -20.0, 0.0))
+    budget = MomentumBudget(config, ephem, executor.state)
+    executor.momentum = budget
+    assert [s.name for s in budget.live.sources] == [
+        "gravity_gradient",
+        "solar_radiation_pressure",
+        "aerodynamic_drag",
+        "residual_dipole",
+    ]
+    assert budget.max_external_torque > 0.0
+    executor.advance(executor.state.utime + 3600.0)
+    torques = budget.current.sample.torques_body_n_m
+    assert set(torques) == {s.name for s in budget.live.sources}
+    assert any(np.linalg.norm(torques[name]) > 0.0 for name in torques)
+    assert np.linalg.norm(torques["residual_dipole"]) > 0.0
+    assert budget.live.stored_momentum_norm_n_m_s > 0.0
+    # The live tracker carries what was committed.
+    assert budget.live.state == budget.current.tracker.state
+
+
+def test_the_torque_bounds_cover_the_sampled_torques():
+    """Each source's bound along the orbit is at least its torque at any
+    attitude and any sample, with the wheels full for the magnetorquers."""
+    from conops.common.vector import attitude_to_quat, quaternion_to_rotation_matrix
+    from conops.simulation.momentum import (
+        OrbitSample,
+        OrbitTables,
+        build_torque_sources,
+    )
+
+    config = _orbit_config(
+        gravity_gradient_enabled=True,
+        solar_radiation_pressure_enabled=True,
+        aerodynamic_drag_enabled=True,
+        residual_dipole_body_a_m2=(0.5, -0.3, 1.0),
+        magnetorquer_max_dipole_a_m2=20.0,
+    )
+    ephem = config.constraint.ephem
+    orbit = OrbitTables.from_ephem(ephem)
+    rng = np.random.default_rng(7)
+    for source in build_torque_sources(config):
+        bound = source.torque_bound_n_m(orbit)
+        assert np.isfinite(bound) and bound > 0.0
+        peak = 0.0
+        for index in rng.integers(0, len(orbit.times), 60):
+            ra, dec, roll = (
+                rng.uniform(0, 360),
+                rng.uniform(-90, 90),
+                rng.uniform(0, 360),
+            )
+            rotation = quaternion_to_rotation_matrix(attitude_to_quat(ra, dec, roll))
+            sample = OrbitSample(
+                utime=float(orbit.times[index]),
+                position_eci_km=orbit.positions_eci_km[index],
+                rotation_eci_to_body=rotation,
+                sun_eci_km=orbit.sun_positions_eci_km[index]
+                - orbit.positions_eci_km[index],
+                sunlit=True,
+                velocity_eci_km_s=orbit.velocities_eci_km_s[index],
+                position_ecef_km=orbit.positions_ecef_km[index],
+                stored_momentum_body_n_m_s=rng.normal(size=3) * 100.0,
+            )
+            peak = max(peak, float(np.linalg.norm(source.torque_body_n_m(sample))))
+        assert 0.0 < peak <= bound, source.name
+
+
+def test_a_dump_restarts_the_forecast_from_the_emptied_wheels():
+    """The live tracker unloaded, the budget's forecast continues from what
+    it holds, with any certified path dropped."""
+    config, ephem, executor = setup_budget(capacity=20.0)
+    budget = executor.momentum
+    config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s = (
+        0.0,
+        0.0,
+        12.0,
+    )
+    budget.adopt(
+        StoredMomentumTracker(np.eye(3) * 1000, (0.0, 0.0, 12.0), sources=[]),
+        executor.state,
+    )
+    assert budget.current.sample.stored_momentum_norm_n_m_s == pytest.approx(12.0)
+    assert budget.live.stored_momentum_norm_n_m_s == pytest.approx(12.0)
+    executor.advance(executor.state.utime + 60.0)
+    budget.live.unload()
+    budget.unloaded(executor.state)
+    assert budget.current.utime == executor.state.utime
+    assert budget.current.path is None
+    assert budget.current.sample.stored_momentum_norm_n_m_s == 0.0
+    assert budget.live.actuator_momentum_norm_n_m_s == 0.0
+    executor.advance(executor.state.utime + 60.0)
+    assert budget.live.stored_momentum_norm_n_m_s == 0.0
+    assert budget.current.tracker.state == budget.live.state
+
+
+def test_enforcement_may_be_combined_with_thruster_dumps():
+    from conops.config import ThrusterDumpConfig
+
+    settings = StoredMomentumConfig(
+        capacity_n_m_s=20.0,
+        enforce_capacity=True,
+        thruster_dump=ThrusterDumpConfig(duration_seconds=60.0),
+    )
+    assert settings.capacity_enabled and settings.enabled
+    assert settings.dump_level_n_m_s == pytest.approx(16.0)

@@ -5,12 +5,14 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 """
 
 from bisect import bisect_right
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property
 from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common.motion import RestToRestMotion
 from ..common.quaternion_curve import QuaternionHermite
@@ -436,6 +438,28 @@ class AttitudeTrajectory:
         raise AttitudeExecutionError("Trajectory has no physical stopping boundary")
 
 
+def slew_angular_velocity(
+    slew: "Slew",
+) -> Callable[[float], npt.NDArray[np.float64]]:
+    """The body's angular velocity along ``slew`` as the ACS flies it, in
+    radians per second at a time, for the momentum the body carries while it
+    turns: zero before the slew starts, once it has settled, and for a slew
+    that goes nowhere."""
+    zero = np.zeros(3, dtype=np.float64)
+    if float(slew.slewtime) <= 0.0 or float(slew.slewdist) <= 0.0:
+        return lambda utime: zero
+    trajectory = AttitudeTrajectory.from_slew(slew, slew.motion_limits)
+
+    def rate(utime: float) -> npt.NDArray[np.float64]:
+        if utime < trajectory.start or utime >= trajectory.end:
+            return zero
+        return np.deg2rad(
+            np.asarray(trajectory.state(utime).angular_velocity_body, dtype=np.float64)
+        )
+
+    return rate
+
+
 class AttitudeExecutor:
     """The sole owner of executed orientation and angular velocity."""
 
@@ -449,10 +473,53 @@ class AttitudeExecutor:
         self._state = AttitudeState(utime, _quaternion(attitude), angular_velocity_body)
         self._trajectory: AttitudeTrajectory | None = None
         self.momentum: MomentumBudget | None = None
+        # The motion flown so far: each trajectory installed, and each state
+        # held, from the time it took over. Later entries supersede earlier
+        # ones, so a trajectory replaced before its end is on record only up
+        # to its replacement's start.
+        self._flown: list[tuple[float, AttitudeTrajectory | AttitudeState]] = [
+            (utime, self._state)
+        ]
+        self._flown_starts: list[float] = [utime]
 
     @property
     def state(self) -> AttitudeState:
         return self._state
+
+    def _record(self, start: float, motion: AttitudeTrajectory | AttitudeState) -> None:
+        self._flown.append((start, motion))
+        self._flown_starts.append(start)
+
+    def flown(self, utime: float) -> AttitudeState:
+        """The state executed at ``utime``, up to the present, from the
+        motion that was flying then."""
+        if not isfinite(utime) or utime > self._state.utime:
+            raise AttitudeExecutionError("Cannot recall motion not yet flown")
+        index = max(0, bisect_right(self._flown_starts, utime) - 1)
+        _, motion = self._flown[index]
+        if isinstance(motion, AttitudeTrajectory):
+            return motion.state(max(utime, motion.start))
+        elapsed = max(0.0, utime - motion.utime)
+        return AttitudeState(
+            utime,
+            _body_rotation(
+                motion.quaternion, elapsed * np.asarray(motion.angular_velocity_body)
+            ),
+            motion.angular_velocity_body,
+        )
+
+    def moved_between(self, begin: float, end: float) -> bool:
+        """Whether the attitude moved at any time in ``(begin, end]``."""
+        index = max(0, bisect_right(self._flown_starts, begin) - 1)
+        for start, motion in self._flown[index:]:
+            if start >= end:
+                break
+            if isinstance(motion, AttitudeTrajectory):
+                if motion.end > begin:
+                    return True
+            elif any(abs(rate) > 1e-10 for rate in motion.angular_velocity_body):
+                return True
+        return False
 
     def _check_time(self, utime: float) -> None:
         if not isfinite(utime) or utime < self._state.utime:
@@ -546,6 +613,7 @@ class AttitudeExecutor:
             self.momentum.commit(replace(before, path=forecast.path))
         self._state = state
         self._trajectory = trajectory
+        self._record(trajectory.start, trajectory)
 
     def hold(self, utime: float) -> None:
         state = self.predict(utime)
@@ -553,3 +621,4 @@ class AttitudeExecutor:
             raise AttitudeExecutionError("Cannot stop moving attitude instantaneously")
         self.advance(utime)
         self._trajectory = None
+        self._record(utime, state)

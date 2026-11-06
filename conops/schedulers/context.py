@@ -103,7 +103,13 @@ class SchedulingContext:
         self._initial_attitudes: list[Attitude] = []
         # Quaternion slews do not depend on when they start, so one slew per
         # attitude pair is computed and re-timed for each start.
-        self._slew_cache: dict[tuple[Attitude, Attitude, ObsType, int], Slew] = {}
+        self._slew_cache: dict[
+            tuple[Attitude, Attitude, ObsType, int, float], Slew
+        ] = {}
+        self.slew_rate_fractions: dict[int, float] = {}
+        """The fraction of the configured slew rates the slew into each
+        target is flown at, by obsid, where a planner found its momentum
+        does not fit the wheels at full rate; full rate where unset."""
         self._time_independent_slews = (
             config.spacecraft_bus.attitude_control.slew_algorithm
             == SlewAlgorithm.QUATERNION
@@ -196,7 +202,8 @@ class SchedulingContext:
         obsid: int = 0,
     ) -> Slew:
         """Return the slew ACS would fly between two attitudes from ``slewstart``."""
-        key = (start, end, obstype, obsid)
+        fraction = self.slew_rate_fractions.get(int(obsid), 1.0)
+        key = (start, end, obstype, obsid, fraction)
         cached = self._slew_cache.get(key) if self._time_independent_slews else None
         if cached is not None:
             return cached.model_copy(
@@ -213,6 +220,7 @@ class SchedulingContext:
         slew.endra, slew.enddec, slew.endroll = end
         slew.obstype = obstype
         slew.obsid = obsid
+        slew.rate_fraction = fraction
         slew.calc_slewtime()
         if self._time_independent_slews:
             self._slew_cache[key] = slew

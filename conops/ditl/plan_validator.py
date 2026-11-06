@@ -528,12 +528,16 @@ class PlanExecutionValidator:
         mismatches: list[PlanExecutionMismatch] = []
         if end <= start:
             return mismatches
+        # A thruster dump holds in DESAT; any other activity holds in IDLE.
+        expected = ACSMode.DESAT if entry.desaturation else ACSMode.IDLE
+        wrong = {ACSMode.SCIENCE, ACSMode.PASS, ACSMode.CHARGING}
+        wrong.add(ACSMode.IDLE if entry.desaturation else ACSMode.DESAT)
         for i in self._window_indices(start, end):
             mode = self._mode_at_index(i)
-            if mode in (ACSMode.SCIENCE, ACSMode.PASS, ACSMode.CHARGING):
+            if mode in wrong:
                 mismatches.append(
                     self._mode_mismatch(
-                        entry, self.utime[i], mode, ACSMode.IDLE, "activity"
+                        entry, self.utime[i], mode, expected, "activity"
                     )
                 )
         return mismatches

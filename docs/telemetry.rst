@@ -72,18 +72,15 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
 ``R_x(-roll)`` for the same physical attitude.
 
 **ACS State**
-   - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, etc.)
+   - ``acs_mode``: Current ACS mode (SCIENCE, SLEWING, SAFE, SAA, DESAT while a thruster momentum dump holds, etc.)
    - ``gravity_gradient_torque_body_n_m``: Gravity-gradient torque vector in spacecraft body coordinates (N m), or ``None`` when tracking is disabled
+   - ``disturbance_torques_body_n_m``: Each tracked torque source's torque vector in body coordinates (N m), by source name (``gravity_gradient``, ``solar_radiation_pressure``, ``residual_dipole``, ``magnetorquer_unloading``), or ``None`` when tracking is disabled
+   - ``disturbance_torque_body_n_m``: The tracked sources' total torque vector in body coordinates (N m), or ``None`` when tracking is disabled
+   - ``geomagnetic_field_body_t``: The geomagnetic field in body coordinates (T) where magnetorquers or a residual dipole are tracked, else ``None``
    - ``stored_momentum_body_n_m_s``: Accumulated stored-momentum vector in spacecraft body coordinates (N m s), or ``None`` when tracking is disabled
    - ``stored_momentum_norm_n_m_s``: Coordinate-invariant norm of accumulated stored momentum (N m s), or ``None`` when tracking is disabled
-   - ``actuator_momentum_body_n_m_s``: Required actuator momentum including maneuver demand, ``R H_total - I omega`` (N m s), or ``None`` when capacity enforcement is disabled
-   - ``actuator_momentum_norm_n_m_s``: Norm compared against the configured spherical capacity (N m s), or ``None`` when enforcement is disabled
-
-With capacity enforcement, the historical ``stored_momentum_*`` fields describe
-total angular momentum, including the initially moving body's momentum. Use the
-``actuator_momentum_*`` fields for actuator demand. Housekeeping is sampled at the
-simulation cadence; enforcement also checks intermediate motion samples that are
-not necessarily present in housekeeping.
+   - ``actuator_momentum_body_n_m_s``: What the wheels hold in body coordinates (N m s), the stored momentum less the body's own, :math:`I\omega`, while it turns; equal to the stored momentum at rest, or ``None`` when tracking is disabled
+   - ``actuator_momentum_norm_n_m_s``: Norm of what the wheels hold (N m s), or ``None`` when tracking is disabled
 
 **Power System**
    - ``panel_illumination``: Solar panel illumination fraction (0-1)

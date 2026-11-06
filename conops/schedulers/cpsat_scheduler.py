@@ -1022,7 +1022,11 @@ class CpSatScheduler(LocalSearchScheduler):
         """Wall-clock time spent building, solving and decoding chunks."""
 
     def schedule(self) -> Plan:
-        """Build the priority-first plan, solve chunk by chunk, and optionally polish."""
+        """Build the priority-first plan, solve chunk by chunk, and optionally
+        polish, within the wheels' momentum where the configuration tracks it."""
+        return self._plan_within_momentum(self._plan_once)
+
+    def _plan_once(self) -> Plan:
         start = self._start_from_priority_plan()
         began = time.perf_counter()
         solved = self._solve(start)
