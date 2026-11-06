@@ -4096,7 +4096,10 @@ class QueueDITL(DITLMixin, DITLStats):
             # The observation ends when a request ranked above it must start,
             # or one ranked below it that it can wait for; a sequence visit
             # under way is not cut for the latter, since a cut visit is void.
-            visit_under_way = target is None and self._sequence is not None
+            visit_under_way = (
+                self._sequence is not None
+                and candidate.obsid == self._sequence.parent.obsid
+            )
             cut = self.queue.request_cut(
                 candidate,
                 deadline_inputs.request_openings,
