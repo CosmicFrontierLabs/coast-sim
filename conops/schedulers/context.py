@@ -156,9 +156,10 @@ class SchedulingContext:
 
     def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
+        ra, dec = target.position_at(utime)
         return optimum_roll(
-            target.ra,
-            target.dec,
+            ra,
+            dec,
             utime,
             self.ephem,
             self.config.solar_panel,

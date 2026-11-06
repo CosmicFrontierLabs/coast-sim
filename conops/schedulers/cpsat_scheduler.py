@@ -1341,7 +1341,9 @@ class CpSatScheduler(LocalSearchScheduler):
         ledger = self._battery
         if not ledger.active:
             return (0, 0)
-        attitude = target.target_body_attitude(self.ctx.instrument_roll(target, when))
+        attitude = target.target_body_attitude(
+            self.ctx.instrument_roll(target, when), at=when
+        )
         lit = next(
             (
                 float(s)
@@ -1499,8 +1501,9 @@ class CpSatScheduler(LocalSearchScheduler):
                         latest = min(latest, int(slot_deadline - origin_time - setup))
                     if latest < earliest or window[0] >= chunk_end - origin_time:
                         continue
+                    when = max(w0, origin_time)
                     attitude = target.target_body_attitude(
-                        ctx.instrument_roll(target, max(w0, origin_time))
+                        ctx.instrument_roll(target, when), at=when
                     )
                     attitudes = (attitude, attitude)
                     task_overhead = overhead
@@ -1509,15 +1512,14 @@ class CpSatScheduler(LocalSearchScheduler):
                         # between its steps and any step setup are part of
                         # its length, and it leaves the spacecraft at its
                         # last step.
-                        when = max(w0, origin_time)
                         first = target.step_pointing(0)
                         last_step = target.step_pointing(len(target.sequence.steps) - 1)
                         attitudes = (
                             first.target_body_attitude(
-                                ctx.instrument_roll(first, when)
+                                ctx.instrument_roll(first, when), at=when
                             ),
                             last_step.target_body_attitude(
-                                ctx.instrument_roll(last_step, when)
+                                ctx.instrument_roll(last_step, when), at=when
                             ),
                         )
                         task_overhead = overhead + int(
@@ -1545,7 +1547,7 @@ class CpSatScheduler(LocalSearchScheduler):
                         (self._allocated_factor - 1.0) * self._value(request, shares),
                     )
                     data = self._candidate_data(target)
-                    power = self._candidate_power(target, max(w0, origin_time))
+                    power = self._candidate_power(target, when)
                     if visit is not None:
                         # One visit per window.
                         copies = 1
