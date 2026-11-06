@@ -274,6 +274,9 @@ class DITL(DITLMixin, DITLStats):
         ## DITL LOOP
         ##
         for i in range(simlen):
+            # A partial run or a coarser execution step need not share the
+            # ephemeris's array origin or sample count.
+            ephem_index = int(self.ephem.index(dtutcfromtimestamp(self.utime[i])))
             # Advance the current plan entry. Plan entries are not guaranteed to
             # be time-ordered, so only fall back to a full lookup when the
             # cached entry no longer covers this timestep.
@@ -405,8 +408,8 @@ class DITL(DITLMixin, DITLStats):
                 np.radians(dec),
                 np.radians(roll),
                 radec2vec(
-                    np.radians(float(self.ephem.sun_ra_deg[i])),
-                    np.radians(float(self.ephem.sun_dec_deg[i])),
+                    np.radians(float(self.ephem.sun_ra_deg[ephem_index])),
+                    np.radians(float(self.ephem.sun_dec_deg[ephem_index])),
                 ),
             )
             sun_body_vector: list[float] = [
@@ -414,7 +417,9 @@ class DITL(DITLMixin, DITLStats):
                 float(_sun_bv[1]),
                 float(_sun_bv[2]),
             ]
-            _pos = np.asarray(position_vectors(self.ephem, "gcrs")[i], dtype=np.float64)
+            _pos = np.asarray(
+                position_vectors(self.ephem, "gcrs")[ephem_index], dtype=np.float64
+            )
             earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
@@ -477,7 +482,7 @@ class DITL(DITLMixin, DITLStats):
             )
             _q = attitude_to_quat(ra, dec, roll)
             momentum_sample = self._update_stored_momentum(
-                self.utime[i], _pos, _q, index=i
+                self.utime[i], _pos, _q, index=ephem_index
             )
             active = self._active_entry
             self._momentum_at_capacity(
