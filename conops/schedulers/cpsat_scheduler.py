@@ -27,6 +27,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from itertools import pairwise
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -104,7 +105,7 @@ class _ChunkRecorder(NamedTuple):
     """Housekeeping generated in each segment, outside its contact."""
     fixed: list[int]
     """Science already planned in each segment: before the chunk, locked, or
-    the priority-first plan's snapshots after it."""
+    the selected incumbent's snapshots after it."""
     removal: list[int]
     """What the contact at the start of each segment downlinks."""
     removal_accrual: list[int]
@@ -142,7 +143,7 @@ class _ChunkBattery(NamedTuple):
     """Watts drawn by a slew in each run."""
     fixed: list[int]
     """Energy already planned in each run, relative to its idle power: the
-    passes in the chunk and the priority-first plan's snapshots after it."""
+    passes in the chunk and the selected incumbent's snapshots after it."""
     limit: int
     """The planning limit as a deficit."""
     floor: int
@@ -1154,9 +1155,10 @@ class CpSatScheduler(LocalSearchScheduler):
 
         states = [self._initial_state()]
         sequence: list[_Snapshot] = []
-        # The rest of the priority-first plan decoded on from the current
-        # state, state by state. Decoding is what a chunk costs besides its
-        # solve, and while chunks keep that plan the decoding is the same, so
+        # The rest of the selected start plan (priority-first or a better
+        # dispatch seed), decoded state by state from the current prefix.
+        # Besides solving, decoding is the chunk's cost. While chunks keep
+        # that plan the decoding is the same, so
         # it is carried from chunk to chunk rather than done again.
         rest: list[_State] | None = None
         chunk_end = self.ctx.ustart
@@ -1166,12 +1168,12 @@ class CpSatScheduler(LocalSearchScheduler):
                 # A pass planning on from a dump keeps the science before it.
                 continue
             state = states[-1]
-            # The chunk leaves the rest of the priority-first plan room to
+            # The chunk leaves the rest of the selected start plan room to
             # follow it unchanged: it finishes before that plan's next slew and
             # leaves the exposure collected later to it. Its snapshots are kept
             # only if, followed by the rest of that plan, they score at least
             # as well as that plan does from here, so the result is never worse
-            # than the priority-first plan.
+            # than that incumbent from the same state.
             planned = self._released_between(start, chunk_begin, chunk_end)
             later = self._released_between(start, chunk_end, self.ctx.uend)
             if rest is None or rest[0] is not state:
@@ -1188,7 +1190,7 @@ class CpSatScheduler(LocalSearchScheduler):
                 per_chunk,
                 budget,
                 finish if finish is not None else self.ctx.uend,
-                later,
+                _Decoded.model_construct(sequence=later, states=rest[len(planned) :]),
             )
             used = (
                 solved is not None
@@ -1219,7 +1221,7 @@ class CpSatScheduler(LocalSearchScheduler):
 
     @staticmethod
     def _released_between(start: _Decoded, begin: float, end: float) -> list[_Snapshot]:
-        """The priority-first plan's snapshots whose slews start in ``[begin, end)``."""
+        """The selected start plan's snapshots released in ``[begin, end)``."""
         return [
             snapshot
             for snapshot in start.sequence
@@ -1249,14 +1251,14 @@ class CpSatScheduler(LocalSearchScheduler):
         time_limit: float,
         budget: dict[int, float],
         finish: float,
-        later: Sequence[_Snapshot] = (),
+        continuation: _Decoded | None = None,
     ) -> list[_Snapshot] | None:
         """Choose and order the snapshots that start in one chunk.
 
         ``budget`` is the most exposure the chunk may collect for each request,
-        every snapshot ends by ``finish``, and ``later`` are the priority-first
-        plan's snapshots after the chunk, whose data the recorder must also
-        hold. Returns None if the solver found no solution in time.
+        every snapshot ends by ``finish``. ``continuation`` is the incumbent
+        after the chunk, decoded from the current state, whose data and energy
+        must also fit. Returns None if the solver found no solution in time.
         """
         origin_time, origin_attitude = self._chunk_origin(state)
         if origin_time >= chunk_end:
@@ -1279,12 +1281,14 @@ class CpSatScheduler(LocalSearchScheduler):
                 task.slew_in = min(others) if others else 0
         chunk_seconds = int(round(chunk_end - origin_time))
         recorder = [
-            self._chunk_recorder(state, later, origin_time, ledger, offset, tasks)
+            self._chunk_recorder(
+                state, continuation, origin_time, ledger, offset, tasks
+            )
             for _, ledger, offset in self._ledger.members
             if ledger.active
         ]
         battery = (
-            self._chunk_battery(state, later, origin_time, tasks)
+            self._chunk_battery(state, continuation, origin_time, tasks)
             if self._battery.active
             else None
         )
@@ -1318,7 +1322,7 @@ class CpSatScheduler(LocalSearchScheduler):
     def _chunk_recorder(
         self,
         state: _State,
-        later: Sequence[_Snapshot],
+        continuation: _Decoded | None,
         origin_time: float,
         ledger: RecorderLedger,
         offset: int,
@@ -1327,24 +1331,19 @@ class CpSatScheduler(LocalSearchScheduler):
         """The recorder from the chunk's segment to the end of the horizon.
 
         What is already planned counts as fixed: the science placed before the
-        chunk, locked entries, and the priority-first plan's snapshots after
-        the chunk, in the segments their slews start in.
+        chunk, locked entries, and the decoded incumbent after the chunk.
+        The continuation's ledger delta includes actual collection intervals,
+        sequence calibration data and any reconnected contact ingress; its
+        prefix is subtracted so the chunk's old snapshots are not counted.
         """
         volumes = list(state.volumes[offset : offset + ledger.segments])
-        for snapshot in later:
-            assert snapshot.release is not None
-            target = self._by_obsid[snapshot.obsid].target
-            block = next(
-                b
-                for b in self._greedy_timeline
-                if int(b.entry.obsid) == snapshot.obsid
-                and float(b.entry.begin) == snapshot.release
-            )
-            assert block.entry.collection_begin is not None
-            for segment, volume in ledger.science_additions(
-                target, snapshot.seconds, float(block.entry.collection_begin)
-            ):
-                volumes[segment] = combine_amounts(volumes[segment], volume)
+        if continuation is not None:
+            before = continuation.states[0].volumes
+            after = continuation.final.volumes
+            for segment in range(ledger.segments):
+                index = offset + segment
+                extra = combine_amounts(after[index], before[index], -1.0)
+                volumes[segment] = combine_amounts(volumes[segment], extra)
         first = ledger.segment(origin_time)
         entering = ledger.level_at(volumes, origin_time)
         accrual, fixed, removal = ledger.model_vectors(volumes, origin_time)
@@ -1377,7 +1376,7 @@ class CpSatScheduler(LocalSearchScheduler):
     def _chunk_battery(
         self,
         state: _State,
-        later: Sequence[_Snapshot],
+        continuation: _Decoded | None,
         origin_time: float,
         tasks: Sequence[_Task],
     ) -> _ChunkBattery:
@@ -1385,7 +1384,7 @@ class CpSatScheduler(LocalSearchScheduler):
 
         What is already planned counts as fixed, relative to each run's idle
         power, exactly as the ledger counts it: the passes after the cursor
-        and the priority-first plan's snapshots after the chunk.
+        and the decoded incumbent's science after the chunk.
         """
         ledger = self._battery
         limit = ledger.limit
@@ -1430,32 +1429,38 @@ class CpSatScheduler(LocalSearchScheduler):
 
         # What is already planned, exactly as the ledger counts it, step by
         # step in the run of each step, relative to the run's idle power: the
-        # passes after the cursor, and the priority-first plan's snapshots
-        # released after the chunk, which the chunk must leave room for.
+        # passes after the cursor, and the decoded incumbent after the chunk,
+        # which the chunk must leave room for.
         fixed = [0] * runs
         step_size = self.ctx.step_size
-        releases = {snapshot.release for snapshot in later}
-        blocks = [
-            *(b for b in state.timeline[state.cursor :] if b.is_pass),
-            *(
-                b
-                for b in self._greedy_timeline
-                if not b.is_pass
-                and not b.is_charge
-                and float(b.entry.begin) in releases
-            ),
+        groups = [
+            ([b for b in state.timeline[state.cursor :] if b.is_pass], state.energy)
         ]
-        # With a solar-array drive, as the walk counts them where the plan's
-        # additions leave the drive; a block not in the plan at its own deltas.
-        counted = ledger.walk_deltas(state.energy)
-        for block in blocks:
-            addition = self._block_addition(block)
-            steps = ledger.steps(addition.begin, addition.end)
-            for utime, delta in zip(steps, counted.get(addition, addition.deltas)):
-                if utime < origin_time:
-                    continue
-                r = run_of(float(utime))
-                fixed[r] += int(np.ceil(delta * 3600.0)) - idle[r] * step_size
+        if continuation is not None:
+            groups.append(
+                (
+                    [
+                        after.timeline[after.cursor - 1]
+                        for before, after in pairwise(continuation.states)
+                        if after.cursor > before.cursor
+                    ],
+                    continuation.final.energy,
+                )
+            )
+        # Fixed passes keep the current prefix's drive history. Later science
+        # uses its decoded continuation; skipped snapshots add no block/energy.
+        for blocks, energy in groups:
+            if not blocks:
+                continue
+            counted = ledger.walk_deltas(energy)
+            for block in blocks:
+                addition = self._block_addition(block)
+                steps = ledger.steps(addition.begin, addition.end)
+                for utime, delta in zip(steps, counted.get(addition, addition.deltas)):
+                    if utime < origin_time:
+                        continue
+                    r = run_of(float(utime))
+                    fixed[r] += int(np.ceil(delta * 3600.0)) - idle[r] * step_size
         entering = ledger.level_at(state.energy, origin_time) * 3600.0
         return _ChunkBattery(
             edges=edges,
