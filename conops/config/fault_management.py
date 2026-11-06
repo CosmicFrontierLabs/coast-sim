@@ -142,6 +142,12 @@ _LEGACY_RUN_STATE_KEYS = ("states", "safe_mode_requested", "events")
 FaultEventMetadataValue = str | float | int | None
 
 
+_METADATA_PREVIEW_ITEMS = 3
+"""How many metadata items a fault's summary shows."""
+_METADATA_PREVIEW_CHARS = 80
+"""How long a metadata value may be in that summary before it is cut."""
+
+
 class FaultEvent(BaseModel):
     """Records a single fault management event.
 
@@ -176,12 +182,12 @@ class FaultEvent(BaseModel):
         # Build a short preview of metadata: show up to 3 key=repr(value) pairs, truncating long values
         parts: list[str] = []
         for i, (k, v) in enumerate(self.metadata.items()):
-            if i >= 3:
+            if i >= _METADATA_PREVIEW_ITEMS:
                 parts.append("...")
                 break
             v_repr = repr(v)
-            if len(v_repr) > 80:
-                v_repr = v_repr[:77] + "..."
+            if len(v_repr) > _METADATA_PREVIEW_CHARS:
+                v_repr = v_repr[: _METADATA_PREVIEW_CHARS - 3] + "..."
             parts.append(f"{k}={v_repr}")
 
         return f"{base} | " + ", ".join(parts)

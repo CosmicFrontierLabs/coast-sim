@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..common.motion import RestToRestMotion
+from ..common.numerics import MIN_SAMPLES, REST_RATE_DEG_S, ROUNDOFF
 from ..common.quaternion_curve import QuaternionHermite
 from ..common.vector import (
     _quat_mul,
@@ -141,7 +142,7 @@ def _braking_leg(
 ) -> _SpinLeg | None:
     rate = np.asarray(state.angular_velocity_body)
     speed = float(np.linalg.norm(rate))
-    if speed < 1e-12:
+    if speed < ROUNDOFF:
         return None
     axis = _vector(rate / speed)
     acceleration = limits.effective_slew_acceleration(axis)
@@ -284,9 +285,14 @@ class AttitudeTrajectory:
             raise AttitudeExecutionError(
                 "Slew duration cannot contain its physical trajectory"
             )
-        if not isfinite(limits.settle_time) or limits.settle_time < 0:
+        # The slew carries its own settle once its time is calculated: the
+        # thermal settling table's for its Sun-vector change.
+        configured = (
+            limits.settle_time if slew.settle_seconds is None else slew.settle_seconds
+        )
+        if not isfinite(configured) or configured < 0:
             raise AttitudeExecutionError("Settling time must be finite and nonnegative")
-        settle = limits.settle_time if any(leg.angle > 0 for leg in legs) else 0.0
+        settle = configured if any(leg.angle > 0 for leg in legs) else 0.0
         if slew.slewend < start + settle - 1e-6:
             raise AttitudeExecutionError("Slew duration omits configured settling time")
         return cls(tuple(legs), float(slew.slewend))
@@ -322,7 +328,7 @@ class AttitudeTrajectory:
         *,
         initial_state: AttitudeState | None = None,
     ) -> "AttitudeTrajectory":
-        if len(samples) < 2:
+        if len(samples) < MIN_SAMPLES:
             raise AttitudeExecutionError(
                 "Tracking requires at least two timed attitudes"
             )
@@ -427,12 +433,13 @@ class AttitudeTrajectory:
         return self._leg_at(utime).state(utime)
 
     def next_rest_time(self, utime: float) -> float:
-        if np.linalg.norm(self.state(utime).angular_velocity_body) < 1e-10:
+        if np.linalg.norm(self.state(utime).angular_velocity_body) < REST_RATE_DEG_S:
             return utime
         for leg in self.legs:
             if (
                 leg.end >= utime
-                and np.linalg.norm(leg.state(leg.end).angular_velocity_body) < 1e-10
+                and np.linalg.norm(leg.state(leg.end).angular_velocity_body)
+                < REST_RATE_DEG_S
             ):
                 return leg.end
         raise AttitudeExecutionError("Trajectory has no physical stopping boundary")
@@ -517,7 +524,9 @@ class AttitudeExecutor:
             if isinstance(motion, AttitudeTrajectory):
                 if motion.end > begin:
                     return True
-            elif any(abs(rate) > 1e-10 for rate in motion.angular_velocity_body):
+            elif any(
+                abs(rate) > REST_RATE_DEG_S for rate in motion.angular_velocity_body
+            ):
                 return True
         return False
 
@@ -575,7 +584,10 @@ class AttitudeExecutor:
             return self._trajectory.next_rest_time(utime)
         return (
             inf
-            if any(abs(rate) > 1e-10 for rate in self._state.angular_velocity_body)
+            if any(
+                abs(rate) > REST_RATE_DEG_S
+                for rate in self._state.angular_velocity_body
+            )
             else utime
         )
 
@@ -617,7 +629,7 @@ class AttitudeExecutor:
 
     def hold(self, utime: float) -> None:
         state = self.predict(utime)
-        if any(abs(rate) > 1e-10 for rate in state.angular_velocity_body):
+        if any(abs(rate) > REST_RATE_DEG_S for rate in state.angular_velocity_body):
             raise AttitudeExecutionError("Cannot stop moving attitude instantaneously")
         self.advance(utime)
         self._trajectory = None

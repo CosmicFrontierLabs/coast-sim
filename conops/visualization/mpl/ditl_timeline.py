@@ -163,6 +163,7 @@ def plot_ditl_timeline(
     # Always include these rows
     timeline_rows.append(("Observations", None, None))
     timeline_rows.append(("Slewing", None, None))
+    timeline_rows.append(("Activities", None, None))
     timeline_rows.append(("Charging", None, None))
     timeline_rows.append(("Safe Mode", None, None))
 
@@ -249,6 +250,32 @@ def plot_ditl_timeline(
                     facecolors=color,
                 )
 
+    # Sequence steps are hatched over their observation bars.
+    step_segments = _extract_sequence_steps(ditl, t_start, offset_hours)
+    if step_segments:
+        ax.broken_barh(
+            step_segments,
+            (obs_y_pos, bar_height),
+            facecolor="none",
+            edgecolor="black",
+            hatch="//",
+            linewidth=0.5,
+            label="Sequence Step",
+        )
+
+    # Antenna repoints during observations, marked where they happen.
+    repoint_times = _extract_repoints(ditl, t_start, offset_hours)
+    if repoint_times:
+        ax.plot(
+            repoint_times,
+            [obs_y_pos + bar_height] * len(repoint_times),
+            linestyle="none",
+            marker="v",
+            markersize=6,
+            color="tab:red",
+            label="Antenna Repoint",
+        )
+
     # Extract and plot slews
     slew_segments = _extract_slews(ditl, t_start, offset_hours)
     if slew_segments:
@@ -258,6 +285,24 @@ def plot_ditl_timeline(
             (slew_y_pos, bar_height),
             facecolor="tab:grey",
             label="Slew and Settle",
+        )
+
+    # Scheduled activities, momentum dumps apart from the rest.
+    dumps, activities = _extract_activities(ditl, t_start, offset_hours)
+    activity_y_pos = row_positions["Activities"]
+    if dumps:
+        ax.broken_barh(
+            dumps,
+            (activity_y_pos, bar_height),
+            facecolor="tab:purple",
+            label="Momentum Dump",
+        )
+    if activities:
+        ax.broken_barh(
+            activities,
+            (activity_y_pos, bar_height),
+            facecolor="tab:olive",
+            label="Activity",
         )
 
     # Extract and plot charging mode observations
@@ -417,6 +462,49 @@ def _extract_observations(
         observations[category.name].append((obs_start, obs_duration))
 
     return observations
+
+
+def _extract_sequence_steps(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[tuple[float, float]]:
+    """The steps of sequence visits, as (start, duration) in hours."""
+    segments = []
+    for ppt in ditl.plan:
+        if ppt.step is None or ppt.obstype in (ObsType.GSP, ObsType.ACTIVITY):
+            continue
+        start = (ppt.begin + ppt.slewtime - t_start) / 3600 - offset_hours
+        duration = (ppt.end - (ppt.begin + ppt.slewtime)) / 3600
+        if duration > 0:
+            segments.append((start, duration))
+    return segments
+
+
+def _extract_activities(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Scheduled activities as (start, duration) in hours: thruster
+    momentum dumps, and the rest."""
+    dumps: list[tuple[float, float]] = []
+    others: list[tuple[float, float]] = []
+    for ppt in ditl.plan:
+        if ppt.obstype != ObsType.ACTIVITY:
+            continue
+        start = (ppt.begin - t_start) / 3600 - offset_hours
+        duration = (ppt.end - ppt.begin) / 3600
+        if duration <= 0:
+            continue
+        (dumps if ppt.desaturation else others).append((start, duration))
+    return dumps, others
+
+
+def _extract_repoints(
+    ditl: QueueDITL | DITL, t_start: float, offset_hours: float
+) -> list[float]:
+    """When the antenna repointed during an observation, in hours."""
+    repoints = getattr(ditl, "repoints_in_observations", None)
+    if not isinstance(repoints, list):
+        return []
+    return [(float(at) - t_start) / 3600 - offset_hours for at, _, _ in repoints]
 
 
 def _extract_slews(

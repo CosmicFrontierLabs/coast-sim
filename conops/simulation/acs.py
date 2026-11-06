@@ -10,6 +10,12 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
+from ..common.numerics import (
+    ANGLE_TOLERANCE_DEG,
+    ATTITUDE_TOLERANCE_DEG,
+    POLE_DEC_DEG,
+    REST_RATE_DEG_S,
+)
 from ..common.vector import (
     _quaternion_delta,
     attitude_to_quat,
@@ -219,6 +225,7 @@ class ACS:
                     self.ephem,
                     self.solar_panel,
                     self.constraint,
+                    science_attitude=False,
                     drive_state=self.solar_array_drive_state,
                 )
             executor = AttitudeExecutor(utime, self._initial_attitude)
@@ -609,7 +616,17 @@ class ACS:
             "SLEW",
             f"{unixtime2date(utime)}: Starting slew from RA={self.ra:.2f} Dec={self.dec:.2f} "
             f"to RA={slew.endra:.2f} Dec={slew.enddec:.2f} "
-            f"(duration: {slew.slewtime:.1f}s, distance: {slewdist:.1f} deg)",
+            f"(duration: {slew.slewtime:.1f}s, distance: {slewdist:.1f} deg"
+            + (
+                f", Sun moves {slew.sun_vector_change_deg:.1f} deg, "
+                f"settle {slew.settle_seconds:.0f}s)"
+                if slew.settle_seconds is not None
+                and isinstance(
+                    self.config.spacecraft_bus.attitude_control.thermal_settling, list
+                )
+                and self.config.spacecraft_bus.attitude_control.thermal_settling
+                else ")"
+            ),
         )
 
         self.current_slew = slew
@@ -732,6 +749,7 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                science_attitude=False,
                 drive_state=self.solar_array_drive_state,
             )
         else:
@@ -1035,7 +1053,7 @@ class ACS:
 
         # Tracking can be braking after contact ends, independently of the
         # stale ingress-slew metadata. Do not report that moving tail as IDLE.
-        if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
+        if any(abs(rate) > REST_RATE_DEG_S for rate in self.angular_velocity_body):
             return ACSMode.SLEWING
 
         # Holding for a thruster momentum dump
@@ -1094,13 +1112,14 @@ class ACS:
             self.constraint,
             reference_roll=self.roll,
             max_roll_delta=180.0,
+            science_attitude=False,
             drive_state=self.solar_array_drive_state,
         )
         target = (ra, dec, roll)
         distance, _ = _quaternion_delta(
             executor.state.quaternion, attitude_to_quat(*target)
         )
-        if distance > 1e-8:
+        if distance > ATTITUDE_TOLERANCE_DEG:
             executor.install(
                 AttitudeTrajectory.turn_from_state(
                     executor.state,
@@ -1182,7 +1201,8 @@ class ACS:
         def add(roll: float) -> None:
             normalized = roll % 360.0
             is_new = all(
-                abs(((normalized - existing + 180.0) % 360.0) - 180.0) > 1e-6
+                abs(((normalized - existing + 180.0) % 360.0) - 180.0)
+                > ANGLE_TOLERANCE_DEG
                 for existing in rolls
             )
             if is_new:
@@ -1223,7 +1243,7 @@ class ACS:
 
         grid: list[tuple[float, float]] = []
         for dec in range(-90, 91, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
-            if abs(dec) == 90:
+            if abs(dec) == POLE_DEC_DEG:
                 grid.append((0.0, float(dec)))
                 continue
             for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
@@ -1246,7 +1266,7 @@ class ACS:
         """Install a zero-duration IDLE hold so future ticks keep the safe attitude."""
         executor = self._advance_attitude(utime)
         distance, _ = quaternion_attitude_delta(*executor.state.attitude, ra, dec, roll)
-        if distance > 1e-8:
+        if distance > ATTITUDE_TOLERANCE_DEG:
             raise AttitudeExecutionError("A hold cannot change the physical attitude")
         executor.hold(utime)
         hold = Slew.idle_hold(self.config, *executor.state.attitude, utime)

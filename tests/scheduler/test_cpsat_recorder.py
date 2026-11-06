@@ -10,10 +10,16 @@ pytest.importorskip("ortools")
 from ortools.sat.python import cp_model  # noqa: E402
 
 from conops.config import HousekeepingData  # noqa: E402
+from conops.config.observation_categories import (  # noqa: E402
+    ObservationCategories,
+    ObservationCategory,
+)
+from conops.config.observation_timing import BudgetStep, ObservationTiming  # noqa: E402
 from conops.schedulers import CpSatScheduler  # noqa: E402
 from conops.schedulers.cpsat_scheduler import (  # noqa: E402
     _ChunkModel,
     _ChunkRecorder,
+    _kb_up,
     _Task,
 )
 
@@ -267,3 +273,45 @@ class TestScheduler:
         scheduler.schedule()
         assert not scheduler._ledger.active
         assert scheduler.solver_score >= scheduler.start_score
+
+
+class TestStepData:
+    def test_a_category_s_step_data_counts_once_and_leaves_the_rate(self) -> None:
+        """The rate was the one-second volume less the once-only volume, and
+        the once-only volume held the category's setup and cleanup steps'
+        data: a category whose darks carry more data than a second of
+        science gave every candidate a negative rate, an empty recorder
+        domain and an invalid model, so the solver never solved a chunk of
+        such a program."""
+        config = _recorder_config()
+        config.observation_categories = ObservationCategories(
+            categories=[
+                ObservationCategory(
+                    name="darks",
+                    obsid_min=1,
+                    obsid_max=2,
+                    observation_timing=ObservationTiming(
+                        setup_steps=[
+                            BudgetStep(name="dark", duration_seconds=60, data_gb=2.0)
+                        ],
+                        cleanup_steps=[
+                            BudgetStep(name="dark", duration_seconds=60, data_gb=2.0)
+                        ],
+                    ),
+                )
+            ]
+        )
+        targets = [
+            _data_target(config, 1, 105.0, 10.0, LOW_RATE, merit=90, minutes=20),
+            _data_target(config, 2, 110.0, 10.0, LOW_RATE, merit=80, minutes=20),
+        ]
+        scheduler = _scheduler(config, targets)
+
+        plan = scheduler.schedule()
+
+        per_second, once = scheduler._candidate_data(targets[0])
+        assert per_second == _kb_up(LOW_RATE)
+        assert once == _kb_up(4.0)
+        assert scheduler.solver_statuses
+        assert "MODEL_INVALID" not in scheduler.solver_statuses
+        assert len(_science(plan)) == 2

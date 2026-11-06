@@ -86,7 +86,7 @@ _Integrated = tuple[
 """A span integrated: its sample times, the norm at each, what the wheels
 hold at each and the state at its end."""
 
-SpanCache = dict[tuple[_SpanKey, MomentumState], _Integrated]
+SpanCache = dict[tuple[object, ...], _Integrated]
 """Spans integrated, by the span's key and the state they started from.
 A plan's passes share one: each reserves a dump and plans again from the
 start, so the timeline up to the new dump is the one before and its spans
@@ -234,24 +234,24 @@ class MomentumForecast:
         )
 
     def profile(
-        self, timeline: Sequence[_Block]
+        self, timeline: Sequence[_Block], reset_at: Sequence[float] = ()
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The sample times and the stored momentum's norm at each, along
         ``timeline``, with each thruster dump unloading the wheels as it ends."""
-        times, norms, _ = self._profile(timeline)
+        times, norms, _ = self._profile(timeline, reset_at)
         return times, norms
 
     def demand(
-        self, timeline: Sequence[_Block]
+        self, timeline: Sequence[_Block], reset_at: Sequence[float] = ()
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The sample times and what the wheels hold at each along
         ``timeline``: the stored momentum less the body's own along each
         slew where slew momentum counts, the stored momentum otherwise."""
-        times, _, demands = self._profile(timeline)
+        times, _, demands = self._profile(timeline, reset_at)
         return times, demands
 
     def _profile(
-        self, timeline: Sequence[_Block]
+        self, timeline: Sequence[_Block], reset_at: Sequence[float] = ()
     ) -> tuple[
         npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
     ]:
@@ -262,7 +262,7 @@ class MomentumForecast:
             tracker.start_from_eci(self.start_momentum_eci_n_m_s)
         else:
             tracker.reset()
-        return self._integrate(tracker, self._spans(timeline))
+        return self._integrate(tracker, self._spans(timeline), reset_at)
 
     def loading(self, block: _Block) -> float:
         """The most the block alone asks of the wheels, from empty: its slew
@@ -281,7 +281,10 @@ class MomentumForecast:
         return float(demands.max()) if len(demands) else 0.0
 
     def _integrate(
-        self, tracker: StoredMomentumTracker, spans: Sequence[_Span]
+        self,
+        tracker: StoredMomentumTracker,
+        spans: Sequence[_Span],
+        reset_at: Sequence[float] = (),
     ) -> tuple[
         npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
     ]:
@@ -292,8 +295,22 @@ class MomentumForecast:
         times: list[float] = []
         norms: list[float] = []
         demands: list[float] = []
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        residual = dump.residual_fraction if dump is not None else 0.0
+        pending = sorted(reset_at)
         for span in spans:
-            key = (span.key, tracker.state)
+            while pending and span.begin >= pending[0]:
+                tracker.unload(residual)
+                pending.pop(0)
+            # Resets inside the span apply at the first sample at or after
+            # each; a span integrated with them is cached apart.
+            inside = tuple(reset for reset in pending if reset < span.end)
+            pending = pending[len(inside) :]
+            key: tuple[object, ...] = (
+                (span.key, tracker.state, inside)
+                if inside
+                else (span.key, tracker.state)
+            )
             cached = self.cache.get(key)
             if cached is not None:
                 times.extend(cached[0])
@@ -313,7 +330,11 @@ class MomentumForecast:
                 if span.slew is not None and self.slew_momentum
                 else None
             )
+            resets = list(inside)
             for utime in samples:
+                while resets and float(utime) >= resets[0]:
+                    tracker.unload(residual)
+                    resets.pop(0)
                 position = self._interpolate(self._positions, float(utime))
                 attitude = self._attitude_at(span, float(utime))
                 sample = tracker.update(
@@ -361,13 +382,14 @@ class MomentumForecast:
         timeline: Sequence[_Block],
         level: float,
         after: float | None = None,
+        reset_at: Sequence[float] = (),
         *,
         demand: bool = False,
     ) -> float | None:
         """When the stored momentum, or with ``demand`` what the wheels hold,
         first reaches ``level`` along the timeline, after ``after`` if given;
         None if it never does."""
-        times, norms, demands = self._profile(timeline)
+        times, norms, demands = self._profile(timeline, reset_at)
         for utime, norm in zip(times, demands if demand else norms, strict=True):
             if after is not None and utime <= after:
                 continue
