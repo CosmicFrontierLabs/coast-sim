@@ -16,6 +16,7 @@ from conops import (
     StoredMomentumConfig,
 )
 from conops.common import ObsType
+from conops.common.vector import quaternion_attitude_delta
 from conops.config import (
     ObservationTiming,
     RadiatorConfiguration,
@@ -28,7 +29,7 @@ from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from conops.simulation.momentum_planning import MomentumObservationPlanner
 from conops.simulation.passes import Pass
 from conops.simulation.slew import Slew
-from conops.targets import PlanEntry
+from conops.targets import PlanEntry, track_from_table
 from scripts.check_default_plan_output import (
     SCENARIO_BEGIN,
     DeterministicConstraint,
@@ -110,6 +111,38 @@ def test_admission_slows_only_when_needed_and_keeps_settling(scenario):
     assert sim.acs.momentum_budget.current.sample.actuator_momentum_norm_n_m_s <= 20
     sim.acs._start_slew(plan.recovery, plan.end)
     sim.acs._advance_attitude(plan.recovery._momentum_hold_end)
+
+
+def test_admitted_moving_target_keeps_tracking_and_momentum_limits(scenario):
+    sim, target = scenario
+    target.track = track_from_table([sim.ustart, sim.uend], [40.0, 41.0], [15.0, 15.0])
+    plan = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert plan is not None
+    assert plan.slew.rate_fraction == 0.5
+    assert plan.slew.endra == pytest.approx(target.position_at(plan.slew.slewend)[0])
+    target.end = plan.end
+    assert sim.acs._start_slew(plan.slew, sim.ustart) is plan.slew
+    assert sim.acs._tracked_slew is plan.slew
+    sample_time = plan.slew.slewend + 180
+    sim.acs._advance_attitude(sample_time)
+    angle, _ = quaternion_attitude_delta(
+        *sim.acs.predicted_attitude(sample_time),
+        *target.target_body_attitude(plan.slew.instrument_roll, at=sample_time),
+    )
+    assert angle < 1e-5
+    assert sim.acs.momentum_budget.current.sample.actuator_momentum_norm_n_m_s <= 20
+    sim.acs.end_science_observation(sample_time)
+    assert sim.acs._tracked_slew is None
+    assert sim.acs.motion_ready_time(sample_time) < plan.end
+
+
+def test_moving_target_keeps_explicit_admission_roll(scenario):
+    sim, target = scenario
+    target.track = track_from_table([sim.ustart, sim.uend], [40.0, 41.0], [15.0, 15.0])
+    slew = sim._new_ppt_slew(target, sim.ustart)
+    sim._complete_ppt_slew(slew, target, sim.ustart, sim.ustart, instrument_roll=90.0)
+    assert slew.instrument_roll == 90.0
+    assert slew.endroll == 90.0
 
 
 def test_delayed_admission_is_replanned_from_actual_state_and_time(scenario):

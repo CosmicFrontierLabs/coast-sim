@@ -16,6 +16,7 @@ from ..config.observation_timing import ObservationTiming
 from .merit import MeritBreakdown
 from .plan_entry import PlanEntry
 from .sequence import ObservationSequence
+from .track import TrackPoint, body_track
 from .visits import VisitWindow
 
 
@@ -236,6 +237,7 @@ class Pointing(PlanEntry):
             visit=index,
             roll_deg=roll_deg,
             roll_offset_deg=roll_offset,
+            track=list(self.track),
         )
         pointing.exptime = self.per_visit_seconds
         pointing.merit_breakdown = self.merit_breakdown
@@ -615,3 +617,83 @@ class Pointing(PlanEntry):
         self.begin = 0
         self.end = 0
         self.slewtime = 0
+
+
+class MovingPointing(Pointing):
+    """A target that moves across the sky, such as a Solar System body: a
+    :class:`Pointing` whose ``track`` gives its position at a series of
+    times. Its pointing is taken from the track where the slew to it ends,
+    its visibility is computed along the track, and the attitude follows the
+    track at its rate while it is observed. Give the track with
+    :func:`~conops.targets.track_from_table` from a table of times and
+    positions, or name the ``body`` and the track is looked up over the
+    ephemeris, from JPL Horizons or a SPICE kernel, when its visibility is
+    first computed."""
+
+    body: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "The Solar System body, by name or NAIF id, whose track is looked up "
+            "over the ephemeris when no track is given"
+        ),
+    )
+    use_horizons: bool = Field(
+        default=True,
+        exclude_if=lambda v: v is True,
+        description="Whether the body is looked up from JPL Horizons (else from SPICE)",
+    )
+    spice_kernel: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A SPICE kernel file or URL holding the body, for a SPICE lookup",
+    )
+
+    @model_validator(mode="after")
+    def _has_a_track_or_a_body(self) -> "MovingPointing":
+        if not self.track and not self.body:
+            raise ValueError("a moving pointing needs a track or a body to look up")
+        if self.track and self.ra == 0.0 and self.dec == 0.0:
+            self.ra, self.dec = self.track[0].ra, self.track[0].dec
+        return self
+
+    def fetch_track(self) -> list[TrackPoint]:
+        """Look the body's track up over the ephemeris and take it, with
+        the position at its first sample as the initial pointing."""
+        if self.body is None:
+            raise ValueError("no body to look up")
+        assert self.ephem is not None, "Ephemeris must be set to look up a body"
+        self.track = body_track(
+            self.ephem,
+            self.body,
+            use_horizons=self.use_horizons,
+            spice_kernel=self.spice_kernel,
+        )
+        self.ra, self.dec = self.track[0].ra, self.track[0].dec
+        return self.track
+
+    def refresh_track(self) -> str:
+        """Look the body's track up and take it, keeping the track given
+        where the lookup fails, so a run with a track pasted beside the body
+        goes on with it when the service is down or refuses the body.
+        Returns where the track came from: ``"looked up"`` or ``"given"``.
+        A pointing with no track raises as :meth:`fetch_track` does."""
+        if self.body is None:
+            return "given"
+        given = list(self.track)
+        try:
+            self.fetch_track()
+        except Exception:
+            if not given:
+                raise
+            self.track = given
+            self.ra, self.dec = given[0].ra, given[0].dec
+            return "given"
+        return "looked up"
+
+    def visibility(self, *args: object, **kwargs: object) -> int:
+        """As :meth:`PlanEntry.visibility`, after the body's track is looked
+        up when none was given."""
+        if not self.track and self.body is not None:
+            self.fetch_track()
+        return super().visibility(*args, **kwargs)

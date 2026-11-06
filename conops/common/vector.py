@@ -383,6 +383,57 @@ def quaternion_to_rotation_matrix(
     )
 
 
+def rotation_matrix_to_quaternion(
+    matrix: npt.ArrayLike,
+) -> npt.NDArray[np.float64]:
+    """Convert a rotation matrix to the unit quaternion [w, x, y, z], with
+    ``w`` non-negative, that :func:`quaternion_to_rotation_matrix` maps back
+    to it."""
+    m = np.asarray(matrix, dtype=np.float64)
+    if m.shape != (3, 3) or not np.all(np.isfinite(m)):
+        raise ValueError("rotation matrix must be a finite 3x3 matrix")
+    if not np.allclose(m @ m.T, np.eye(3), atol=1e-9) or np.linalg.det(m) < 0.0:
+        raise ValueError("rotation matrix must be orthonormal and right-handed")
+    trace = float(np.trace(m))
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        q = [
+            0.25 * s,
+            (m[2, 1] - m[1, 2]) / s,
+            (m[0, 2] - m[2, 0]) / s,
+            (m[1, 0] - m[0, 1]) / s,
+        ]
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        q = [
+            (m[2, 1] - m[1, 2]) / s,
+            0.25 * s,
+            (m[0, 1] + m[1, 0]) / s,
+            (m[0, 2] + m[2, 0]) / s,
+        ]
+    elif m[1, 1] > m[2, 2]:
+        s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        q = [
+            (m[0, 2] - m[2, 0]) / s,
+            (m[0, 1] + m[1, 0]) / s,
+            0.25 * s,
+            (m[1, 2] + m[2, 1]) / s,
+        ]
+    else:
+        s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        q = [
+            (m[1, 0] - m[0, 1]) / s,
+            (m[0, 2] + m[2, 0]) / s,
+            (m[1, 2] + m[2, 1]) / s,
+            0.25 * s,
+        ]
+    quaternion = np.asarray(q, dtype=np.float64)
+    quaternion /= np.linalg.norm(quaternion)
+    if quaternion[0] < 0.0:
+        quaternion *= -1.0
+    return quaternion
+
+
 def _quat_to_rot(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Backward-compatible private alias for quaternion rotation conversion."""
     return quaternion_to_rotation_matrix(q)

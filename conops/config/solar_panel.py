@@ -1,7 +1,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -13,6 +13,9 @@ from ..common.enums import ACSMode
 from ..common.ephemeris import position_vectors
 from ._base import ConfigModel
 from .geometry import PanelGeometry
+
+if TYPE_CHECKING:
+    from .frame import SpacecraftFrame
 
 
 def _unit_vector(
@@ -524,9 +527,15 @@ def create_solar_panel_vector(
     cant_x: float | None = None,
     cant_y: float | None = None,
     azimuth_deg: float | None = None,
+    frame: "SpacecraftFrame | None" = None,
 ) -> tuple[float, float, float]:
     """
     Create a unit normal vector for a solar panel based on mount type and cant angles.
+
+    The mount types and cant axes are in the canonical frame, boresight +X and
+    the Sun's side +Y; with ``frame``, the bus's :class:`SpacecraftFrame`, the
+    vector is returned in the mission's body frame, so a 'boresight' panel
+    faces the frame's boresight and a 'sidemount' panel its Sun's side.
 
     Supports both new and old style parameter configurations for backward compatibility.
     Only one parameter style may be used at a time - either old style OR new style, not both.
@@ -610,7 +619,7 @@ def create_solar_panel_vector(
         y_final = y_after_x
         z_final = -base_x * np.sin(theta_y) + z_after_x * np.cos(theta_y)
 
-        return (x_final, y_final, z_final)
+        return _in_frame((x_final, y_final, z_final), frame)
 
     else:
         # Use new style parameters
@@ -656,7 +665,17 @@ def create_solar_panel_vector(
         else:
             raise ValueError(f"Unknown mount type: {mount}")
 
-        return (x, y, z)
+        return _in_frame((x, y, z), frame)
+
+
+def _in_frame(
+    vector: tuple[float, float, float], frame: "SpacecraftFrame | None"
+) -> tuple[float, float, float]:
+    """A canonical-frame vector in the body frame ``frame`` declares, or as
+    it is without one."""
+    if frame is None or frame.is_identity:
+        return (float(vector[0]), float(vector[1]), float(vector[2]))
+    return frame.body_vector(vector)
 
 
 class _PanelGeometry:
