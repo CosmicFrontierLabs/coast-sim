@@ -21,6 +21,7 @@ from .._version import __version__
 from ..common import unixtime_from
 from .entries import AnyEntry, with_kind
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
+from .pointing import Pointing
 
 if TYPE_CHECKING:
     import rust_ephem
@@ -461,4 +462,10 @@ class Plan(BaseModel):
             The deserialised plan.
         """
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls.model_validate(raw)
+        plan = cls.model_validate(raw)
+        for saved, entry in zip(raw.get("entries", []), plan.entries, strict=True):
+            done = saved.get("done")
+            if isinstance(entry, Pointing) and isinstance(done, bool):
+                # A completed visit may retain its parent's remaining exposure.
+                entry.done = done
+        return plan
