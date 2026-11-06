@@ -30,6 +30,9 @@ from .momentum import (
 )
 from .slew import Slew
 
+_MIN_ORBIT_SAMPLES = 2
+_MAX_CERTIFICATION_DEPTH = 18
+
 
 class MomentumLimitError(AttitudeExecutionError):
     """No physically admitted continuation: the run must not report success."""
@@ -98,7 +101,7 @@ class MomentumBudget:
         self.times = self.orbit.times
         self.positions = self.orbit.positions_eci_km
         if (
-            len(self.times) < 2
+            len(self.times) < _MIN_ORBIT_SAMPLES
             or self.positions.shape != (len(self.times), 3)
             or not np.isfinite(self.times).all()
             or not np.isfinite(self.positions).all()
@@ -297,7 +300,7 @@ class MomentumBudget:
             ) * duration / 2 <= self.capacity * (1 + 1e-10):
                 return True
             return (
-                depth < 18
+                depth < _MAX_CERTIFICATION_DEPTH
                 and certify(left, middle, depth + 1)
                 and certify(middle, right, depth + 1)
             )

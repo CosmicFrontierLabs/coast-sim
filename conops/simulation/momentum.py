@@ -35,6 +35,8 @@ EARTH_GRAVITATIONAL_PARAMETER_KM3_S2 = 398600.4418
 SOLAR_PRESSURE_N_M2 = 4.56e-6
 """Solar radiation pressure at one astronomical unit."""
 ASTRONOMICAL_UNIT_KM = 149597870.7
+MAX_CERTIFIED_SAMPLE_INTERVAL_S = 10.0
+"""Maximum optional sample spacing for capacity-certified motion."""
 
 
 def _finite_vector3(value: npt.ArrayLike, *, name: str) -> npt.NDArray[np.float64]:
@@ -613,7 +615,7 @@ class StoredMomentumTracker:
     ) -> None:
         if max_sample_interval_s is not None and (
             not np.isfinite(max_sample_interval_s)
-            or not 0.0 < max_sample_interval_s <= 10.0
+            or not 0.0 < max_sample_interval_s <= MAX_CERTIFIED_SAMPLE_INTERVAL_S
         ):
             raise ValueError(
                 "max_sample_interval_s must be finite, positive, and <= 10 s"

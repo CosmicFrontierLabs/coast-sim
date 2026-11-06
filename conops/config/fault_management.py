@@ -136,6 +136,7 @@ if TYPE_CHECKING:
 
 # Run-state fields that older configs serialized under fault_management.
 _LEGACY_RUN_STATE_KEYS = ("states", "safe_mode_requested", "events")
+_RECORDER_THRESHOLD_PATH_PARTS = 3
 
 # Event metadata is a free-form bag of diagnostic context (previous/new state
 # labels, measured values, thresholds, durations, constraint type names, etc.)
@@ -411,7 +412,7 @@ class FaultManagement(ConfigModel):
         # Check if name is a valid Housekeeping attribute
         valid_housekeeping_fields = set(Housekeeping.model_fields.keys())
         if name not in valid_housekeeping_fields and not (
-            len(name.split(".")) == 3
+            len(name.split(".")) == _RECORDER_THRESHOLD_PATH_PARTS
             and name.startswith("recorders.")
             and name.endswith(".fill_fraction")
             and name.split(".")[1]

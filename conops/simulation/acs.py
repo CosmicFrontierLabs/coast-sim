@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 IDLE_OBSID = 0
 IDLE_SAFE_ATTITUDE_GRID_STEP_DEG = 15
+_PREPARED_ATTITUDE_TOLERANCE_DEG = 1e-8
 
 
 class ACS:
@@ -559,7 +560,7 @@ class ACS:
             angle, _ = _quaternion_delta(
                 prepared.state(prepared.start).quaternion, executor.state.quaternion
             )
-            if prepared.start != utime or angle > 1e-8:
+            if prepared.start != utime or angle > _PREPARED_ATTITUDE_TOLERANCE_DEG:
                 self.readmission_requests.append(slew)
                 self._log_or_print(
                     utime, "SLEW", "Delayed slew requires scheduler re-admission"
