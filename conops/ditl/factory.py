@@ -40,6 +40,8 @@ def create_ditl(
 
     The simulation is ready for :meth:`calc`. Targets of Opportunity can be
     submitted to the dispatch and rolling simulations before running them.
+    Each simulation owns copies of the configured battery and recorder state,
+    so reusing a configuration preserves its initial charge and stored volumes.
 
     Args:
         config: Mission configuration, including its ``scheduler`` section.
@@ -51,6 +53,14 @@ def create_ditl(
         end: Simulation end; defaults to the end of the ephemeris.
         ephem: Ephemeris; defaults to the one on the config's constraint.
     """
+    resources: dict[str, object] = {
+        "battery": config.battery.model_copy(deep=True),
+    }
+    if config.data_storage is None:
+        resources["recorder"] = config.recorder.model_copy(deep=True)
+    else:
+        resources["data_storage"] = config.data_storage.model_copy(deep=True)
+    config = config.model_copy(update=resources)
     if ephem is not None:
         config.constraint.ephem = ephem
     ephemeris = config.constraint.ephem
