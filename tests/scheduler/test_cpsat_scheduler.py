@@ -2,6 +2,7 @@
 
 import sys
 from datetime import timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -17,14 +18,15 @@ from conops.common.vector import quaternion_attitude_delta  # noqa: E402
 from conops.config import MissionConfig, TargetConfig  # noqa: E402
 from conops.config.acs import ThermalSettlingStep, scheduled_slew_time  # noqa: E402
 from conops.config.observation_categories import ObservationCategory  # noqa: E402
-from conops.ditl import RollingHorizonDITL  # noqa: E402
-from conops.schedulers import CpSatScheduler  # noqa: E402
+from conops.ditl import ReplanReason, RollingHorizonDITL
+from conops.ditl.rolling_ditl import ReplanRecord  # noqa: E402  # noqa: E402
+from conops.schedulers import CpSatScheduler, PriorityScheduler  # noqa: E402
 from conops.schedulers.cpsat_scheduler import (  # noqa: E402
     _ChunkModel,
     _Task,
     search_ending,
 )
-from conops.schedulers.local_search_scheduler import _Snapshot  # noqa: E402
+from conops.schedulers.local_search_scheduler import _Decoded, _Snapshot  # noqa: E402
 from conops.schedulers.priority_scheduler import program_shares  # noqa: E402
 from conops.targets import Plan, PlanEntry, Pointing  # noqa: E402
 
@@ -1156,3 +1158,191 @@ class TestPlanningOnFromADump:
         scheduler._resume_from = chunk_ends[1] + 60.0
         scheduler._solve(scheduler._start_from_priority_plan())
         assert len(scheduler.solver_statuses) == 2
+
+
+class TestSolverSearchReporting:
+    @staticmethod
+    def _scheduler():
+        return CpSatScheduler(
+            _config(1),
+            [],
+            BEGIN,
+            BEGIN + timedelta(hours=1),
+            chunk=timedelta(hours=1),
+            include_passes=False,
+        )
+
+    @staticmethod
+    def _mock_chunk_inputs(monkeypatch, scheduler):
+        pose = (0.0, 0.0, 0.0)
+        state = SimpleNamespace(
+            remaining={100: 60}, score=0.0, timeline=[], allocated_left={}
+        )
+        scheduler._by_obsid = {}
+        monkeypatch.setattr(
+            scheduler,
+            "ctx",
+            SimpleNamespace(ustart=T0, uend=T0 + HOUR, step_size=60),
+            raising=False,
+        )
+        monkeypatch.setattr(scheduler, "_initial_state", lambda: state)
+        monkeypatch.setattr(scheduler, "_chunk_origin", lambda state: (T0, pose))
+        monkeypatch.setattr(scheduler, "_pass_tasks", lambda *args: [])
+        monkeypatch.setattr(
+            scheduler,
+            "_candidates",
+            lambda *args: [
+                _Task(
+                    (100, T0),
+                    (pose, pose),
+                    (0, 3600),
+                    collection=(60, 60),
+                    window=(0, 3600),
+                    rate=1,
+                )
+            ],
+        )
+        monkeypatch.setattr(scheduler, "_slews", lambda tasks, *args: np.zeros((2, 2)))
+        monkeypatch.setattr(
+            scheduler, "_ledger", SimpleNamespace(members=[]), raising=False
+        )
+        monkeypatch.setattr(
+            scheduler, "_battery", SimpleNamespace(active=False), raising=False
+        )
+        monkeypatch.setattr(scheduler, "_category_caps", lambda *args: [])
+        monkeypatch.setattr(scheduler, "_hint", lambda *args: {})
+        return _Decoded.model_construct(sequence=[], states=[state])
+
+    @pytest.mark.parametrize(
+        "first",
+        [("UNKNOWN", "wall clock", None), ("FEASIBLE", "deterministic budget", [])],
+    )
+    def test_a_later_pass_does_not_hide_an_earlier_search(self, monkeypatch, first):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        results = iter([first, ("OPTIMAL", "optimal", [])])
+        monkeypatch.setattr(_ChunkModel, "solve", lambda *args: next(results))
+        scheduler._solve(start)
+        scheduler._solve(start)
+        assert scheduler.solver_statuses == ["OPTIMAL"]
+        assert scheduler.solver_limits == ["optimal"]
+        assert scheduler.solver_search_statuses == [first[0], "OPTIMAL"]
+        assert scheduler.solver_search_limits == [first[1], "optimal"]
+
+    def test_a_chunk_without_a_model_records_no_search(self, monkeypatch):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        monkeypatch.setattr(scheduler, "_candidates", lambda *args: [])
+        monkeypatch.setattr(
+            _ChunkModel, "solve", lambda *args: pytest.fail("no search")
+        )
+        scheduler._solve(start)
+        assert scheduler.solver_search_statuses == scheduler.solver_search_limits == []
+
+    def test_a_new_schedule_clears_the_previous_search_history(self, monkeypatch):
+        scheduler = self._scheduler()
+        scheduler.solver_search_statuses.append("UNKNOWN")
+        scheduler.solver_search_limits.append("wall clock")
+        empty = Plan(entries=[])
+
+        def passes(build):
+            assert (
+                scheduler.solver_search_statuses == scheduler.solver_search_limits == []
+            )
+            return empty
+
+        monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
+        assert scheduler.schedule() is empty
+
+    def test_replan_keeps_discarded_candidates_and_resets_next_time(self, monkeypatch):
+        reports = iter(
+            [
+                (["UNKNOWN", "OPTIMAL"], ["wall clock", "optimal"]),
+                (["FEASIBLE"], ["deterministic budget"]),
+                (["INFEASIBLE"], ["solver"]),
+                ([], []),
+            ]
+        )
+        built = []
+
+        class ReportOnlyScheduler(PriorityScheduler):
+            def schedule(self):
+                self.solver_search_statuses, self.solver_search_limits = next(reports)
+                self.solver_statuses = self.solver_search_statuses[-1:]
+                self.solver_limits = self.solver_search_limits[-1:]
+                built.append(self)
+                return Plan(entries=[])
+
+        run = RollingHorizonDITL(
+            _config(1),
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=1),
+            scheduler=ReportOnlyScheduler,
+            include_passes=False,
+        )
+        run.ustart, run.uend = T0, T0 + HOUR
+        plan_after = run._plan_after
+
+        def select_first(*args, **kwargs):
+            first = plan_after(*args, **kwargs)
+            summary = run._last_plan
+            plan_after(*args, **kwargs)
+            run._last_plan = summary
+            return first
+
+        monkeypatch.setattr(run, "_plan_after", select_first)
+        monkeypatch.setattr(run, "_splice", lambda *args: None)
+        run._replan(T0, ReplanReason.INITIAL, [])
+        run._replan(T0 + 60, ReplanReason.SCHEDULED, [])
+        built[0].solver_search_limits.clear()
+        assert run.replans[0].solver_statuses == ["OPTIMAL"]
+        assert run.replans[0].solver_limits == ["optimal"]
+        assert run.replans[0].solver_search_statuses == [
+            "UNKNOWN",
+            "OPTIMAL",
+            "FEASIBLE",
+        ]
+        assert run.replans[0].solver_search_limits == [
+            "wall clock",
+            "optimal",
+            "deterministic budget",
+        ]
+        assert run.replans[1].solver_search_statuses == ["INFEASIBLE"]
+        assert run.replans[1].solver_search_limits == ["solver"]
+        assert (
+            ReplanRecord.model_validate_json(run.replans[0].model_dump_json())
+            == run.replans[0]
+        )
+
+    def test_older_records_do_not_invent_a_complete_search_history(self):
+        record = ReplanRecord.model_validate(
+            dict(
+                utime=T0,
+                reason="initial",
+                cutoff=T0,
+                kept=0,
+                dropped=0,
+                added=0,
+                unplaced=0,
+                planning_seconds=0,
+                solver_statuses=["OPTIMAL"],
+                solver_limits=["optimal"],
+            )
+        )
+        assert record.solver_search_statuses == record.solver_search_limits == []
+
+
+@pytest.mark.parametrize(
+    "status,wall,deterministic,expected",
+    [
+        ("FEASIBLE", 9.6, 4.9, "wall clock"),
+        ("UNKNOWN", 10.0, 5.0, "wall clock"),
+        ("INFEASIBLE", 10.0, 5.0, "solver"),
+        ("FEASIBLE", 9.4, 4.9, "deterministic budget"),
+    ],
+)
+def test_ambiguous_search_endings_are_reported_conservatively(
+    status, wall, deterministic, expected
+):
+    assert search_ending(status, wall, 10.0, deterministic, 5.0) == expected
