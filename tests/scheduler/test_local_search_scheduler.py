@@ -1,6 +1,7 @@
 """LocalSearchScheduler: improve priority-first plans without breaking execution."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,8 +10,10 @@ from conops import DITL
 from conops.common import ObsType
 from conops.config import MissionConfig, TargetConfig
 from conops.config.observation_categories import ObservationCategory
-from conops.ditl import RollingHorizonDITL
-from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.ditl import ReplanReason, RollingHorizonDITL
+from conops.ditl.rolling_ditl import ReplanRecord
+from conops.schedulers import CpSatScheduler, LocalSearchScheduler, PriorityScheduler
+from conops.schedulers import local_search_scheduler as search_module
 from conops.schedulers.priority_scheduler import program_shares
 from conops.targets import Plan, PlanEntry, Pointing
 
@@ -632,3 +635,131 @@ class TestRollingHorizon:
 
         assert len(ditl.replans) == 3
         assert ditl.validate_plan_matches_execution() == []
+
+
+class TestSearchBudgetReporting:
+    @staticmethod
+    def _scheduler(scheduler_type=LocalSearchScheduler, **options):
+        return scheduler_type(
+            _config(1), [], BEGIN, BEGIN + timedelta(hours=1), **options
+        )
+
+    @staticmethod
+    def _clock(monkeypatch, ticks):
+        values = iter(ticks)
+        monkeypatch.setattr(
+            search_module,
+            "time",
+            SimpleNamespace(perf_counter=lambda: next(values, ticks[-1])),
+        )
+
+    @pytest.mark.parametrize(
+        "seconds,limit,ticks,count,ending",
+        [
+            (10, 2, [0, 0, 0, 0], 2, "iteration budget"),
+            (1, 5, [0, 0, 2], 1, "wall clock"),
+            (1, None, [0, 0, 2], 1, "wall clock"),
+            (0, 5, [0, 0], 0, "disabled"),
+            (10, 0, [0, 0], 0, "disabled"),
+            (1, 2, [0, 0, 0, 2], 2, "iteration budget"),
+        ],
+    )
+    def test_reports_the_budget_that_ended_a_pass(
+        self, monkeypatch, seconds, limit, ticks, count, ending
+    ):
+        scheduler = self._scheduler(time_limit=seconds, max_iterations=limit)
+        monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
+        self._clock(monkeypatch, ticks)
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        assert scheduler._search(start) is start
+        assert scheduler.search_iterations == [count]
+        assert scheduler.search_limits == [ending]
+
+    def test_a_later_completed_pass_does_not_hide_an_earlier_timeout(self, monkeypatch):
+        scheduler = self._scheduler(time_limit=1, max_iterations=3)
+        monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        self._clock(monkeypatch, [0, 0, 2])
+        scheduler._search(start)
+        self._clock(monkeypatch, [0])
+        scheduler._search(start)
+        assert scheduler.iterations == 3
+        assert scheduler.search_iterations == [1, 3]
+        assert scheduler.search_limits == ["wall clock", "iteration budget"]
+
+    @pytest.mark.parametrize("scheduler_type", [LocalSearchScheduler, CpSatScheduler])
+    def test_each_schedule_starts_with_fresh_diagnostics(
+        self, monkeypatch, scheduler_type
+    ):
+        scheduler = self._scheduler(scheduler_type)
+        scheduler.search_iterations.append(1)
+        scheduler.search_limits.append("wall clock")
+        empty = Plan(entries=[])
+
+        def passes(build):
+            assert scheduler.search_iterations == scheduler.search_limits == []
+            return empty
+
+        monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
+        assert scheduler.schedule() is empty
+
+    def test_replan_retains_discarded_candidate_endings_and_resets_next_time(
+        self, monkeypatch
+    ):
+        reports = iter(
+            [
+                ([1], ["wall clock"]),
+                ([3], ["iteration budget"]),
+                ([4], ["iteration budget"]),
+                ([0], ["disabled"]),
+            ]
+        )
+
+        class ReportOnlyScheduler(PriorityScheduler):
+            def schedule(self):
+                self.search_iterations, self.search_limits = next(reports)
+                return Plan(entries=[])
+
+        run = RollingHorizonDITL(
+            _config(1),
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=1),
+            scheduler=ReportOnlyScheduler,
+            include_passes=False,
+        )
+        run.ustart, run.uend = T0, T0 + HOUR
+        plan_after = run._plan_after
+
+        def select_first(*args, **kwargs):
+            first = plan_after(*args, **kwargs)
+            first_summary = run._last_plan
+            plan_after(*args, **kwargs)
+            run._last_plan = first_summary
+            return first
+
+        monkeypatch.setattr(run, "_plan_after", select_first)
+        monkeypatch.setattr(run, "_splice", lambda *args: None)
+        run._replan(T0, ReplanReason.INITIAL, [])
+        run._replan(T0 + 60, ReplanReason.SCHEDULED, [])
+        assert run.replans[0].search_iterations == [1, 3]
+        assert run.replans[0].search_limits == ["wall clock", "iteration budget"]
+        assert run.replans[1].search_iterations == [4, 0]
+        assert run.replans[1].search_limits == ["iteration budget", "disabled"]
+        restored = ReplanRecord.model_validate_json(run.replans[0].model_dump_json())
+        assert restored == run.replans[0]
+
+    def test_older_replan_records_default_to_no_search_diagnostics(self):
+        record = ReplanRecord.model_validate(
+            dict(
+                utime=T0,
+                reason="initial",
+                cutoff=T0,
+                kept=0,
+                dropped=0,
+                added=0,
+                unplaced=0,
+                planning_seconds=0,
+            )
+        )
+        assert record.search_iterations == record.search_limits == []

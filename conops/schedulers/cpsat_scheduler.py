@@ -1001,16 +1001,23 @@ def search_ending(
     """What ended a chunk's search: ``"optimal"`` where the solver proved its
     answer, ``"deterministic budget"`` where that budget was reached,
     ``"wall clock"`` where the wall-clock limit was, else ``"solver"`` for a
-    search the solver ended itself, as for an infeasible model."""
+    search the solver ended itself, as for an infeasible model.
+
+    Limit endings are inferred from the counters. An unfinished search near
+    both limits is conservatively wall-limited, so a possible load-dependent
+    stop is not reported as deterministic. Completed proofs take precedence.
+    """
     if status == "OPTIMAL":
         return "optimal"
+    if status == "INFEASIBLE":
+        return "solver"
+    if wall_seconds >= LIMIT_REACHED_FRACTION * time_limit:
+        return "wall clock"
     if (
         deterministic_time is not None
         and deterministic_seconds >= LIMIT_REACHED_FRACTION * deterministic_time
     ):
         return "deterministic budget"
-    if wall_seconds >= LIMIT_REACHED_FRACTION * time_limit:
-        return "wall clock"
     return "solver"
 
 
@@ -1091,6 +1098,10 @@ class CpSatScheduler(LocalSearchScheduler):
         """CP-SAT's final status for each chunk, such as OPTIMAL or FEASIBLE."""
         self.solver_limits: list[str] = []
         """What ended each chunk's search (see :func:`search_ending`)."""
+        self.solver_search_statuses: list[str] = []
+        """Every actual chunk search's status across this schedule's passes."""
+        self.solver_search_limits: list[str] = []
+        """What ended each corresponding search, including earlier passes."""
         self.solver_chunks_used: list[bool] = []
         """For each chunk, whether the solver's snapshots were kept; if not,
         the priority-first plan's were, as they scored better."""
@@ -1102,6 +1113,10 @@ class CpSatScheduler(LocalSearchScheduler):
     def schedule(self) -> Plan:
         """Build the priority-first plan, solve chunk by chunk, and optionally
         polish, within the wheels' momentum where the configuration tracks it."""
+        self.search_iterations.clear()
+        self.search_limits.clear()
+        self.solver_search_statuses.clear()
+        self.solver_search_limits.clear()
         return self._plan_within_momentum(self._plan_once)
 
     def _plan_once(self) -> Plan:
@@ -1295,6 +1310,8 @@ class CpSatScheduler(LocalSearchScheduler):
         )
         self.solver_statuses.append(status)
         self.solver_limits.append(ended)
+        self.solver_search_statuses.append(status)
+        self.solver_search_limits.append(ended)
         return snapshots
 
     def _chunk_recorder(
