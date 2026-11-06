@@ -774,6 +774,13 @@ priority-first scheduler.
 
 Ground passes and locked entries stay where the priority-first plan put them.
 
+``scheduler.search_iterations`` and ``scheduler.search_limits`` record every
+local-search pass in the latest ``schedule()`` call, including momentum replans.
+An ending is ``"iteration budget"``, ``"wall clock"`` or ``"disabled"`` (zero
+time or zero requested changes). The scalar ``iterations`` reports only the
+last pass; it cannot establish that all earlier passes completed their budgets.
+These diagnostics also cover CP-SAT's optional local-search polishing.
+
 **Limitations.** Only requests with a deadline are rewarded for starting early. Each
 change is decoded from the point it touches, so a search of a few thousand changes
 takes tens of seconds for a day with a few hundred targets.
@@ -871,6 +878,16 @@ ended each chunk's search: ``optimal``, the ``deterministic budget``, the ``wall
 or the ``solver`` itself. A chunk model CP-SAT finds invalid is one the scheduler built
 wrong, not a search that ran out of time: it raises a ``ValueError`` naming the model's
 fault rather than falling back to the priority-first plan.
+
+Limit endings are inferred from the solver's counters. An unfinished search near
+both limits is reported conservatively as ``wall clock``, so a possible
+load-dependent stop is not labelled deterministic. A completed optimality or
+infeasibility proof keeps its solver-proven ending even near the limits.
+
+These three lists describe the final momentum pass. To check every actual solver
+call in the latest ``schedule()``, inspect ``solver_search_statuses`` and
+``solver_search_limits``. They retain earlier passes even if a later pass finishes
+optimally; chunks that need no model contribute no search record.
 
 ``CpSatScheduler`` takes the arguments of ``LocalSearchScheduler``, plus:
 
@@ -992,6 +1009,18 @@ each plan by local search or with CP-SAT.
   how many entries of the run's start plan seeded it, and for a CP-SAT plan the
   solver's status for each chunk, whether each chunk's snapshots were kept and what
   ended each chunk's search.
+  Its ``search_iterations`` and ``search_limits`` include every local-search pass
+  from all candidate plans built during that replan, including candidates later
+  rejected. Check for ``"wall clock"`` here when verifying repeatability: a later
+  completed pass must not hide an earlier timeout. Both lists default to empty
+  when reading older records or using a scheduler without local-search reporting.
+  The corresponding ``solver_search_statuses`` and ``solver_search_limits`` retain
+  every actual CP-SAT chunk search across all passes and candidate plans, including
+  rejected candidates. Check for ``"wall clock"`` in both search-limit lists when
+  auditing reproducibility. The existing ``solver_statuses``, ``solver_limits``
+  and ``solver_chunks_used`` keep their final-pass, selected-plan scope. Older
+  records default to empty cumulative lists; they cannot retrospectively prove
+  that earlier attempts avoided wall-clock limits.
 * ``ditl.too_response_times()`` gives the seconds from each ToO's submission to its
   first science, or None if it was never observed.
 * ``ditl.plan`` is the plan that was actually followed: the committed parts of

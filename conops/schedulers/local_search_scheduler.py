@@ -203,9 +203,13 @@ class LocalSearchScheduler(PriorityScheduler):
         self.history_length = history_length
         self.earliness_weight = earliness_weight
         self.iterations = 0
-        """Changes tried in the last :meth:`schedule`."""
+        """Changes tried in the last search pass."""
         self.accepted = 0
-        """Changes the search kept."""
+        """Changes kept in the last search pass."""
+        self.search_iterations: list[int] = []
+        """Changes tried in each search pass of the last schedule."""
+        self.search_limits: list[str] = []
+        """What ended each pass: iteration budget, wall clock, or disabled."""
         self.initial_score = 0.0
         """Objective of the priority-first plan."""
         self.start_score = 0.0
@@ -216,6 +220,8 @@ class LocalSearchScheduler(PriorityScheduler):
     def schedule(self) -> Plan:
         """Build the priority-first plan, then search for a better one, within
         the wheels' momentum where the configuration tracks it."""
+        self.search_iterations.clear()
+        self.search_limits.clear()
         return self._plan_within_momentum(self._plan_once)
 
     def _plan_once(self) -> Plan:
@@ -779,6 +785,14 @@ class LocalSearchScheduler(PriorityScheduler):
                 if score > best_score:
                     best, best_score = candidate, score
             history[slot] = current_score
+        self.search_iterations.append(self.iterations)
+        if self.time_limit == 0 or self.max_iterations == 0:
+            ending = "disabled"
+        elif self.max_iterations is not None and self.iterations >= self.max_iterations:
+            ending = "iteration budget"
+        else:
+            ending = "wall clock"
+        self.search_limits.append(ending)
         return best
 
     def _random_move(
