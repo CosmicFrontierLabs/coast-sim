@@ -660,7 +660,8 @@ class PriorityScheduler:
                         self.dumps = [*kept, reserved]
                         self._log(
                             begin,
-                            f"{why}: thruster dump reserved before observation {obsid}",
+                            f"{why}: thruster dump reserved before observation {obsid}, "
+                            "whose slew would reach the capacity",
                             reserved.obsid,
                         )
                         self._keep_before(begin)
@@ -824,10 +825,16 @@ class PriorityScheduler:
         capacity = forecast.capacity_n_m_s
         crossing = forecast.first_crossing(self.timeline, capacity, demand=True)
         if crossing is not None:
+            dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+            disposition = (
+                "with the dumps reserved"
+                if dump is not None
+                else "with no thrusters to dump it"
+            )
             self._log(
                 crossing,
                 f"The plan's forecast reaches the {capacity} N m s capacity at "
-                f"{unixtime2date(crossing)} with the dumps reserved",
+                f"{unixtime2date(crossing)} {disposition}",
             )
 
     def _dump_placement(
