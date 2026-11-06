@@ -859,6 +859,18 @@ chunk are kept. The next chunk is solved from where the kept snapshots leave the
 spacecraft. Every plan therefore executes as planned and is never worse than the
 priority-first plan; ``solver_chunks_used`` shows which chunks the solver improved.
 
+When a dispatch seed decodes to a better starting plan, that decoded plan is
+the incumbent for chunk hints and comparisons. Recorder and battery reservations
+for later observations come from its continuation decoded from the current
+prefix, rather than from the unrelated priority-first timeline. Recorder
+reservations include the actual shortened collection, sequence calibration data,
+and contact ingress changes, separately for each store. They subtract the old
+current-chunk prefix so its optional replacements are not counted twice. Battery
+reservations use the continuation's actual blocks and drive history. A snapshot
+that exact decoding cannot place contributes no fixed science load. An accepted
+chunk invalidates the old continuation, which is decoded again from the new
+prefix before the next chunk.
+
 The exact decoding also applies the rules the model leaves out: visits stay a cadence
 clear of locked visits of the same target, ``slew_before_visible`` lets a slew start
 before its target rises, and each plan entry's ``merit`` is the value its snapshot has
