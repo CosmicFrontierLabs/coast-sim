@@ -1,4 +1,5 @@
 import numpy as np
+import numpy.typing as npt
 from pydantic import ConfigDict, Field, field_validator
 from rust_ephem.constraints import ConstraintConfig
 
@@ -126,7 +127,7 @@ class AttitudeControlSystem(ConfigModel):
     def _effective_directional_limit(
         scalar_limit: float,
         body_limits: tuple[float, float, float] | None,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None,
+        rotation_axis_body: tuple[float, float, float] | npt.NDArray[np.float64] | None,
     ) -> float:
         """Resolve an ellipsoidal body-axis envelope along a maneuver axis."""
         if body_limits is None:
@@ -156,7 +157,9 @@ class AttitudeControlSystem(ConfigModel):
 
     def effective_slew_acceleration(
         self,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Return the acceleration limit along a body-frame maneuver axis."""
         return self._effective_directional_limit(
@@ -167,7 +170,9 @@ class AttitudeControlSystem(ConfigModel):
 
     def effective_max_slew_rate(
         self,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Return the slew-rate limit along a body-frame maneuver axis."""
         return self._effective_directional_limit(
@@ -176,7 +181,9 @@ class AttitudeControlSystem(ConfigModel):
             rotation_axis_body,
         )
 
-    def effective_max_slew_rates(self, rotation_axes_body: np.ndarray) -> np.ndarray:
+    def effective_max_slew_rates(
+        self, rotation_axes_body: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         """Slew-rate limits along each body-frame axis in an array of them.
 
         ``rotation_axes_body`` has shape ``(..., 3)``; the result has shape
@@ -196,7 +203,9 @@ class AttitudeControlSystem(ConfigModel):
     def motion_time(
         self,
         angle_deg: float,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Time to complete the motion (excluding settle) under bang-bang control."""
         if angle_deg <= 0:
@@ -210,7 +219,9 @@ class AttitudeControlSystem(ConfigModel):
     def max_motion_angle(
         self,
         duration_s: float,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Maximum rest-to-rest angular motion in the available time."""
         if duration_s <= 0:
@@ -228,7 +239,9 @@ class AttitudeControlSystem(ConfigModel):
         self,
         angle_deg: float,
         t: float,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Distance traveled (deg) along the slew after t seconds under bang-bang control.
 
@@ -247,7 +260,9 @@ class AttitudeControlSystem(ConfigModel):
     def slew_time(
         self,
         angle_deg: float,
-        rotation_axis_body: tuple[float, float, float] | np.ndarray | None = None,
+        rotation_axis_body: tuple[float, float, float]
+        | npt.NDArray[np.float64]
+        | None = None,
     ) -> float:
         """Total slew time (motion + settle) using bang-bang control."""
         if angle_deg <= 0 or np.isnan(angle_deg):

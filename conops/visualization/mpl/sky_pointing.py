@@ -895,7 +895,9 @@ class SkyPointingController:
             rasterized=True,  # Rasterize for faster rendering
         )
 
-    def _precompute_constraints(self, time_indices: np.ndarray | None = None) -> None:
+    def _precompute_constraints(
+        self, time_indices: npt.NDArray[np.intp] | None = None
+    ) -> None:
         """Pre-compute constraint masks for all time steps using in_constraint_batch.
 
         This evaluates all constraints for the entire DITL in a single batch operation
@@ -1697,7 +1699,9 @@ class SkyPointingController:
 
         return ra_grid_rad, dec_grid_rad, ra_flat, dec_flat
 
-    def _convert_ra_for_plotting(self, ra_vals: np.ndarray) -> np.ndarray:
+    def _convert_ra_for_plotting(
+        self, ra_vals: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         """Convert RA coordinates for Mollweide projection plotting.
 
         Parameters
@@ -1714,8 +1718,8 @@ class SkyPointingController:
 
     def _plot_points_on_sky(
         self,
-        ra_vals: np.ndarray,
-        dec_vals: np.ndarray,
+        ra_vals: npt.NDArray[np.float64],
+        dec_vals: npt.NDArray[np.float64],
         color: str,
         alpha: float = 0.3,
         size: int = 20,

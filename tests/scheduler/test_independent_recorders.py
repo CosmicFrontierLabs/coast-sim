@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from conops.common.enums import ACSMode, AntennaType
 from conops.config import (
     BandCapability,
+    BudgetStep,
     CommunicationsSystem,
     DataGeneration,
     DataStorage,
@@ -36,7 +37,7 @@ from conops.ditl.ditl_mixin import DITLMixin
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.recorder import RecorderLedgers, contact_downlink_gb
 from conops.simulation.passes import Pass, PassTimes
-from conops.targets import Plan, PlanEntry, Pointing, TargetQueue
+from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity, TargetQueue
 
 from .planning_scenario import BEGIN, make_config
 from .test_recorder_constraint import (
@@ -963,3 +964,60 @@ def test_mode_data_agrees_between_store_admission_projection_and_execution():
     views = c.recorder_views()
     assert views["payload"].recorder.current_volume_gb == pytest.approx(11)
     assert views["bus"].recorder.current_volume_gb == pytest.approx(0.22)
+
+
+@pytest.mark.parametrize(
+    "modes,destination", [({}, "bus"), ({"camera": "SCIENCE"}, "payload")]
+)
+def test_fixed_activity_data_is_stored_and_reported_once(modes, destination):
+    c = config()
+    d = runtime(c)
+    activity = ScheduledActivity(
+        name="frames",
+        begin=0,
+        duration_seconds=10,
+        instrument_modes=modes,
+        data_gb=2,
+    )
+    d._add_activity_data(activity.data_gb, activity)
+    views = c.recorder_views()
+    assert views[destination].recorder.current_volume_gb == 2
+    generated, _ = d._process_data_management(0, ACSMode.IDLE, 10, collection_seconds=0)
+    assert generated == pytest.approx(2.11)
+    generated, _ = d._process_data_management(
+        10, ACSMode.IDLE, 10, collection_seconds=0
+    )
+    assert generated == pytest.approx(0.11)
+    assert d._store_data_totals[destination]["lost_gb"] == 0
+    assert sum(v.recorder.current_volume_gb for v in views.values()) == pytest.approx(
+        2.22
+    )
+
+
+def test_budget_frames_agree_between_store_ledger_and_execution():
+    c = config()
+    c.constraint.ephem = make_config(2).constraint.ephem
+    entry = PlanEntry(
+        config=c,
+        begin=0,
+        end=100,
+        collection_begin=0,
+        collection_end=20,
+        own_timing=ObservationTiming(
+            setup_steps=[BudgetStep(name="frame", duration_seconds=1, data_gb=0.5)]
+        ),
+        fixed_data_gb=1,
+    )
+    ledger = RecorderLedgers(c, 0, 100, [])
+    assert ledger.science_additions(entry, 20, 0) == [(0, 5.5), (1, 0)]
+    assert TargetQueue(c).collection_within(
+        entry, {"payload": 5.5, "bus": 8}
+    ) == pytest.approx(20)
+    d = runtime(c)
+    d.ppt = entry
+    for tick in (0, 10):
+        d._process_data_management(tick, ACSMode.SCIENCE, 10, collection_seconds=10)
+    views = c.recorder_views()
+    assert views["payload"].recorder.current_volume_gb == pytest.approx(5.5)
+    assert views["bus"].recorder.current_volume_gb == pytest.approx(0.22)
+    assert d._store_data_totals["payload"]["generated_gb"] == pytest.approx(5.5)

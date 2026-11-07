@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 
 import numpy as np
+import numpy.typing as npt
 import plotly.graph_objects as go
 import rust_ephem
 from pydantic import BaseModel, ConfigDict
@@ -39,7 +40,7 @@ class ConstraintPlotConfig(BaseModel):
     orbit_constraint: object | None
     orbit_min_angle: float
     orbit_max_angle: float | None
-    gcrs_vel: np.ndarray | None
+    gcrs_vel: npt.NDArray[np.float64] | None
     anti_sun_constraint_cfg: object | None
     anti_sun_min_angle: float
     anti_sun_max_angle: float | None
@@ -129,7 +130,7 @@ def resolve_constraint_plot_config(
     )
     orbit_min_angle: float = 0.0
     orbit_max_angle: float | None = None
-    gcrs_vel: np.ndarray | None = None
+    gcrs_vel: npt.NDArray[np.float64] | None = None
     if orbit_constraint is not None:
         orbit_min_angle = float(getattr(orbit_constraint, "min_angle", 0.0))
         _orbit_max_raw = getattr(orbit_constraint, "max_angle", None)
