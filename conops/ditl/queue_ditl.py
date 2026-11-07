@@ -2995,6 +2995,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ra,
             dec,
             drive_state=self.acs.solar_array_drive_state,
+            lastroll=self.acs.roll,
         )
         if charging_ppt is None:
             return
@@ -3594,10 +3595,16 @@ class QueueDITL(DITLMixin, DITLStats):
         # Handle charging PPT constraint checks (regardless of mode)
         if self.ppt == self.charging_ppt:
             # Check constraints for charging PPT even if mode hasn't transitioned yet
+            # The destination is a complete body pose. During its ingress,
+            # combining that direction with the current roll invents a pose
+            # that neither the charge command nor the executor requested.
+            pose = (
+                (self.acs.ra, self.acs.dec, self.acs.roll)
+                if mode == ACSMode.CHARGING
+                else (self.ppt.ra, self.ppt.dec, self.ppt.roll)
+            )
             violation = self._attitude_constraint_name_for_attitude(
-                self.ppt.ra,
-                self.ppt.dec,
-                self.acs.roll,
+                *pose,
                 utime,
                 ACSMode.CHARGING,
             )

@@ -1170,7 +1170,11 @@ class SolarPanelSet(ConfigModel):
         return illumination, power
 
     def optimal_charging_pointing(
-        self, time: float, ephem: rust_ephem.Ephemeris
+        self,
+        time: float,
+        ephem: rust_ephem.Ephemeris,
+        *,
+        frame: "SpacecraftFrame | None" = None,
     ) -> tuple[float, float]:
         """Find optimal RA/Dec pointing for maximum solar panel illumination.
 
@@ -1182,6 +1186,9 @@ class SolarPanelSet(ConfigModel):
         Args:
             time: Unix timestamp
             ephem: Ephemeris object
+            frame: Body axes used by the panel normals. When supplied,
+                return a pointing about that frame's reference boresight;
+                the caller converts the complete attitude to body coordinates.
 
         Returns:
             tuple: (ra, dec) in degrees for optimal charging pointing
@@ -1204,7 +1211,8 @@ class SolarPanelSet(ConfigModel):
         avg_normal = np.zeros(3)
         for p in panels:
             weight = p.max_power / total_power
-            avg_normal += np.array(p.normal) * weight
+            normal = p.normal if frame is None else frame.canonical_vector(p.normal)
+            avg_normal += np.array(normal) * weight
 
         # Determine dominant axis
         abs_normal = np.abs(avg_normal)
