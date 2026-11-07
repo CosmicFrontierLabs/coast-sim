@@ -119,6 +119,15 @@ each sample, and the planners' battery ledger counts the attitude along the trac
 Plan entries record the position at the slew's end and the track itself, which a
 plan replay without the track observes as a fixed pointing.
 
+The planner's visibility prefilter evaluates positions along the track, rather
+than treating the request's initial coordinates as a fixed target. Body tracks
+are loaded before this check; an existing supplied track is reused.
+
+Numbered asteroids use their NAIF/SPK IDs, for example ``body="20000624"`` for
+624 Hektor. COASTSim requires ``rust-ephem>=0.16.1`` so the Horizons adapter
+resolves these IDs correctly; callers do not need a service-specific search
+syntax. Bare ``624`` identifies a major-body satellite instead.
+
 A window can give its visit a pointing and a roll request of its own: ``ra`` and
 ``dec`` where the visit points elsewhere than the target, as a moving target's
 visits do, and ``roll_deg`` or ``roll_offset_deg`` in place of the target's
