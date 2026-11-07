@@ -248,6 +248,7 @@ class MomentumForecast:
                 if (
                     entry_obstype(block.entry) == ObsType.ACTIVITY
                     and block.entry.desaturation
+                    and block.entry.activity_finishes
                     and dump is not None
                 ):
                     unload = dump.residual_fraction
