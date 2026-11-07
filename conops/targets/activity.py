@@ -110,6 +110,15 @@ class ScheduledActivity(BaseModel):
     def slides(self) -> bool:
         return self.slide_seconds > 0.0
 
+    def hold_start_for_run(self, run_begin: float) -> float:
+        """Start assumed by an independent run without prior execution state.
+
+        A still-open slide window can start a whole hold within this run.
+        After the window closes, resume from the latest permitted start;
+        a fixed activity has only its nominal start.
+        """
+        return max(self.begin, min(run_begin, self.latest_start))
+
     def plan_entry(
         self,
         config: MissionConfig | None,
@@ -133,6 +142,8 @@ class ScheduledActivity(BaseModel):
         entry.instrument_modes = dict(self.instrument_modes)
         entry.fixed_data_gb = float(self.data_gb)
         entry.desaturation = self.desaturation
+        entry.activity_hold_begin = self.begin
+        entry.activity_hold_end = self.end
         entry.obsid = self.obsid
         entry.obstype = ObsType.ACTIVITY
         entry.ra, entry.dec, entry.roll = attitude

@@ -642,6 +642,12 @@ class DITL(DITLMixin, DITLStats):
                 self.telemetry.data.append(pd)
 
         if (
+            self._active_entry is not None
+            and self._active_entry.obstype == ObsType.ACTIVITY
+            and not self.acs.in_safe_mode
+        ):
+            self._finish_active_entry(self.uend)
+        if (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
             is True
         ):
@@ -854,16 +860,21 @@ class DITL(DITLMixin, DITLStats):
             self.acs.request_end_battery_charge(utime)
         elif obstype == ObsType.ACTIVITY:
             self.acs.cancel_pending_slews(entry.obsid)
+            entry.end = min(float(entry.end), utime)
             self.log.log_event(
                 utime=utime,
                 event_type="ACTIVITY",
-                description=f"Scheduled activity {entry.name} ends",
+                description=(
+                    f"Scheduled activity {entry.name} "
+                    f"{'ends' if entry.activity_finishes else 'stops before completion'}"
+                ),
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
             if entry.desaturation:
                 self.acs.end_desaturation()
-                self._unload_stored_momentum(utime, entry.obsid)
+                if entry.activity_finishes:
+                    self._unload_stored_momentum(utime, entry.obsid)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
             self.acs.end_science_observation()
@@ -907,7 +918,17 @@ class DITL(DITLMixin, DITLStats):
         self.acs.end_science_observation()
         if entry.desaturation:
             self.acs.begin_desaturation()
-        self._add_activity_data(float(entry.fixed_data_gb), entry)
+        if entry.activity_hold_begin is None:
+            entry.activity_hold_begin = float(entry.begin) + entry.slewtime
+        if entry.activity_hold_end is None:
+            entry.activity_hold_end = float(entry.end)
+        resumed = entry.activity_hold_begin < max(float(entry.begin), self.ustart)
+        entry.begin = max(float(entry.begin), self.ustart)
+        entry.end = min(float(entry.end), self.uend)
+        if resumed:
+            entry.fixed_data_gb = 0.0
+        else:
+            self._add_activity_data(float(entry.fixed_data_gb), entry)
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
         )
@@ -923,7 +944,7 @@ class DITL(DITLMixin, DITLStats):
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
-            description=f"Scheduled activity {entry.name} begins",
+            description=f"Scheduled activity {entry.name} {'resumes' if resumed else 'begins'}",
             obsid=entry.obsid,
             acs_mode=self.acs.acsmode,
         )

@@ -178,6 +178,8 @@ class PlanEntry(BaseModel):
             "station_alt_m",
             "contact_begin",
             "contact_end",
+            "activity_hold_begin",
+            "activity_hold_end",
             "track_start_ra",
             "track_start_dec",
             "track_start_roll",
@@ -237,6 +239,16 @@ class PlanEntry(BaseModel):
             "Whether this activity entry is a thruster momentum dump, after "
             "which the wheels hold the dump's residual"
         ),
+    )
+    activity_hold_begin: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold start, including any part before this run",
+    )
+    activity_hold_end: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold end, including any part after this run",
     )
     own_timing: ObservationTiming | None = Field(
         default=None,
@@ -490,6 +502,28 @@ class PlanEntry(BaseModel):
 
     def __str__(self) -> str:
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
+
+    @property
+    def activity_partial(self) -> bool:
+        """Whether this entry covers only part of its full activity hold."""
+        return (
+            self.activity_hold_begin is not None
+            and float(self.begin) > self.activity_hold_begin
+        ) or (
+            self.activity_hold_end is not None
+            and float(self.end) < self.activity_hold_end
+        )
+
+    @property
+    def activity_finishes(self) -> bool:
+        """Whether the reserved interval reaches the full hold's end.
+
+        Legacy entries without hold metadata retain their original meaning:
+        their entry end is the activity's completion time.
+        """
+        return (
+            self.activity_hold_end is None or float(self.end) >= self.activity_hold_end
+        )
 
     @property
     def collected_seconds(self) -> float:

@@ -866,14 +866,29 @@ class RollingHorizonDITL(DITL):
             if entry_obstype(entry) == ObsType.ACTIVITY:
                 obsid = int(entry.obsid)
                 activity_starts[obsid] = min(
-                    activity_starts.get(obsid, float(entry.begin)), float(entry.begin)
+                    activity_starts.get(
+                        obsid,
+                        float(
+                            entry.activity_hold_begin
+                            if entry.activity_hold_begin is not None
+                            else entry.begin
+                        ),
+                    ),
+                    float(
+                        entry.activity_hold_begin
+                        if entry.activity_hold_begin is not None
+                        else entry.begin
+                    ),
                 )
+        activity_holds: dict[int, tuple[float, float]] = {}
         activities = []
         for activity in self.activities:
             assert activity.obsid is not None
             actual_start = activity_starts.get(activity.obsid)
             if activity.begin < self.ustart:
-                actual_start = activity.begin  # Already running before this simulation.
+                assumed = activity.hold_start_for_run(self.ustart)
+                if assumed < self.ustart and actual_start is None:
+                    actual_start = assumed
             begin = max(start, activity.begin)
             # A queued request still needs its full duration, even if overdue.
             duration = activity.duration_seconds
@@ -881,6 +896,15 @@ class RollingHorizonDITL(DITL):
                 duration -= begin - actual_start
             if duration <= 0:
                 continue  # Already completed by the committed entries.
+            if actual_start is not None:
+                activity_holds[activity.obsid] = (
+                    actual_start,
+                    actual_start + activity.duration_seconds,
+                )
+            partial_open = (
+                activity.begin < self.ustart <= activity.latest_start
+                and actual_start is None
+            )
             activities.append(
                 activity.model_copy(
                     update={
@@ -888,7 +912,9 @@ class RollingHorizonDITL(DITL):
                         "duration_seconds": duration,
                         # Data is added once, when the activity first starts.
                         "data_gb": activity.data_gb if actual_start is None else 0.0,
-                        "slide_seconds": max(0.0, activity.latest_start - begin),
+                        "slide_seconds": 0.0
+                        if partial_open
+                        else max(0.0, activity.latest_start - begin),
                     }
                 )
             )
@@ -928,6 +954,10 @@ class RollingHorizonDITL(DITL):
             **options,  # type: ignore[arg-type]
         )
         entries = scheduler.schedule().entries
+        for entry in entries:
+            hold = activity_holds.get(int(entry.obsid))
+            if entry_obstype(entry) == ObsType.ACTIVITY and hold is not None:
+                entry.activity_hold_begin, entry.activity_hold_end = hold
         self._last_plan = _PlanSummary.of(scheduler, self._last_seed_entries)
         # Rejected candidate plans can also have a load-dependent search.
         # Keep every attempt's endings even if an earlier plan is selected.
@@ -1237,6 +1267,7 @@ class RollingHorizonDITL(DITL):
             if (
                 dump is not None
                 and entry.desaturation
+                and entry.activity_finishes
                 and utime < float(entry.end) <= start
             ):
                 ahead = ahead * dump.residual_fraction
