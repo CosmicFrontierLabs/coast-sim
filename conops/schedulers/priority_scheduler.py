@@ -3014,12 +3014,14 @@ class PriorityScheduler:
             target.step_pointing(0) if target.sequence is not None else target
         )
         while start <= search_end:
-            if not self.ctx.roll_allowed(arrival_pointing, start):
+            instrument_roll, roll_allowed = self.ctx.select_instrument_roll(
+                arrival_pointing, start
+            )
+            if not roll_allowed:
                 # The roll the target asks for is beyond the ACS limit from
                 # the power-optimal roll now; it may be within it later.
                 start += self.ctx.step_size
                 continue
-            instrument_roll = self.ctx.instrument_roll(arrival_pointing, start)
             attitude = arrival_pointing.target_body_attitude(instrument_roll, at=start)
             slew = self.ctx.slew(
                 self._start_attitude(pred, start),

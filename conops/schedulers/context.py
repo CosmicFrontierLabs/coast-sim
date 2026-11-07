@@ -200,31 +200,39 @@ class SchedulingContext:
             telescope=target.science_telescope(),
         )
 
+    def select_instrument_roll(
+        self, target: PlanEntry, utime: float
+    ) -> tuple[float, bool]:
+        """Select a roll and check its request against one guidance evaluation.
+
+        Return the optimum with ``False`` when an absolute request exceeds
+        the ACS band, preserving the geometry helpers' fallback. The pair is
+        local to this attempt; later times and changed requests are evaluated
+        afresh, including their roll-dependent constraint checks.
+        """
+        optimum = self.optimum_roll(target, utime)
+        if not isinstance(target, Pointing):
+            return optimum, True
+        roll = target.requested_roll(
+            optimum,
+            self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
+        )
+        return (optimum, False) if roll is None else (float(roll), True)
+
     def instrument_roll(self, target: PlanEntry, utime: float) -> float:
         """The instrument roll a target is observed at, at ``utime``: the
         power-optimal roll, or the roll the target asks for (see
         :meth:`Pointing.requested_roll`). An absolute roll beyond the ACS
         limit from the optimum gives the optimum here; :meth:`roll_allowed`
         says whether the target can be observed at that time at all."""
-        optimum = self.optimum_roll(target, utime)
-        if not isinstance(target, Pointing):
-            # A plan entry, or a test double, has no roll request.
-            return optimum
-        roll = target.requested_roll(
-            optimum,
-            self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg,
-        )
-        return optimum if roll is None else float(roll)
+        return self.select_instrument_roll(target, utime)[0]
 
     def roll_allowed(self, target: PlanEntry, utime: float) -> bool:
         """Whether the roll ``target`` asks for is within the ACS limit of the
         power-optimal roll at ``utime``; True without a request."""
         if not isinstance(target, Pointing):
             return True
-        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
-        return (
-            target.requested_roll(self.optimum_roll(target, utime), limit) is not None
-        )
+        return self.select_instrument_roll(target, utime)[1]
 
     def slew(
         self,
