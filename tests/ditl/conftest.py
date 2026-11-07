@@ -387,6 +387,7 @@ def ditl(mock_config_detailed, mock_ephem) -> DITL:
         # DITL commands, so tests drive the mocked ACS directly.
         entry = Mock(
             spec=PlanEntry,
+            calibration=False,
             ra=0.0,
             dec=0.0,
             obsid=1,

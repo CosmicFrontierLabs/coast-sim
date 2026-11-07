@@ -2442,6 +2442,7 @@ class QueueDITL(DITLMixin, DITLStats):
             roll_offset_deg=roll_offset_deg,
             acs_mode=mode,
             collection_seconds=self._collection_seconds_for_step(utime, mode),
+            calibration=self.ppt is not None and self.ppt.calibration is True,
             panel_illumination=panel_illumination,
             solar_array_drive_angles=drive_angles,
             instrument_modes=self._instrument_modes_telemetry(mode, utime),
