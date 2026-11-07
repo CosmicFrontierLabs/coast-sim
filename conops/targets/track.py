@@ -89,6 +89,23 @@ def position_along(track: Sequence[TrackPoint], utime: float) -> tuple[float, fl
     return ra, dec
 
 
+def positions_along(
+    track: Sequence[TrackPoint], utimes: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`position_along` at each of ``utimes`` together: the right
+    ascensions and declinations, in degrees."""
+    if not track:
+        raise ValueError("an empty track has no position")
+    wanted = np.asarray(utimes, dtype=np.float64)
+    if len(track) == 1:
+        return np.full(len(wanted), track[0].ra), np.full(len(wanted), track[0].dec)
+    times = np.array([p.utime for p in track], dtype=np.float64)
+    ras = _unwrapped_ra(track)
+    decs = np.array([p.dec for p in track], dtype=np.float64)
+    clipped = np.clip(wanted, times[0], times[-1])
+    return np.interp(clipped, times, ras) % 360.0, np.interp(clipped, times, decs)
+
+
 def rate_along(track: Sequence[TrackPoint], utime: float) -> float:
     """The track's angular rate at ``utime``, in degrees per second: that
     of the interval the time falls in; zero outside the track or for a

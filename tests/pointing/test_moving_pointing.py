@@ -46,6 +46,24 @@ class TestTrack:
         ra, _ = position_along(track, T0 + HOUR / 2)
         assert ra == pytest.approx(0.0, abs=1e-9)
 
+    def test_positions_together_match_each_position(self) -> None:
+        """Positions along a track at many times at once are the positions
+        one by one, across the seam and outside the track."""
+        from conops.targets.track import positions_along
+
+        track = _track(hours=4, rate_deg_per_h=100.0)
+        first = track[0].utime
+        times = [
+            first - 600.0,
+            *[first + 300.0 * k for k in range(50)],
+            first + 10 * 3600.0,
+        ]
+        ras, decs = positions_along(track, times)
+        for utime, ra, dec in zip(times, ras, decs, strict=True):
+            assert (float(ra), float(dec)) == pytest.approx(
+                position_along(track, utime)
+            )
+
     def test_rate(self) -> None:
         track = _track(rate_deg_per_h=2.0)
         assert rate_along(track, T0 + HOUR / 2) * HOUR == pytest.approx(2.0, abs=0.01)
