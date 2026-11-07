@@ -184,7 +184,11 @@ def _collected(plan: Plan) -> float:
 class TestPlans:
     def test_never_worse_than_priority_first_and_executes_exactly(self) -> None:
         targets = _targets(4)
-        scheduler = _scheduler(targets, 4)
+        # Exercise a completed native search, independent of CI contention.
+        # Exhaustion/fallback has its own explicitly wall-limited regression.
+        scheduler = _scheduler(
+            targets, 4, solver_deterministic_time=1.0, solver_time_limit=30.0
+        )
 
         plan = scheduler.schedule()
         ditl = _execute(targets, plan, 4)
@@ -192,6 +196,10 @@ class TestPlans:
         assert scheduler.score >= scheduler.initial_score
         assert scheduler.solver_statuses
         assert set(scheduler.solver_statuses) <= {"OPTIMAL", "FEASIBLE"}
+        assert set(scheduler.solver_search_limits) <= {
+            "optimal",
+            "deterministic budget",
+        }
         assert ditl.validate_plan_matches_execution() == []
         executed = sum(hk.collection_seconds for hk in ditl.telemetry.housekeeping)
         assert executed == pytest.approx(_collected(plan))
