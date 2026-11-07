@@ -18,7 +18,12 @@ from ..schedulers.battery import Addition, BatteryLedger
 from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
 from ..schedulers.local_search_scheduler import LocalSearchScheduler
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
-from ..schedulers.recorder import RecorderAmount, RecorderLedger, combine_amounts
+from ..schedulers.recorder import (
+    RecorderAmount,
+    RecorderLedger,
+    activity_data_time,
+    combine_amounts,
+)
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
@@ -1054,7 +1059,7 @@ class RollingHorizonDITL(DITL):
         for entry in committed:
             if (
                 entry_obstype(entry) == ObsType.ACTIVITY
-                and utime <= float(entry.begin) < start
+                and utime <= activity_data_time(entry) < start
             ):
                 for segment, volume in ledger.activity_additions(entry):
                     volumes[segment] = combine_amounts(volumes[segment], volume)

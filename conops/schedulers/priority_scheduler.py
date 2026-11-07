@@ -558,6 +558,8 @@ class PriorityScheduler:
         a later visit first, so a visit is spaced from these on both sides."""
         self._refitting: _Block | None = None
         """A visit being placed again later, not spaced from itself."""
+        self._momentum_seed: Plan | None = None
+        """The preceding pass's plan, repaired around newly reserved dumps."""
         self._kept: list[_Block] = []
         """Science from the pass before that a pass planning on from a dump
         keeps where it stands (see :meth:`_keep_before`)."""
@@ -595,7 +597,10 @@ class PriorityScheduler:
         activities (see :meth:`_keep_before`), so the plan before a dump is
         the plan that fills the wheels to it; a dump found earlier than one
         already reserved replaces that one and those after it, which the
-        next pass finds again if they are still needed. Without thrusters
+        next pass finds again if they are still needed. Optimizing planners
+        also repair the preceding pass's plan as another incumbent under the
+        new dumps; a changed priority order need not discard feasible science.
+        Without thrusters
         the forecast is logged where it passes the capacity, and the plan
         stands.
 
@@ -611,6 +616,7 @@ class PriorityScheduler:
         slowest, a dump goes before the observation where its slew fits from
         empty wheels, and the observation is not planned where it does not.
         """
+        self._momentum_seed = None
         plan = build()
         forecast = self._momentum
         if forecast is None:
@@ -625,6 +631,7 @@ class PriorityScheduler:
                     # A changed speed can alter every later handoff.
                     self._kept = []
                     self._resume_from = None
+                    self._momentum_seed = plan
                     plan = build()
                     continue
                 if isinstance(capped, tuple):
@@ -665,6 +672,7 @@ class PriorityScheduler:
                             reserved.obsid,
                         )
                         self._keep_before(begin)
+                        self._momentum_seed = plan
                         plan = build()
                         continue
             if level is None:
@@ -727,6 +735,7 @@ class PriorityScheduler:
                 self._log_forecast_past_capacity()
                 return plan
             self._keep_before(resume)
+            self._momentum_seed = plan
             plan = build()
         self._log(
             self.ctx.uend,
@@ -1112,6 +1121,50 @@ class PriorityScheduler:
             ),
             *((s, -v) for s, v in self._ledger.ingress_additions(block.entry)),
         ]
+
+    def _fixed_data_changes(
+        self, before: Sequence[_Block], after: Sequence[_Block]
+    ) -> list[tuple[int, RecorderAmount]]:
+        """Data moved with activities and pass ingress, excluding new science."""
+
+        def events(
+            blocks: Sequence[_Block],
+        ) -> dict[int, list[tuple[int, RecorderAmount]]]:
+            result: dict[int, list[tuple[int, RecorderAmount]]] = {}
+            for block in blocks:
+                if block.is_activity:
+                    amounts = self._ledger.activity_additions(block.entry)
+                elif block.is_pass:
+                    amounts = list(self._ledger.ingress_additions(block.entry))
+                else:
+                    continue
+                result[int(block.entry.obsid)] = [(s, v) for s, v in amounts if v]
+            return result
+
+        old, new = events(before), events(after)
+        changes: list[tuple[int, RecorderAmount]] = []
+        for obsid in sorted(old.keys() | new.keys()):
+            prior, current = old.get(obsid, []), new.get(obsid, [])
+            if prior != current:
+                changes.extend((s, combine_amounts(0.0, v, -1.0)) for s, v in prior)
+                changes.extend(current)
+        return changes
+
+    def _following_data_changes(
+        self, pred: _Block, after: Sequence[_Block], slew: Slew | None
+    ) -> list[tuple[int, RecorderAmount]]:
+        """Preview resource changes along the following reconnection chain."""
+        affected: list[_Block] = []
+        for block in after:
+            affected.append(block)
+            if not block.follows:
+                break
+        # Most gaps have no data-bearing following hold or pass. Preserve that
+        # fast path without constructing another connected timeline.
+        if not self._fixed_data_changes([], affected):
+            return []
+        connected = self._reconnected(pred, after, slew)
+        return self._fixed_data_changes(after, connected)
 
     def _battery_ledger(self) -> BatteryLedger:
         """The battery over the horizon, charging in its idle sunlit time."""
@@ -2026,12 +2079,18 @@ class PriorityScheduler:
         A successor that is a contact adds what its slew generates to the
         recorder; once the ledger exists, that is kept current here.
         """
+        track_data = not self._reserving and getattr(self, "_ledger", None) is not None
+        previous = (
+            [
+                b.model_copy(update={"entry": b.entry.model_copy()})
+                for b in self.timeline
+                if b.is_activity or b.is_pass
+            ]
+            if track_data
+            else []
+        )
         self._apply_slew(block, slew)
         if succ is not None and succ_slew is not None:
-            if getattr(self, "_ledger", None) is not None:
-                self._volumes = self._ledger.add_all(
-                    self._volumes, self._ingress_deltas(succ, succ_slew)
-                )
             self._apply_slew(succ, succ_slew)
         self.timeline.insert(index, block)
         if succ is not None and succ.activity is not None:
@@ -2041,6 +2100,10 @@ class PriorityScheduler:
             self._reconnect_following(index)
         elif succ is not None and succ.follows:
             self._reconnect_following(index + 1)
+        if track_data:
+            self._volumes = self._ledger.add_all(
+                self._volumes, self._fixed_data_changes(previous, self.timeline)
+            )
         if not self._reserving:
             # While the fixed blocks are placed, the energy is taken once at
             # the end (see _reserve_fixed): nothing reads it in between.
@@ -2473,7 +2536,9 @@ class PriorityScheduler:
                 # Include any change to the next tracking pass's ingress.
                 additions = [
                     *self._block_additions(block),
-                    *self._ingress_deltas(succ, succ_slew),
+                    *self._following_data_changes(
+                        block, self.timeline[index:], succ_slew
+                    ),
                 ]
                 if self._ledger.fits_all(self._volumes, additions):
                     full = False
@@ -2495,7 +2560,12 @@ class PriorityScheduler:
                     )
                     snapshot = min(float(request.target.ss_max), request.remaining)
                     capacity_end = self._ledger.science_retry_end(
-                        self._volumes,
+                        self._ledger.add_all(
+                            self._volumes,
+                            self._following_data_changes(
+                                block, self.timeline[index:], succ_slew
+                            ),
+                        ),
                         block.entry,
                         minimum,
                         self.ctx.floor_step(collection_begin),
@@ -2541,7 +2611,9 @@ class PriorityScheduler:
                 block, slew, succ_slew = charged
                 additions = [
                     *self._block_additions(block),
-                    *self._ingress_deltas(succ, succ_slew),
+                    *self._following_data_changes(
+                        block, self.timeline[index:], succ_slew
+                    ),
                 ]
                 if not self._ledger.fits_all(self._volumes, additions):
                     recorder_full = True
@@ -2851,7 +2923,6 @@ class PriorityScheduler:
             return None
         additions = [
             *self._block_additions(new_block),
-            *self._ingress_deltas(after, after_slew),
         ]
         for move in moves:
             additions.extend(
@@ -2859,8 +2930,6 @@ class PriorityScheduler:
                 for s, v in self._block_additions(move.old_block)
             )
             additions.extend(self._block_additions(move.new_block))
-        if not self._ledger.fits_all(self._volumes, additions):
-            return None
         trial = [
             *self.timeline[:index],
             new_block,
@@ -2869,6 +2938,9 @@ class PriorityScheduler:
         ]
         if after is not None:
             trial.extend(self._reconnected(previous, self.timeline[end:], after_slew))
+        additions.extend(self._fixed_data_changes(self.timeline, trial))
+        if not self._ledger.fits_all(self._volumes, additions):
+            return None
         if not self._within_level(self._charged_energy(trial)):
             return None
         self._volumes = self._ledger.add_all(self._volumes, additions)
