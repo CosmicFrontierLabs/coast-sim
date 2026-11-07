@@ -1961,7 +1961,9 @@ class CpSatScheduler(LocalSearchScheduler):
                 spans.append(_Span((obsid, n), (lo, hi), rate))
         return spans
 
-    def _slews(self, tasks: Sequence[_Task], origin_time: float) -> npt.NDArray[np.int64]:
+    def _slews(
+        self, tasks: Sequence[_Task], origin_time: float
+    ) -> npt.NDArray[np.int64]:
         """Seconds of the scheduled slew from each task to each other task.
 
         With a thermal settling table, each slew settles for the change it
