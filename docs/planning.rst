@@ -133,6 +133,9 @@ use ``PriorityScheduler`` or ``QueueDITL`` for these observations.
 The planner's visibility prefilter evaluates positions along the track, rather
 than treating the request's initial coordinates as a fixed target. Body tracks
 are loaded before this check; an existing supplied track is reused.
+Cached windows retain the track samples they were computed for. Replacing that
+track invalidates its cached windows, and modifying a returned window list does
+not modify the cache.
 
 Numbered asteroids use their NAIF/SPK IDs, for example ``body="20000624"`` for
 624 Hektor. COASTSim requires ``rust-ephem>=0.16.1`` so the Horizons adapter
