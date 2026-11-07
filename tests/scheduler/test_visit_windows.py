@@ -508,6 +508,25 @@ class TestDispatch:
         target.exptime = 0
         assert not target.done
 
+    def test_queue_reset_clears_progress_from_the_previous_attempt(self) -> None:
+        config = _config(HOURS)
+        target = _timed_target(config)
+        queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        queue.append(target)
+        begin = STARTS[0] + 60.0
+        target.record_collection(begin + VISIT * MIN, VISIT * MIN)
+        assert target.visits_done == {0}
+
+        queue.reset()
+        target.record_collection(begin + 360.0, 360.0)
+        target.record_interruption(begin + 360.0)
+        assert target.visits_done == set()
+        assert target.next_visit(begin + 360.0) == 0
+        assert target.collected_seconds == 360.0
+        target.record_collection(begin + 960.0, VISIT * MIN)
+        assert target.visits_done == {0}
+        assert target.collected_seconds == 960.0
+
     def test_a_window_is_done_only_by_one_uninterrupted_attempt(self) -> None:
         """Two cut attempts that together exceed a visit do not complete
         the window; the science of both still counts."""

@@ -427,10 +427,41 @@ class TestSlewsIntoActivities:
 
 
 class TestRolling:
+    @pytest.mark.parametrize("duration", [HOUR, 2 * HOUR])
+    def test_a_delayed_activity_keeps_its_duration_and_stores_data_once(
+        self, duration: float
+    ) -> None:
+        config = _config(4)
+        activities = [
+            ScheduledActivity(name="First", begin=T0 + 600, duration_seconds=duration),
+            ScheduledActivity(
+                name="Delayed", begin=T0 + 900, duration_seconds=HOUR, data_gb=1.5
+            ),
+        ]
+        ditl = RollingHorizonDITL(
+            config,
+            [],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=4),
+            horizon=timedelta(hours=2),
+            replan_interval=timedelta(minutes=15),
+            commit_lead_time=timedelta(minutes=5),
+            activities=activities,
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        assert ditl.validate_plan_matches_execution() == []
+        entries = [e for e in _activities(ditl.plan) if e.name == "Delayed"]
+        assert entries
+        assert float(entries[0].begin) == T0 + 600 + duration
+        assert float(entries[-1].end) == T0 + 600 + duration + HOUR
+        assert sum(e.fixed_data_gb for e in entries) == pytest.approx(1.5)
+        assert ditl.recorder.current_volume_gb == pytest.approx(1.5)
+
     def test_an_activity_in_progress_is_reserved_across_horizons(self) -> None:
         config = _config(2)
         activity = ScheduledActivity(
-            name="Maintenance", begin=T0 - 600, duration_seconds=2400
+            name="Maintenance", begin=T0 - 600, duration_seconds=2400, data_gb=1.5
         )
         ditl = RollingHorizonDITL(
             config,
@@ -448,6 +479,8 @@ class TestRolling:
         assert entries
         assert float(entries[0].begin) == T0
         assert float(entries[-1].end) == activity.end
+        assert sum(e.fixed_data_gb for e in entries) == 0.0
+        assert ditl.recorder.current_volume_gb == pytest.approx(0.0)
         for earlier, later in zip(entries, entries[1:]):
             assert float(earlier.end) == float(later.begin)
         assert _science(ditl.plan)

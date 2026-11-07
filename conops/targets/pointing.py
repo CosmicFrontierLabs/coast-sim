@@ -617,6 +617,7 @@ class Pointing(PlanEntry):
         self.collection_limit = None
         self._visits_done = set()
         self._visit_seconds = {}
+        self._visit_attempt_seconds = {}  # Retries must start with no prior progress.
         self.visit = None
         self.begin = 0
         self.end = 0

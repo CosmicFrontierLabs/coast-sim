@@ -640,6 +640,7 @@ class RollingHorizonDITL(DITL):
         start = start_state.time if start_state is not None else cutoff
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
         if horizon_end <= start:
+            # Committed entries fill this horizon; keep them without scheduling more.
             return committed, dropped, list(pinned), 0
         start_deficit_wh, start_drive_state = self._battery_start(utime, start, leading)
         if self.include_passes and self._run_passes is None:
@@ -684,6 +685,38 @@ class RollingHorizonDITL(DITL):
                 used,
             )
             options["allocation_bonus"] = self.allocation_bonus
+        # The first committed fragment fixes when an activity actually started.
+        activity_starts: dict[int, float] = {}
+        for entry in leading:
+            if entry_obstype(entry) == ObsType.ACTIVITY:
+                obsid = int(entry.obsid)
+                activity_starts[obsid] = min(
+                    activity_starts.get(obsid, float(entry.begin)), float(entry.begin)
+                )
+        activities = []
+        for activity in self.activities:
+            assert activity.obsid is not None
+            actual_start = activity_starts.get(activity.obsid)
+            if activity.begin < self.ustart:
+                actual_start = activity.begin  # Already running before this simulation.
+            begin = max(start, activity.begin)
+            # A queued request still needs its full duration, even if overdue.
+            duration = activity.duration_seconds
+            if actual_start is not None:
+                duration -= begin - actual_start
+            if duration <= 0:
+                continue  # Already completed by the committed entries.
+            activities.append(
+                activity.model_copy(
+                    update={
+                        "begin": begin,
+                        "duration_seconds": duration,
+                        # Data is added once, when the activity first starts.
+                        "data_gb": activity.data_gb if actual_start is None else 0.0,
+                        "slide_seconds": max(0.0, activity.latest_start - begin),
+                    }
+                )
+            )
         scheduler = self.scheduler(
             self.config,
             # Finished and held targets too: the scheduler does not place
@@ -705,7 +738,7 @@ class RollingHorizonDITL(DITL):
             start_drive_state=start_drive_state,
             passes=self._run_passes,
             coverage=self.coverage,
-            activities=self.activities,
+            activities=activities,
             **options,  # type: ignore[arg-type]
         )
         return (
