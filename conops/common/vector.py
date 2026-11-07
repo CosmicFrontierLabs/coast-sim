@@ -179,9 +179,9 @@ def roll_over_angle(
     around the circle. This is critical for slew paths that cross near the poles
     where RA can change rapidly.
     """
-    return cast(
-        npt.NDArray[np.float64],
+    return np.asarray(
         np.unwrap(np.asarray(angles, dtype=np.float64), period=360.0),
+        dtype=np.float64,
     )
 
 

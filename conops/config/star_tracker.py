@@ -172,7 +172,7 @@ class StarTrackerOrientation(ConfigModel):
 
         # Third axis: perpendicular to both boresight and second
         third = np.cross(bore, second)
-        third = vecnorm(cast(npt.NDArray[np.float64], third))
+        third = vecnorm(np.asarray(third, dtype=np.float64))
 
         # Compose rotation matrix: columns are the new basis vectors
         return np.column_stack([bore, second, third])
