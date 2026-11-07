@@ -293,6 +293,17 @@ class ACS:
         now: a moving science target being tracked brakes from ``utime``,
         as ending its observation brakes it; any other motion rests when it
         rests. Nothing is changed."""
+        state = self.science_stop_state(utime)
+        return state.utime if state is not None else self.motion_ready_time(utime)
+
+    def science_stop_state(self, utime: float) -> AttitudeState | None:
+        """Rest after ending installed moving science now, including its ingress.
+
+        Dispatch can preempt a moving observation while its ingress is still
+        under way. Ending that observation brakes the installed motion at the
+        interruption, rather than flying on to its original arrival pose.
+        This preview follows the same stop without advancing execution.
+        """
         if (
             self._tracked_slew is not None
             and self._executor is not None
@@ -302,8 +313,8 @@ class ACS:
             trajectory = AttitudeTrajectory.braking(
                 state, self.config.spacecraft_bus.attitude_control
             )
-            return float(trajectory.end) if trajectory is not None else utime
-        return self.motion_ready_time(utime)
+            return trajectory.state(trajectory.end) if trajectory is not None else state
+        return None
 
     def predicted_attitude(self, utime: float) -> Attitude:
         """Evaluate installed physical motion without advancing execution."""
