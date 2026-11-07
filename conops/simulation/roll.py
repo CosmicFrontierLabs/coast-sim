@@ -246,8 +246,13 @@ def optimum_instrument_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     drive_state: SolarArrayDriveState | None = None,
+    science_attitude: bool = True,
 ) -> float:
-    """Optimize science roll while scoring panels in the physical body frame."""
+    """Optimize reference-frame roll while scoring physical body panels.
+
+    Engineering guidance uses ``science_attitude=False`` and checks the
+    resulting body pose against its operating mode's constraints.
+    """
     if telescope.mounting.is_identity:
         return optimum_body_roll(
             ra,
@@ -278,6 +283,29 @@ def optimum_instrument_roll(
         if not reachable.any():
             assert reference is not None
             return reference
+
+    if not science_attitude:
+        if (
+            constraint is not None
+            and constraint.ignore_roll
+            and constraint.roll_dependent_constraint is not None
+        ):
+            poses = [
+                telescope.target_body_attitude(ra, dec, float(roll))
+                for roll in _ROLL_DEGREES
+            ]
+            index = ephem.index(dtutcfromtimestamp(utime))
+            blocked = constraint.roll_dependent_constraint.in_constraint_batch(
+                ephemeris=ephem,
+                target_ras=[pose[0] for pose in poses],
+                target_decs=[pose[1] for pose in poses],
+                target_rolls=[pose[2] for pose in poses],
+                times=[ephem.timestamp[index]],
+            )
+            valid = ~np.asarray(blocked, dtype=bool).reshape(-1)
+            if valid.any() and not valid.all():
+                scores = np.where(valid, scores, -np.inf)
+        return _best_power_roll(scores, reference)
 
     order = _power_score_order(scores, reference)
     best_roll = None

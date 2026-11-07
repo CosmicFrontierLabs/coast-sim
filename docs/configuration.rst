@@ -351,6 +351,10 @@ The default is the frame COAST has always computed in, boresight +X and the Sun'
   body hardware and are preserved. Slew waypoints are chosen in the reference
   frame and transformed into physical body axes before execution and per-axis
   timing; merely relabelling exported quaternions cannot make a frame conversion;
+* charging search and solar safe-mode guidance use the declared reference
+  boresight and transform their complete attitude into body axes. Charging
+  constraint checks use the commanded destination pose during ingress and
+  the executed pose during the charging hold;
 * :func:`~conops.config.create_solar_panel_vector` and
   :func:`~conops.config.create_star_tracker_vector` take ``frame=`` and return their
   vectors in the mission's frame, so a ``'boresight'`` panel faces the frame's
