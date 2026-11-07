@@ -243,6 +243,8 @@ class MissionConfig(ConfigModel):
         frame's boresight, with its zero-roll reference completing the
         frame; one given a mounting, or a legacy boresight, keeps it."""
         bus = getattr(self, "spacecraft_bus", None)
+        if isinstance(self.constraint, Constraint):
+            self.constraint._body_frame_source = bus
         frame = getattr(bus, "frame", None)
         payload = getattr(self, "payload", None)
         # A test double's configuration has no frame or payload.

@@ -9,13 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from ..common import roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
 from ..common.vector import (
+    _quat_mul,
+    _quaternion_delta,
+    angular_separation,
     attitude_to_quat,
     quat_slerp,
     quat_to_attitude,
     quaternion_attitude_delta,
     quaternion_slew_path,
 )
-from ..config import AttitudeControlSystem, Constraint, MissionConfig
+from ..config import AttitudeControlSystem, Constraint, MissionConfig, SpacecraftFrame
 from ..config.acs import scheduled_slew_time
 from ..config.constants import DTOR
 
@@ -204,6 +207,23 @@ class Slew(BaseModel):
                 )
             points = [attitude_to_quat(*start), attitude_to_quat(*end)]
         return [(float(q[0]), float(q[1]), float(q[2]), float(q[3])) for q in points]
+
+    @property
+    def great_circle_deg(self) -> float:
+        """The great-circle angle between the pointings the slew joins, in
+        degrees: what a slew requirement is written in, where ``slewdist`` is
+        the rotation flown, which the roll lengthens."""
+        start = (self.startra, self.startdec, self.startroll)
+        end = (self.endra, self.enddec, self.endroll)
+        frame = getattr(getattr(self.config, "spacecraft_bus", None), "frame", None)
+        if isinstance(frame, SpacecraftFrame) and not frame.is_identity:
+            inverse = np.asarray(frame.quaternion_wxyz)
+            inverse[1:] *= -1
+            start = quat_to_attitude(_quat_mul(inverse, attitude_to_quat(*start)))
+            end = quat_to_attitude(_quat_mul(inverse, attitude_to_quat(*end)))
+        return angular_separation(
+            float(start[0]), float(start[1]), float(end[0]), float(end[1])
+        )
 
     def ra_dec(self, utime: float) -> tuple[float, float]:
         return self.slew_ra_dec(utime)
@@ -495,6 +515,8 @@ class Slew(BaseModel):
         """
         assert self.acs_config is not None, "ACS config must be set to predict slew"
         assert self.constraint is not None, "Constraint must be set to predict slew"
+        if self._predict_in_reference_frame(steps):
+            return
         ephem = self.ephem
         assert ephem is not None, "Ephemeris must be set to predict slew"
 
@@ -635,3 +657,86 @@ class Slew(BaseModel):
             ),
         ]
         self.slewdist = attitude_total
+
+    def _predict_in_reference_frame(self, steps: int) -> bool:
+        """Route unmounted slew cones about the declared reference boresight.
+
+        Waypoint selection and roll interpolation use that reference frame;
+        execution and per-axis kinematics retain physical body quaternions.
+        Explicit hardware offsets remain in body coordinates.
+        """
+        frame = getattr(getattr(self.config, "spacecraft_bus", None), "frame", None)
+        if not isinstance(frame, SpacecraftFrame) or frame.is_identity:
+            return False
+        assert self.acs_config is not None
+        tree = self.acs_config.slew_constraint
+        if tree is None and self.constraint is not None:
+            c = self.constraint
+            # The public combined tree includes body-mounted hardware. Route
+            # its unmounted form here only when every component uses the
+            # reference boresight; otherwise retain the body-hardware path.
+            tree = Constraint._combine_constraints(
+                [
+                    c.safety_constraint,
+                    c.star_tracker_hard_constraint,
+                    c.radiator_hard_constraint,
+                    c.telescope_hard_constraint,
+                    c.sun_constraint,
+                    c.moon_constraint,
+                    c.earth_constraint,
+                    c.orbit_constraint,
+                    c.anti_sun_constraint,
+                    c.star_tracker_soft_constraint,
+                    c.science_constraint,
+                    c.panel_constraint,
+                    c.ground_contact_constraint,
+                ]
+            )
+        if tree is None or Constraint._contains_boresight_offset(tree):
+            return False
+        rotation = np.asarray(frame.quaternion_wxyz)
+        inverse = rotation.copy()
+        inverse[1:] *= -1
+        start = quat_to_attitude(
+            _quat_mul(
+                inverse, attitude_to_quat(self.startra, self.startdec, self.startroll)
+            )
+        )
+        end = quat_to_attitude(
+            _quat_mul(inverse, attitude_to_quat(self.endra, self.enddec, self.endroll))
+        )
+        reference = self.model_copy(
+            update={
+                "config": None,
+                "startra": start[0],
+                "startdec": start[1],
+                "startroll": start[2],
+                "endra": end[0],
+                "enddec": end[1],
+                "endroll": end[2],
+                "acs_config": self.acs_config.model_copy(
+                    update={"slew_constraint": tree}
+                ),
+            }
+        )
+        reference._predict_slew_constraint_avoiding(steps)
+        points = [
+            _quat_mul(rotation, np.asarray(q)) for q in reference.quaternion_waypoints()
+        ]
+        self._slew_segments = []
+        for first, second in zip(points, points[1:]):
+            distance, axis = _quaternion_delta(first, second)
+            self._slew_segments.append(_SlewSegment(distance, axis, first, second))
+        self.slewdist = sum(segment.distance_deg for segment in self._slew_segments)
+        self._rotation_axis_body = (
+            self._slew_segments[0].axis_body if len(self._slew_segments) == 1 else None
+        )
+        samples = [
+            quat_to_attitude(_quat_mul(rotation, attitude_to_quat(ra, dec, roll)))
+            for ra, dec, roll in zip(
+                *reference.slewpath, reference._quat_roll_path, strict=True
+            )
+        ]
+        self.slewpath = ([s[0] for s in samples], [s[1] for s in samples])
+        self._quat_roll_path = [s[2] for s in samples]
+        return True

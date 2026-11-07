@@ -305,13 +305,14 @@ class SequentialScheduler:
         """Build the plan entry for a selection and charge its exposure to the target."""
         target = selection.target
         assert target.exptime is not None
-        telescope = target.science_telescope() if _is_plan_entry(target) else None
         entry = PlanEntry(config=self.config)
         entry.ephem = self.ephem
         entry.ra = target.ra
         entry.dec = target.dec
         entry.roll = selection.roll
-        entry.instrument_name = telescope.name if telescope is not None else None
+        entry.instrument_name = (
+            target.science_instrument_name() if _is_plan_entry(target) else None
+        )
         if _is_plan_entry(target):
             entry.science_data = target.science_data
         entry.spacecraft_attitude = target.spacecraft_attitude
