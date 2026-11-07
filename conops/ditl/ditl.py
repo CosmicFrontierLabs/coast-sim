@@ -878,7 +878,7 @@ class DITL(DITLMixin, DITLStats):
                     self._unload_stored_momentum(utime, entry.obsid)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
-            self.acs.end_science_observation()
+            self.acs.end_science_observation(min(float(entry.end), utime))
         self._active_entry = None
 
     def _command_entry(self, entry: PlanEntry, utime: float) -> bool:
@@ -916,7 +916,7 @@ class DITL(DITLMixin, DITLStats):
     def _command_activity_entry(self, entry: PlanEntry, utime: float) -> None:
         """Hold the entry's attitude in IDLE for the activity, slewing to it
         first where the spacecraft is elsewhere."""
-        self.acs.end_science_observation()
+        self.acs.end_science_observation(utime)
         if entry.desaturation:
             self.acs.begin_desaturation()
         if entry.activity_hold_begin is None:
