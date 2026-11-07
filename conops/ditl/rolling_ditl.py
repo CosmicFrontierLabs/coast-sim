@@ -1,7 +1,7 @@
 """Simulate a spacecraft that follows a plan rebuilt on a rolling horizon."""
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
@@ -1164,8 +1164,8 @@ class RollingHorizonDITL(DITL):
     ) -> tuple[float, float, float] | None:
         """The stored momentum when the plan takes over at ``start``, in
         inertial coordinates, for the plan's forecast: the momentum now,
-        with what the committed activities add until then integrated at the
-        attitudes they hold, the spacecraft's own where none is under way.
+        with the committed ingress slews and holds integrated along their
+        body attitudes. Gaps hold the pose left by the preceding command.
         None where momentum is not tracked or no sample has set it yet."""
         tracker = self._stored_momentum_tracker
         if tracker is None:
@@ -1175,43 +1175,53 @@ class RollingHorizonDITL(DITL):
             return None
         if start <= utime:
             return (float(momentum[0]), float(momentum[1]), float(momentum[2]))
-        holds = sorted(
-            (
-                (float(e.begin), float(e.end), e)
-                for e in committed
-                if float(e.end) > utime and float(e.begin) < start
-            ),
-            key=lambda hold: hold[0],
-        )
-
-        def attitude_at(at: float) -> Attitude:
-            for begin, end, entry in holds:
-                if begin <= at < end:
-                    if entry.spacecraft_attitude is not None:
-                        return entry.spacecraft_attitude
-                    return (float(entry.ra), float(entry.dec), float(entry.roll))
-            return self.acs.predicted_attitude(at)
-
-        # Each committed dump that ends before the start unloads the wheels.
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
-        unloads = sorted(
-            float(e.end)
-            for e in committed
-            if e.desaturation and utime < float(e.end) <= start
-        )
         ahead = np.asarray(momentum, dtype=np.float64)
         cursor = utime
-        for at in [*unloads, start]:
-            if at > cursor:
-                after = self._forecast_momentum(
-                    cursor, at, attitude_at, start_eci_n_m_s=ahead
-                ).end_eci_n_m_s
-                if after is not None:
-                    ahead = after
-                cursor = at
-            if at < start or at in unloads:
-                if dump is not None and at in unloads:
-                    ahead = ahead * dump.residual_fraction
+        previous: Attitude = (
+            float(self.acs.ra),
+            float(self.acs.dec),
+            float(self.acs.roll),
+        )
+
+        def integrate(
+            end: float,
+            attitude_at: Callable[[float], Attitude],
+            slew: Slew | None = None,
+        ) -> None:
+            nonlocal ahead, cursor
+            if end <= cursor:
+                return
+            after = self._forecast_momentum(
+                cursor, end, attitude_at, start_eci_n_m_s=ahead, slew=slew
+            ).end_eci_n_m_s
+            if after is not None:
+                ahead = after
+            cursor = end
+
+        for entry in sorted(committed, key=lambda e: float(e.begin)):
+            if float(entry.end) <= utime or float(entry.begin) >= start:
+                continue
+            # Idle before an unflown command holds the preceding body pose.
+            integrate(min(start, float(entry.begin)), lambda at: previous)
+            slew = self._committed_slew(entry, previous, utime)
+            end = min(start, float(entry.end))
+            if slew is not None:
+                integrate(min(end, float(slew.slewend)), slew.attitude, slew)
+            pose = entry.spacecraft_attitude or entry.target_body_attitude()
+            integrate(end, lambda at: pose)
+            if (
+                dump is not None
+                and entry.desaturation
+                and utime < float(entry.end) <= start
+            ):
+                ahead = ahead * dump.residual_fraction
+            previous = (
+                self._rest_after(entry)[1]
+                if entry.moves or entry_obstype(entry) == ObsType.GSP
+                else pose
+            )
+        integrate(start, lambda at: previous)
         return (float(ahead[0]), float(ahead[1]), float(ahead[2]))
 
     def _committed_slew(
