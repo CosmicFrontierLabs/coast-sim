@@ -2941,7 +2941,6 @@ class PriorityScheduler:
         """Build the plan entry for one science snapshot."""
         target = request.pointing
         mounted = target.uses_mounted_attitude()
-        telescope = target.science_telescope()
         end = collection_end + self.ctx.post_collection_for(int(target.obsid))
         # A moving target's entry points where the target is when the slew
         # ends, where the executor takes up its track.
@@ -2949,7 +2948,7 @@ class PriorityScheduler:
         entry = PlanEntry(
             config=self.config,
             name=target.name,
-            instrument_name=telescope.name if telescope is not None else None,
+            instrument_name=target.science_instrument_name(),
             instrument_modes=dict(target.instrument_modes),
             own_timing=target.own_timing,
             track=list(target.track),

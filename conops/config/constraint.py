@@ -27,6 +27,7 @@ from .constants import (
     PANEL_CONSTRAINT,
     SUN_OCCULT,
 )
+from .frame import SpacecraftFrame
 
 # Cache precision for constraint results.
 # RA/Dec rounded to 0.01 deg (~36 arcsec) - small vs typical constraint zones (10+ deg)
@@ -229,6 +230,9 @@ class Constraint(ConfigModel):
     )
     _cache_hits: int = PrivateAttr(default=0)
     _cache_misses: int = PrivateAttr(default=0)
+    _body_frame_source: object | None = PrivateAttr(default=None)
+    _body_safety_key: tuple[object, ...] | None = PrivateAttr(default=None)
+    _body_safety: ConstraintConfig | None = PrivateAttr(default=None)
     _eclipse_constraint: rust_ephem.EclipseConstraint = PrivateAttr(
         default_factory=rust_ephem.EclipseConstraint
     )
@@ -310,6 +314,7 @@ class Constraint(ConfigModel):
         self.__dict__.pop("safety_constraint_config", None)
         self.__dict__.pop("roll_independent_constraint", None)
         self.__dict__.pop("roll_dependent_constraint", None)
+        self._body_safety_key = None
 
     @staticmethod
     def _combine_constraints(
@@ -352,17 +357,35 @@ class Constraint(ConfigModel):
         """Combined ground-contact attitude constraints."""
         return self._combine_constraints([self.ground_contact_constraint])
 
+    @property
+    def body_safety_constraint(self) -> ConstraintConfig | None:
+        """Default-boresight safety follows the bus frame, explicit hardware does not."""
+        frame = getattr(self._body_frame_source, "frame", None)
+        if self.safety_constraint is None or not isinstance(frame, SpacecraftFrame):
+            return self.safety_constraint
+        key = (id(self.safety_constraint), frame.boresight, frame.sun_side)
+        if key != self._body_safety_key:
+            self._body_safety = frame.constraint_in_body(self.safety_constraint)
+            self._body_safety_key = key
+            self._cache.clear()
+            for name in (
+                "hardware_safety_constraint_config",
+                "safety_constraint_config",
+                "constraint",
+            ):
+                self.__dict__.pop(name, None)
+        return self._body_safety
+
     @cached_property
     def hardware_safety_constraint_config(self) -> ConstraintConfig | None:
         """Combined hardware-safety constraints."""
-        return self._combine_constraints(
-            [
-                self.safety_constraint,
-                self.star_tracker_hard_constraint,
-                self.radiator_hard_constraint,
-                self.telescope_hard_constraint,
-            ]
-        )
+        components = [
+            self.body_safety_constraint,
+            self.star_tracker_hard_constraint,
+            self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
+        ]
+        return self._combine_constraints(components)
 
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
@@ -627,12 +650,14 @@ class Constraint(ConfigModel):
         if self.safety_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_explicit_safety"
+        safety = self.body_safety_constraint
+        assert safety is not None
         return self._cached_check(
             "explicit_safety",
             ra,
             dec,
             time,
-            self.safety_constraint,
+            safety,
             target_roll=target_roll,
         )
 
@@ -1037,7 +1062,7 @@ class Constraint(ConfigModel):
             decs,
             utime,
             [
-                self.safety_constraint,
+                self.body_safety_constraint,
                 self.star_tracker_hard_constraint,
                 self.radiator_hard_constraint,
                 self.telescope_hard_constraint,

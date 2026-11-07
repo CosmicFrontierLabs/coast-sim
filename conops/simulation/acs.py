@@ -22,6 +22,8 @@ from ..config import (
     MissionConfig,
     SolarArrayDriveState,
     SolarPanelSet,
+    SpacecraftFrame,
+    Telescope,
 )
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -29,7 +31,7 @@ from ..config.constraint import (
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_body_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from .acs_command import ACSCommand
 from .attitude import (
     Attitude,
@@ -160,6 +162,7 @@ class ACS:
         self._tracked_slew: Slew | None = None
         """The science slew whose moving target the executor is following."""
         self.saa = None
+        self._default_initial_pointing = True
 
     def _attitude_component(self, index: int) -> float:
         attitude = (
@@ -175,6 +178,7 @@ class ACS:
         values = list(self._initial_attitude)
         values[index] = float(value)
         self._initial_attitude = (values[0], values[1], values[2])
+        self._default_initial_pointing = False
 
     @property
     def ra(self) -> float:
@@ -213,15 +217,36 @@ class ACS:
     def _advance_attitude(self, utime: float) -> AttitudeExecutor:
         if self._executor is None:
             if not self._initial_roll_explicit:
-                self.roll = optimum_body_roll(
-                    self.ra,
-                    self.dec,
-                    utime,
-                    self.ephem,
-                    self.solar_panel,
-                    self.constraint,
-                    drive_state=self.solar_array_drive_state,
-                )
+                frame = getattr(self.config.spacecraft_bus, "frame", None)
+                if (
+                    self._default_initial_pointing
+                    and isinstance(frame, SpacecraftFrame)
+                    and not frame.is_identity
+                ):
+                    # The default direction describes the science boresight,
+                    # rather than physical +X in every declared frame. Explicit
+                    # user-supplied initial attitudes remain body coordinates.
+                    ra, dec = self.ra, self.dec
+                    roll = optimum_instrument_roll(
+                        ra,
+                        dec,
+                        utime,
+                        self.ephem,
+                        Telescope(mounting=frame.mounting),
+                        self.solar_panel,
+                        drive_state=self.solar_array_drive_state,
+                    )
+                    self._initial_attitude = frame.mounting.body_attitude(ra, dec, roll)
+                else:
+                    self.roll = optimum_body_roll(
+                        self.ra,
+                        self.dec,
+                        utime,
+                        self.ephem,
+                        self.solar_panel,
+                        self.constraint,
+                        drive_state=self.solar_array_drive_state,
+                    )
             executor = AttitudeExecutor(utime, self._initial_attitude)
             if (
                 self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
