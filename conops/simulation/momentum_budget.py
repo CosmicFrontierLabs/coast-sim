@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from math import floor
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 
 from ..common.ephemeris import position_vectors
@@ -157,7 +158,7 @@ class MomentumBudget:
         self,
         tracker: StoredMomentumTracker,
         state: AttitudeState,
-        torque: np.ndarray | None = None,
+        torque: npt.NDArray[np.float64] | None = None,
     ) -> MomentumSample:
         if not self.times[0] <= state.utime <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
@@ -173,7 +174,9 @@ class MomentumBudget:
         )
 
     @staticmethod
-    def _torque(sample: MomentumSample, state: AttitudeState) -> np.ndarray:
+    def _torque(
+        sample: MomentumSample, state: AttitudeState
+    ) -> npt.NDArray[np.float64]:
         return np.asarray(
             quaternion_to_rotation_matrix(state.quaternion).T
             @ np.asarray(sample.gravity_gradient_torque_body_n_m)
@@ -184,7 +187,7 @@ class MomentumBudget:
         state_at: Callable[[float], AttitudeState],
         start: float,
         end: float,
-        momentum: np.ndarray,
+        momentum: npt.NDArray[np.float64],
     ) -> bool:
         """Bound slew/braking/coast demand between acceleration boundaries.
 
@@ -241,7 +244,7 @@ class MomentumBudget:
         base: MomentumForecast,
         end: float,
         *,
-        torque: np.ndarray | None = None,
+        torque: npt.NDArray[np.float64] | None = None,
     ) -> MomentumForecast:
         previous, state = path.state_at(base.utime), path.state_at(end)
         tracker = base.tracker.copy()

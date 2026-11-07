@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from conops import DITL, QueueDITL, create_ditl
-from conops.config import MissionConfig, TargetConfig
+from conops.config import MissionConfig, ObservationTiming, TargetConfig
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import (
@@ -507,6 +507,60 @@ class TestDispatch:
         assert target.collected_seconds == 13 * MIN
         target.exptime = 0
         assert not target.done
+
+    def test_a_window_is_done_only_by_one_uninterrupted_attempt(self) -> None:
+        """Two cut attempts that together exceed a visit do not complete
+        the window; the science of both still counts."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        begin = STARTS[0] + 60.0
+        target.record_collection(begin + 354.0, 354.0)
+        target.record_interruption(begin + 354.0)
+        target.record_collection(begin + 900.0, 506.0)
+        target.record_interruption(begin + 900.0)
+        assert target.visits_done == set()
+        assert target.next_visit(begin + 900.0) == 0
+        assert target.collected_seconds == 860.0
+        target.record_collection(begin + 1600.0, VISIT * MIN)
+        target.record_interruption(begin + 1600.0)
+        assert target.visits_done == {0}
+
+    def test_a_visit_pointing_keeps_the_targets_own_timing(self) -> None:
+        config = _config(HOURS)
+        target = _timed_target(config)
+        target.own_timing = ObservationTiming(setup_seconds=600)
+        target.visit_windows = [
+            VisitWindow(start=w.start, deadline=w.deadline, roll_offset_deg=0.0)
+            for w in WINDOWS
+        ]
+        visit = target.visit_pointing(0)
+        assert visit is not target
+        assert visit.own_timing == target.own_timing
+        assert visit.observation_timing.setup_seconds == 600
+
+    def test_a_window_pointing_is_observed_where_the_target_is_not_visible(
+        self,
+    ) -> None:
+        """The parent's own coordinates are constrained; each window points
+        at the visible patch, so every visit is taken there."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        target.ra, target.dec = 210.0, -15.0
+        target.visit_windows = [
+            VisitWindow(
+                start=w.start, deadline=w.deadline, ra=PATCH[0][0], dec=PATCH[0][1]
+            )
+            for w in WINDOWS
+        ]
+        assert target.visible(STARTS[0], STARTS[0]) is False
+        ditl = create_ditl(config, [target, *_fillers(config)], BEGIN, END)
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        assert ditl.calc()
+        visits = _visits(ditl.plan)
+        assert len(visits) == 3
+        _in_windows(visits)
+        assert all((e.ra, e.dec) == pytest.approx(PATCH[0]) for e in visits)
 
     def test_a_rolling_horizon_run_keeps_the_visits_in_their_windows(self) -> None:
         config = _config(HOURS)

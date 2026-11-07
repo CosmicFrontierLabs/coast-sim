@@ -4,6 +4,7 @@ from functools import cached_property, lru_cache
 from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import ConfigDict, Field, PrivateAttr, field_validator
 from rust_ephem.constraints import (
@@ -217,7 +218,7 @@ class Constraint(ConfigModel):
     bestroll: float = Field(
         default=0.0, exclude=True, description="Best roll angle for optimization"
     )
-    bestpointing: np.ndarray = Field(
+    bestpointing: npt.NDArray[np.float64 | np.int_] = Field(
         default_factory=lambda: np.array([-1, -1, -1]),
         exclude=True,
         description="Best pointing vector for optimization",
@@ -904,7 +905,7 @@ class Constraint(ConfigModel):
         utime: float,
         constraint_types: list[ConstraintConfig | None],
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         if not ras:
             return np.zeros(0, dtype=bool)
 
@@ -923,7 +924,7 @@ class Constraint(ConfigModel):
         dt = dtutcfromtimestamp(utime)
 
         # Check all constraint types and OR the results
-        violations: np.ndarray | None = None
+        violations: npt.NDArray[np.bool_] | None = None
         for constraint_func in constraint_types:
             if constraint_func is None:
                 continue
@@ -949,7 +950,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check imaging-quality and power-generation constraints."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -974,7 +975,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check imaging-quality constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -998,7 +999,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check power-generation constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -1014,7 +1015,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check ground-contact constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -1030,7 +1031,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check hardware-safety constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -1051,7 +1052,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check hardware-safety constraints for multiple pointings."""
         return self.in_safety_constraint_batch(
             ras, decs, utime, target_rolls=target_rolls
@@ -1063,7 +1064,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check all built-in attitude constraint scopes.
 
         Uses batch evaluation via rust_ephem's in_constraint_batch() API,
@@ -1714,9 +1715,9 @@ def in_attitude_constraint_scopes_batch(
     decs: list[float],
     utime: float,
     target_rolls: list[float] | None = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.bool_]:
     """Check multiple pointings against configured scopes."""
-    violations = np.zeros(len(ras), dtype=bool)
+    violations: npt.NDArray[np.bool_] = np.zeros(len(ras), dtype=bool)
     for scope in _attitude_scope_values(scopes):
         if scope == AttitudeConstraintScope.HARDWARE_SAFETY.value:
             scoped = constraint.in_hardware_safety_constraint_batch(

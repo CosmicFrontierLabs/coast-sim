@@ -112,6 +112,7 @@ class Pointing(PlanEntry):
     _merit_breakdown: MeritBreakdown | None = PrivateAttr(default=None)
     _visits_done: set[int] = PrivateAttr(default_factory=set)
     _visit_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
+    _visit_attempt_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
     _visit_parent: "Pointing | None" = PrivateAttr(default=None)
 
     @field_validator("deadline", "earliest_start", mode="before")
@@ -228,11 +229,13 @@ class Pointing(PlanEntry):
             instrument_name=self.instrument_name,
             science_data=dict(self.science_data),
             instrument_modes=dict(self.instrument_modes),
+            own_timing=self.own_timing,
             sequence=self.sequence,
             ss_min=self.ss_min,
             ss_max=self.ss_max,
             earliest_start=window.start,
             deadline=window.deadline,
+            protect_opening=self.protect_opening,
             visit=index,
             roll_deg=roll_deg,
             roll_offset_deg=roll_offset,
@@ -313,6 +316,9 @@ class Pointing(PlanEntry):
                 self._visit_seconds[index] = (
                     self._visit_seconds.get(index, 0.0) + seconds
                 )
+                self._visit_attempt_seconds[index] = (
+                    self._visit_attempt_seconds.get(index, 0.0) + seconds
+                )
                 self._visits_done.add(index)
             self._exposure_is_the_visits_left()
 
@@ -329,19 +335,19 @@ class Pointing(PlanEntry):
 
     def record_interruption(self, utime: float) -> None:
         """A visit cut short is taken again, whole, while its window is
-        open: the window counts as visited only once a whole visit's science
-        has been collected in it. The science collected still counts."""
+        open: the window counts as visited only once one attempt has
+        collected a whole visit's science in it, uninterrupted. The science
+        every attempt collected still counts."""
         super().record_interruption(utime)
         if self._visit_parent is not None:
             self._visit_parent.record_interruption(utime)
         if self.visit_windows:
             index = self.visit_index_at(utime)
-            if (
-                index is not None
-                and self._visit_seconds.get(index, 0.0) < self.per_visit_seconds - 1e-6
-            ):
-                self._visits_done.discard(index)
-                self._exposure_is_the_visits_left()
+            if index is not None:
+                attempt = self._visit_attempt_seconds.pop(index, 0.0)
+                if attempt < self.per_visit_seconds - 1e-6:
+                    self._visits_done.discard(index)
+                    self._exposure_is_the_visits_left()
 
     def visit_complete(self, index: int) -> bool:
         """Whether a whole visit's science has been collected in window ``index``."""

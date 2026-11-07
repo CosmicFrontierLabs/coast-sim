@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import resources
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from shapely import Point, Polygon
 
@@ -23,7 +24,7 @@ class SAA:
     ephem: rust_ephem.Ephemeris | None
     year: int | None
     day: int | None
-    saatimes: np.ndarray
+    saatimes: npt.NDArray[np.float64]
     calculated: bool
     saapoly: Polygon
 
@@ -81,7 +82,7 @@ class SAA:
         if not self.calculated:
             self.calc()
 
-    def get_saa_times(self) -> np.ndarray:
+    def get_saa_times(self) -> npt.NDArray[np.float64]:
         self._ensure_calculated()
         return self.saatimes
 

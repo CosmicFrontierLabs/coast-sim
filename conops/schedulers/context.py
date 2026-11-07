@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 
 from ..common import ACSMode, ObsType
@@ -121,7 +122,7 @@ class SchedulingContext:
         steps = np.floor((utime - self.origin) / self.step_size + 1e-9)
         return self.origin + float(steps) * self.step_size
 
-    def steps(self, begin: float, end: float) -> np.ndarray:
+    def steps(self, begin: float, end: float) -> npt.NDArray[np.float64]:
         """Return the grid steps in ``[begin, end)``."""
         first = self.ceil_step(begin)
         if first >= end:

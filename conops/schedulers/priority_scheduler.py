@@ -1497,6 +1497,9 @@ class PriorityScheduler:
         """
         begin = max(activity.begin, self.ctx.ustart)
         end = min(activity.end, self.ctx.uend)
+        # An activity under way at the plan's start put its data on the
+        # recorder when it began; its continuation here adds none.
+        continuation = activity.begin < self.ctx.ustart
         activity = activity.model_copy(
             update={"begin": begin, "duration_seconds": end - begin}
         )
@@ -1533,6 +1536,8 @@ class PriorityScheduler:
             )
             return
         entry = activity.plan_entry(self.config, attitude)
+        if continuation:
+            entry.fixed_data_gb = 0.0
         # An activity that may slide, or that waits for another, is reserved
         # from its latest start to its latest end, so science before it may
         # run into its window and nothing is placed where it may still be;

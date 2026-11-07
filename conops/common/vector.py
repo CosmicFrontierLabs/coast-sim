@@ -1,5 +1,6 @@
 from collections.abc import Callable, Sequence
 from math import sin
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
@@ -178,7 +179,10 @@ def roll_over_angle(
     around the circle. This is critical for slew paths that cross near the poles
     where RA can change rapidly.
     """
-    return np.unwrap(np.asarray(angles, dtype=np.float64), period=360.0)
+    return cast(
+        npt.NDArray[np.float64],
+        np.unwrap(np.asarray(angles, dtype=np.float64), period=360.0),
+    )
 
 
 def vec2radec(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -547,7 +551,7 @@ def quaternion_distances(
     )
     shorter = np.minimum(apart, together)
     longer = np.maximum(apart, together)
-    return np.rad2deg(4.0 * np.arctan2(shorter, longer))
+    return cast(npt.NDArray[np.float64], np.rad2deg(4.0 * np.arctan2(shorter, longer)))
 
 
 def _quat_mul(
@@ -848,7 +852,7 @@ def constraint_avoiding_waypoint(
         return None
 
     # Compute great circle plane normal
-    n = vecnorm(np.cross(a, b))
+    n = vecnorm(cast(npt.NDArray[np.float64], np.cross(a, b)))
     n_norm = np.linalg.norm(n)
 
     if n_norm < 1e-12:
@@ -905,7 +909,7 @@ def constraint_avoiding_waypoint(
     offset_rad = np.deg2rad(margin_deg)
 
     # Two perpendicular directions relative to the arc plane
-    away_dir1 = vecnorm(np.cross(n, c))
+    away_dir1 = vecnorm(cast(npt.NDArray[np.float64], np.cross(n, c)))
     away_dir2 = -away_dir1
 
     w1 = vecnorm(np.cos(offset_rad) * c + np.sin(offset_rad) * away_dir1)

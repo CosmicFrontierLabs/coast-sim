@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 from functools import cached_property
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
@@ -167,11 +168,11 @@ class StarTrackerOrientation(ConfigModel):
             second = np.cross(np.array([1.0, 0.0, 0.0]), bore)
 
         # Normalize second axis
-        second = vecnorm(second)
+        second = vecnorm(cast(npt.NDArray[np.float64], second))
 
         # Third axis: perpendicular to both boresight and second
         third = np.cross(bore, second)
-        third = vecnorm(third)
+        third = vecnorm(cast(npt.NDArray[np.float64], third))
 
         # Compose rotation matrix: columns are the new basis vectors
         return np.column_stack([bore, second, third])

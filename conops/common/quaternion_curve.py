@@ -9,15 +9,17 @@ both envelopes over whole intervals, not just a grid of evaluation times.
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from math import comb, isclose, isfinite
+from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 from numpy.polynomial.polynomial import polyval
 
 from .vector import _quat_mul
 
 
 @lru_cache(maxsize=16)
-def _bernstein_matrix(degree: int) -> np.ndarray:
+def _bernstein_matrix(degree: int) -> npt.NDArray[np.float64]:
     return np.asarray(
         [
             [comb(k, i) / comb(degree, i) if i <= k else 0 for i in range(degree + 1)]
@@ -26,7 +28,9 @@ def _bernstein_matrix(degree: int) -> np.ndarray:
     )
 
 
-def _split(coefficients: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _split(
+    coefficients: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Subdivide Bernstein control coefficients at the interval midpoint."""
     left, right = np.empty_like(coefficients), np.empty_like(coefficients)
     left[0], right[-1] = coefficients[0], coefficients[-1]
@@ -37,7 +41,10 @@ def _split(coefficients: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _certify(
-    denominator: np.ndarray, numerator: np.ndarray, power: int, depth: int = 0
+    denominator: npt.NDArray[np.float64],
+    numerator: npt.NDArray[np.float64],
+    power: int,
+    depth: int = 0,
 ) -> bool:
     """Prove ||numerator|| <= denominator**power via interval subdivision.
 
@@ -82,7 +89,7 @@ class QuaternionHermite:
             raise ValueError("Curve endpoint rates must be finite")
 
     @cached_property
-    def _coefficients(self) -> np.ndarray:
+    def _coefficients(self) -> npt.NDArray[np.float64]:
         q0, q1 = np.asarray(self.first), np.asarray(self.last)
         if np.dot(q0, q1) < 0:
             q1 = -q1
@@ -99,7 +106,11 @@ class QuaternionHermite:
         )
 
     @cached_property
-    def _polynomials(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _polynomials(
+        self,
+    ) -> tuple[
+        npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
         p = self._coefficients
         # Ascending-power coefficients have fixed sizes: p is cubic, |p|²
         # degree six, and the rate numerator degree five. Direct convolution
@@ -128,18 +139,25 @@ class QuaternionHermite:
         accel /= self.duration
         return norm, rate, accel
 
-    def evaluate(self, fraction: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def evaluate(
+        self, fraction: float
+    ) -> tuple[
+        npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
         q = polyval(fraction, self._coefficients)
         norm, rate, acceleration = self._polynomials
         denominator = float(polyval(fraction, norm))
         return (
-            q / np.sqrt(denominator),
-            polyval(fraction, rate) / denominator,
-            polyval(fraction, acceleration) / denominator**2,
+            cast(npt.NDArray[np.float64], q / np.sqrt(denominator)),
+            cast(npt.NDArray[np.float64], polyval(fraction, rate) / denominator),
+            cast(
+                npt.NDArray[np.float64],
+                polyval(fraction, acceleration) / denominator**2,
+            ),
         )
 
     @cached_property
-    def _rotation_polynomial(self) -> np.ndarray:
+    def _rotation_polynomial(self) -> npt.NDArray[np.float64]:
         """Numerator of R_eci_to_body; the denominator is |p|²."""
         p = self._coefficients
         scalar = np.convolve(p[:, 0], p[:, 0]) - sum(
@@ -159,8 +177,8 @@ class QuaternionHermite:
         self,
         first: float,
         last: float,
-        inertia: np.ndarray,
-        momentum_eci: np.ndarray,
+        inertia: npt.NDArray[np.float64],
+        momentum_eci: npt.NDArray[np.float64],
         capacity: float,
     ) -> bool:
         """Bound actuator demand over a subinterval, not just its endpoints.

@@ -4,6 +4,7 @@ from functools import cached_property, lru_cache
 from typing import Literal, NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -70,14 +71,18 @@ def _cached_pass_attitude_delta(
     return quaternion_attitude_delta(*start, *end)
 
 
-def _unit_vector_or_none(vector: np.ndarray) -> np.ndarray | None:
+def _unit_vector_or_none(
+    vector: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64] | None:
     norm = float(np.linalg.norm(vector))
     if norm < 1e-12:
         return None
     return vector / norm
 
 
-def _perpendicular_reference(axis: np.ndarray) -> np.ndarray | None:
+def _perpendicular_reference(
+    axis: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64] | None:
     for candidate in (
         np.array([0.0, 0.0, 1.0], dtype=float),
         np.array([1.0, 0.0, 0.0], dtype=float),
@@ -91,8 +96,8 @@ def _perpendicular_reference(axis: np.ndarray) -> np.ndarray | None:
 
 
 def _rotate_about_axis(
-    vector: np.ndarray, axis: np.ndarray, angle_deg: float
-) -> np.ndarray:
+    vector: npt.NDArray[np.float64], axis: npt.NDArray[np.float64], angle_deg: float
+) -> npt.NDArray[np.float64]:
     angle_rad = np.deg2rad(angle_deg)
     rotated = (
         vector * np.cos(angle_rad)
@@ -103,8 +108,8 @@ def _rotate_about_axis(
 
 
 def _tracking_phase_reference_eci(
-    target_vector: np.ndarray, phase_deg: float
-) -> np.ndarray | None:
+    target_vector: npt.NDArray[np.float64], phase_deg: float
+) -> npt.NDArray[np.float64] | None:
     target_axis = _unit_vector_or_none(np.asarray(target_vector, dtype=float))
     if target_axis is None:
         return None
@@ -115,9 +120,9 @@ def _tracking_phase_reference_eci(
 
 
 class StationGeometry(NamedTuple):
-    elevation_deg: np.ndarray
-    range_km: np.ndarray
-    to_station: np.ndarray
+    elevation_deg: npt.NDArray[np.float64]
+    range_km: npt.NDArray[np.float64]
+    to_station: npt.NDArray[np.float64]
 
 
 class Pass(BaseModel):
@@ -567,8 +572,8 @@ class PassTimes(ContactScheduler):
         self.dropped_constraint_passes: list[Pass] = []
         self.length = 1
         self._geometry: dict[str, StationGeometry] = {}
-        self._rates: dict[str, np.ndarray] = {}
-        self._routed_rates: dict[tuple[str, str | None], np.ndarray] = {}
+        self._rates: dict[str, npt.NDArray[np.float64]] = {}
+        self._routed_rates: dict[tuple[str, str | None], npt.NDArray[np.float64]] = {}
 
         # Ground stations registry from config
         if config.ground_stations is None:
@@ -580,7 +585,7 @@ class PassTimes(ContactScheduler):
         return self.passes[number]
 
     @cached_property
-    def times(self) -> np.ndarray:
+    def times(self) -> npt.NDArray[np.float64]:
         """Unix timestamps converted once, when prediction first needs them."""
         return np.array([t.timestamp() for t in self.ephem.timestamp])
 
@@ -654,13 +659,13 @@ class PassTimes(ContactScheduler):
 
     def routed_rates(
         self, station: GroundStation, store: str | None = None
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.float64]:
         """Reserved Mbps by step on the routed band, cached once per store/station."""
         key = (station.code, store)
         cached = self._routed_rates.get(key)
         if cached is not None:
             return cached
-        rates = np.zeros(len(self.times))
+        rates: npt.NDArray[np.float64] = np.zeros(len(self.times))
         storage = self.config.data_storage
         communications = self.config.spacecraft_bus.communications
         if storage is not None and communications is not None:
@@ -675,7 +680,7 @@ class PassTimes(ContactScheduler):
                         station, 0, len(self.times)
                     ).range_km
 
-                    def values(band: BandCapability) -> np.ndarray:
+                    def values(band: BandCapability) -> npt.NDArray[np.float64]:
                         table = band.downlink_rate_vs_range_km
                         return (
                             np.full(len(distances), band.downlink_rate_mbps)
@@ -756,7 +761,7 @@ class PassTimes(ContactScheduler):
     def _tracking_attitude_profile_for_phase(
         self,
         antenna_boresight: tuple[float, float, float],
-        target_vectors: np.ndarray,
+        target_vectors: npt.NDArray[np.float64],
         phase_deg: float,
     ) -> list[tuple[float, float, float]] | None:
         attitude_profile: list[tuple[float, float, float]] = []
@@ -777,7 +782,7 @@ class PassTimes(ContactScheduler):
     def _fixed_phase_tracking_attitude_profiles(
         self,
         antenna_boresight: tuple[float, float, float],
-        target_vectors: np.ndarray,
+        target_vectors: npt.NDArray[np.float64],
         track_utime: list[float],
     ) -> tuple[
         list[tuple[float, float, float]] | None,
@@ -806,7 +811,7 @@ class PassTimes(ContactScheduler):
     def _safe_tracking_attitudes_by_sample(
         self,
         antenna_boresight: tuple[float, float, float],
-        target_vectors: np.ndarray,
+        target_vectors: npt.NDArray[np.float64],
         track_utime: list[float],
     ) -> list[dict[float, tuple[float, float, float]]] | None:
         safe_attitudes: list[dict[float, tuple[float, float, float]]] = []
@@ -854,7 +859,9 @@ class PassTimes(ContactScheduler):
         previous: dict[float, tuple[float, float, float]],
         current: dict[float, tuple[float, float, float]],
         dt: float,
-    ) -> tuple[list[float], list[float], np.ndarray, np.ndarray]:
+    ) -> tuple[
+        list[float], list[float], npt.NDArray[np.bool_], npt.NDArray[np.float64]
+    ]:
         """:meth:`_step_motion_feasible` and the angular distance for every
         pair of attitudes at two consecutive samples, by phase.
 
@@ -1035,7 +1042,7 @@ class PassTimes(ContactScheduler):
     def _constraint_safe_tracking_attitude_profiles(
         self,
         antenna_boresight: tuple[float, float, float],
-        target_vectors: np.ndarray,
+        target_vectors: npt.NDArray[np.float64],
         track_utime: list[float],
     ) -> tuple[list[list[tuple[float, float, float]]], bool] | None:
         fallback_profile, fixed_phase_profiles = (
@@ -1070,7 +1077,7 @@ class PassTimes(ContactScheduler):
     def _constraint_safe_tracking_attitude_profile(
         self,
         antenna_boresight: tuple[float, float, float],
-        target_vectors: np.ndarray,
+        target_vectors: npt.NDArray[np.float64],
         track_utime: list[float],
     ) -> tuple[list[tuple[float, float, float]], bool] | None:
         """Return the preferred profile for callers that do not select an ingress."""
@@ -1094,7 +1101,7 @@ class PassTimes(ContactScheduler):
         station: GroundStation,
         startindex: int,
         endindex: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Compute elevation angle and target-direction unit vectors for a station.
 
         Uses a fast vectorized Earth-limb approach: the angle from the ground
@@ -1165,8 +1172,8 @@ class PassTimes(ContactScheduler):
         startindex: int,
         endindex: int,
         *,
-        out: np.ndarray | None = None,
-    ) -> np.ndarray:
+        out: npt.NDArray[np.float64] | None = None,
+    ) -> npt.NDArray[np.float64]:
         """Effective Mbps per ephemeris step, zero below the elevation mask."""
         cached = self._rates.get(station.code)
         if cached is not None:
@@ -1196,8 +1203,8 @@ class PassTimes(ContactScheduler):
         startindex: int,
         start_idx: int,
         end_idx: int,
-        timestamp_unix: np.ndarray,
-        gs_to_sat_unit: np.ndarray,
+        timestamp_unix: npt.NDArray[np.float64],
+        gs_to_sat_unit: npt.NDArray[np.float64],
         apply_scheduling: bool = True,
         booked_window: tuple[float, float] | None = None,
     ) -> tuple[Pass, bool] | None:
@@ -1362,7 +1369,7 @@ class PassTimes(ContactScheduler):
 
     def _predict_range(
         self,
-        timestamp_unix: np.ndarray,
+        timestamp_unix: npt.NDArray[np.float64],
         startindex: int,
         endindex: int,
         apply_scheduling: bool,

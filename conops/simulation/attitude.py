@@ -11,6 +11,7 @@ from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common.motion import RestToRestMotion
 from ..common.quaternion_curve import QuaternionHermite
@@ -69,11 +70,13 @@ class AttitudeState:
         return float(ra) % 360.0, float(dec), float(roll) % 360.0
 
 
-def _vector(values: np.ndarray) -> Attitude:
+def _vector(values: npt.NDArray[np.float64]) -> Attitude:
     return float(values[0]), float(values[1]), float(values[2])
 
 
-def _body_rotation(quaternion: Quaternion, angle_body: np.ndarray) -> Quaternion:
+def _body_rotation(
+    quaternion: Quaternion, angle_body: npt.NDArray[np.float64]
+) -> Quaternion:
     angle = float(np.linalg.norm(angle_body))
     if angle == 0:
         return quaternion

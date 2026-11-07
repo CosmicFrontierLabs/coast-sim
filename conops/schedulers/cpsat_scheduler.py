@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common import ACSMode
 from ..common.vector import quaternion_attitude_delta
@@ -286,7 +287,7 @@ class _ChunkModel:
     def __init__(
         self,
         tasks: Sequence[_Task],
-        slews: np.ndarray,
+        slews: npt.NDArray[np.int64],
         step: int,
         chunk_seconds: int,
         budget: dict[int, float],
@@ -1674,7 +1675,7 @@ class CpSatScheduler(LocalSearchScheduler):
         tasks: Sequence[_Task],
         planned: dict[WindowKey, list[_PlannedSnapshot]],
         origin_time: float,
-        slews: np.ndarray,
+        slews: npt.NDArray[np.int64],
         budget: dict[int, float],
         chunk_seconds: int,
     ) -> dict[int, _TaskHint]:
@@ -1783,7 +1784,7 @@ class CpSatScheduler(LocalSearchScheduler):
                 spans.append(_Span((obsid, n), (lo, hi), rate))
         return spans
 
-    def _slews(self, tasks: Sequence[_Task]) -> np.ndarray:
+    def _slews(self, tasks: Sequence[_Task]) -> npt.NDArray[np.int64]:
         """Seconds of the scheduled slew from each task to each other task."""
         acs = self.config.spacecraft_bus.attitude_control
         size = len(tasks)

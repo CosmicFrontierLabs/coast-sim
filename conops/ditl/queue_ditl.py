@@ -302,6 +302,8 @@ class QueueDITL(DITLMixin, DITLStats):
         ends when one begins, the spacecraft holds its attitude in IDLE for
         its length, and no observation starts before it ends."""
         self._active_activity: ScheduledActivity | None = None
+        self._activities_left: list[ScheduledActivity] = list(self.activities)
+        """The activities that have not begun, in time order."""
         self._activity_started: float = 0.0
         self._activity_end: float = 0.0
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -1162,14 +1164,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self._end_activity(utime)
             changed = True
         if self._active_activity is None:
-            due = next(
-                (
-                    a
-                    for a in self.activities
-                    if a.begin <= utime and a.begin > self._activity_started
-                ),
-                None,
-            )
+            due = next((a for a in self._activities_left if a.begin <= utime), None)
             if due is not None:
                 waits_for = self._activity_waits_for(due, utime)
                 if waits_for is not None:
@@ -1231,6 +1226,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
         self.acs.end_science_observation()
         self._add_activity_data(float(activity.data_gb), activity)
+        self._activities_left = [a for a in self._activities_left if a is not activity]
         self._active_activity = activity
         self._activity_started = utime
         self._activity_attitude = attitude
@@ -1288,11 +1284,7 @@ class QueueDITL(DITLMixin, DITLStats):
         latest start where it may slide, since an observation may run until
         then."""
         return next(
-            (
-                a.latest_start
-                for a in self.activities
-                if a.latest_start > after and a.begin > self._activity_started
-            ),
+            (a.latest_start for a in self._activities_left if a.latest_start > after),
             None,
         )
 
@@ -1300,12 +1292,7 @@ class QueueDITL(DITLMixin, DITLStats):
         """An activity due now that has not begun: one that slides is
         waiting for the observation under way, and nothing starts before it."""
         return next(
-            (
-                a
-                for a in self.activities
-                if a.begin <= utime < a.latest_start
-                and a.begin > self._activity_started
-            ),
+            (a for a in self._activities_left if a.begin <= utime < a.latest_start),
             None,
         )
 

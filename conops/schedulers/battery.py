@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
@@ -97,7 +98,7 @@ class _Stretch(NamedTuple):
     end: float
     attitude: Attitude | None
     """The charging attitude; None if no valid one was found."""
-    charge: np.ndarray
+    charge: npt.NDArray[np.float64]
     """Net charge rate, in watts, at each grid step of the run while the
     attitude is allowed; 0 from the first step it is not."""
 
@@ -212,7 +213,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             + self.step_size * np.ceil((begin - self.origin) / self.step_size - 1e-9)
         )
 
-    def steps(self, begin: float, end: float) -> np.ndarray:
+    def steps(self, begin: float, end: float) -> npt.NDArray[np.float64]:
         """The grid steps in ``[begin, end)``."""
         first = self._first_step(begin)
         if first >= end:

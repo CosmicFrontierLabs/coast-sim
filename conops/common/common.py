@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 import numpy as np
+import numpy.typing as npt
 
 from .enums import ACSMode
 
@@ -69,7 +70,9 @@ def dtutcfromtimestamp(timestamp: float) -> datetime:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
 
-def find_boundaries(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def find_boundaries(
+    mask: npt.NDArray[np.bool_],
+) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
     """Find contiguous True runs in a boolean mask.
 
     Returns (starts, ends) index arrays such that mask[starts[i]:ends[i]] is

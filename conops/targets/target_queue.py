@@ -318,7 +318,14 @@ class TargetQueue:
         utime = self.utime
         if getattr(target, "_vis_cache_utime", None) != utime:
             target._vis_cache_utime = utime  # type: ignore[attr-defined]
-            target._vis_cache_result = target.visible(utime, utime)  # type: ignore[attr-defined]
+            # A windowed target is checked at the visit it would be selected
+            # for now, which its window may point elsewhere.
+            visit = (
+                target.visit_pointing(target.next_visit(utime))
+                if isinstance(getattr(target, "visit_windows", None), list)
+                else target
+            )
+            target._vis_cache_result = visit.visible(utime, utime)  # type: ignore[attr-defined]
         return getattr(target, "_vis_cache_result", None) is not False
 
     def _target_tie_breaker(self, target: Pointing) -> int:
@@ -642,7 +649,14 @@ class TargetQueue:
         for other in self.targets:
             if other.done or other.merit <= 0:
                 continue
-            protected = self._protected_start(other, utime, allowance)
+            # A windowed request is kept for the visit it would be selected
+            # for now, which its window may point elsewhere.
+            visit = (
+                other.visit_pointing(other.next_visit(utime))
+                if isinstance(getattr(other, "visit_windows", None), list)
+                else other
+            )
+            protected = self._protected_start(visit, utime, allowance)
             if protected is None:
                 continue
             if protected <= utime:

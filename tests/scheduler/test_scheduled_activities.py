@@ -309,6 +309,24 @@ class TestDispatch:
                 or float(entry.begin) >= CALIBRATION.end
             )
 
+    def test_activities_with_the_same_start_both_run(self) -> None:
+        """Each activity runs once, in order, however late its predecessor
+        pushes it: an activity due during another begins when that ends."""
+        config = _config(HOURS)
+        first = ScheduledActivity(name="First", begin=T0 + 600, duration_seconds=600)
+        same = ScheduledActivity(name="Same", begin=T0 + 600, duration_seconds=300)
+        later = ScheduledActivity(name="Later", begin=T0 + 900, duration_seconds=300)
+        ditl = create_ditl(
+            config, _targets(config), BEGIN, END, activities=[first, same, later]
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        entries = _activities(ditl.plan)
+        assert [e.name for e in entries] == ["First", "Same", "Later"]
+        for earlier, following in zip(entries, entries[1:]):
+            assert float(following.begin) >= float(earlier.end)
+            assert float(following.end) - float(following.begin) == 300
+
 
 def _slow_slew_run(
     activities: list[ScheduledActivity],
@@ -435,6 +453,27 @@ class TestRolling:
         assert _science(ditl.plan)
         for entry in _science(ditl.plan):
             assert not _overlaps(entry, activity)
+
+    def test_an_activity_across_horizons_stores_its_data_once(self) -> None:
+        config = _config(2)
+        activity = ScheduledActivity(
+            name="Maintenance", begin=T0 + 600, duration_seconds=HOUR, data_gb=1.5
+        )
+        ditl = RollingHorizonDITL(
+            config,
+            [_target(config, 100, *PATCH[0], minutes=60, snapshot=5)],
+            begin=BEGIN,
+            end=BEGIN + timedelta(hours=2),
+            horizon=timedelta(minutes=30),
+            replan_interval=timedelta(minutes=15),
+            activities=[activity],
+        )
+        ditl.step_size = STEP
+        assert ditl.calc()
+        entries = _activities(ditl.plan)
+        assert len(entries) > 1
+        assert sum(e.fixed_data_gb for e in entries) == 1.5
+        assert ditl.recorder.current_volume_gb == pytest.approx(1.5)
 
     def test_each_plan_reserves_the_activities(self) -> None:
         config = _config(HOURS)

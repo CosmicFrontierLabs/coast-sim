@@ -234,7 +234,7 @@ class StationCoverage:
         """How many contacts began after a gap with no station in view."""
         self.repoints: list[Repoint] = []
         """Every repoint of the antenna over the ephemeris, in time order."""
-        self._last_pointing: np.ndarray | None = None
+        self._last_pointing: npt.NDArray[np.float64] | None = None
         self._schedule_passes(scheduled_passes)
         self._schedule_contacts()
         self._begins = [span.begin for span in self.contacts]
@@ -394,7 +394,7 @@ class StationCoverage:
         if end > cursor:
             self.contacts.append(self._span(station, cursor, end))
 
-    def _pointed(self, repoint: Repoint, pointing: np.ndarray) -> Repoint:
+    def _pointed(self, repoint: Repoint, pointing: npt.NDArray[np.float64]) -> Repoint:
         """``repoint`` with its pointing and the turn from the previous one."""
         norm = float(np.linalg.norm(pointing))
         if norm == 0.0:
@@ -412,7 +412,10 @@ class StationCoverage:
 
     def _repoint_arcs(
         self, station: int, begin: float, end: float
-    ) -> tuple[np.ndarray | None, list[tuple[float, float, np.ndarray]]]:
+    ) -> tuple[
+        npt.NDArray[np.float64] | None,
+        list[tuple[float, float, npt.NDArray[np.float64]]],
+    ]:
         """Where the antenna points from the contact's start, and each tracking
         repoint within the contact: when, until when, and where it points.
 
@@ -425,7 +428,7 @@ class StationCoverage:
         antenna points at the station at each repoint, at the table's
         interval.
         """
-        tracking: list[tuple[float, float, np.ndarray]] = []
+        tracking: list[tuple[float, float, npt.NDArray[np.float64]]] = []
         if not self.repointing:
             return None, tracking
         directions = self._to_station[station]
@@ -446,7 +449,7 @@ class StationCoverage:
         threshold = self.repoint_threshold_deg + 1e-9
         last = self.index(end - 1e-6)
 
-        def centre(a: int, b: int) -> np.ndarray:
+        def centre(a: int, b: int) -> npt.NDArray[np.float64]:
             chord = directions[a] + directions[b]
             norm = float(np.linalg.norm(chord))
             return np.asarray(chord / norm if norm > 0 else directions[a])
@@ -611,7 +614,7 @@ class StationCoverage:
     @cached_property
     def _recorder_integrals(
         self,
-    ) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    ) -> dict[tuple[str, str], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]:
         return {}
 
     def rate_spans(
