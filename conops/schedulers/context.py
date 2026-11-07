@@ -13,6 +13,7 @@ from datetime import datetime
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
+from rust_ephem.constraints import ConstraintResult, MovingVisibilityResult
 
 from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
@@ -26,7 +27,8 @@ from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import PlanEntry, Pointing
+from ..targets import MovingPointing, PlanEntry, Pointing
+from ..targets.track import positions_along
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -298,6 +300,8 @@ class SchedulingContext:
         them before checking a specific roll. A mounted instrument's windows
         follow its science line of sight, not the body attitude.
         """
+        if isinstance(target, MovingPointing) and not target.track:
+            target.fetch_track()
         constraint = (
             target.roll_independent_visibility_constraint()
             if target.constraint is not None
@@ -306,12 +310,26 @@ class SchedulingContext:
         if constraint is None:
             windows = [(self.ustart, self.uend)]
         else:
-            result = constraint.evaluate(
-                ephemeris=self.ephem,
-                target_ra=target.ra,
-                target_dec=target.dec,
-                target_roll=None,
-            )
+            result: ConstraintResult | MovingVisibilityResult
+            if target.track:
+                times = list(self.ephem.timestamp)
+                ras, decs = positions_along(
+                    target.track, [float(t.timestamp()) for t in times]
+                )
+                result = constraint.evaluate_moving_body(
+                    self.ephem,
+                    target_ras=ras.tolist(),
+                    target_decs=decs.tolist(),
+                    times=times,
+                    target_roll=None,
+                )
+            else:
+                result = constraint.evaluate(
+                    ephemeris=self.ephem,
+                    target_ra=target.ra,
+                    target_dec=target.dec,
+                    target_roll=None,
+                )
             windows = [
                 (window.start_time.timestamp(), window.end_time.timestamp())
                 for window in result.visibility
