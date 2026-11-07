@@ -80,6 +80,12 @@ groups a run schedules can be kept together in one file as a
 :class:`~conops.targets.Program` and given to ``create_ditl`` as ``program=`` (see
 :doc:`plan_serialization`).
 
+Factory-created dispatch runs copy the requests' observation histories and the
+program's ToO wrappers. Execution updates the run's copies, preserving any
+pre-existing history and leaving the supplied program's visit progress and ToO
+execution flags unchanged. The same program can therefore be dispatched again
+or saved and loaded without inheriting the previous run's completion state.
+
 A target observed at set times is one request with ``visit_windows``: a list of
 :class:`~conops.targets.VisitWindow`, each the earliest and latest time one
 visit's collection may begin, in time order and not overlapping; a target with
