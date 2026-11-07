@@ -12,9 +12,9 @@ from ..common.enums import ObsType, SlewAlgorithm
 from ..common.ephemeris import sun_vector_change_deg
 from ..common.numerics import ATTITUDE_TOLERANCE_DEG
 from ..common.vector import (
+    _batch_quat_to_attitudes,
     _quat_mul,
     _quaternion_delta,
-    _batch_quat_to_attitudes,
     angular_separation,
     attitude_to_quat,
     quat_slerp,
@@ -244,7 +244,6 @@ class Slew(BaseModel):
     def roll(self, utime: float) -> float:
         """Return roll angle at the given time during the slew."""
         return self.slew_roll(utime)
-
 
     def sun_vector_change(self) -> float:
         """The angle between the Sun's directions in the body frame at the

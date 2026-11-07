@@ -249,7 +249,6 @@ class ACS:
                         self.ephem,
                         Telescope(mounting=frame.mounting),
                         self.solar_panel,
-                        science_attitude=False,
                         drive_state=self.solar_array_drive_state,
                     )
                     self._initial_attitude = frame.mounting.body_attitude(ra, dec, roll)
