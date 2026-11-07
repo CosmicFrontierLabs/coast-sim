@@ -35,6 +35,7 @@ def _copy_request(target: RequestT) -> RequestT:
         target.constraint,
         target.acs_config,
         target.ephem,
+        target._frame_telescope,
     )
     return deepcopy(target, {id(v): v for v in bindings if v is not None})
 

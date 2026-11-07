@@ -47,6 +47,28 @@ def _run(ditl: QueueDITL | DITL | RollingHorizonDITL) -> None:
 
 
 class TestDispatch:
+    def test_frame_adapter_is_shared_but_request_history_is_owned(self) -> None:
+        from conops.config import Instrument, SpacecraftFrame
+
+        config, targets = _setup(SchedulerConfig())
+        config.spacecraft_bus.frame = SpacecraftFrame(
+            boresight=(0, 0, 1), sun_side=(1, 0, 0)
+        )
+        config.payload = Payload(instruments=[Instrument(name="Camera")])
+        target = targets[0]
+        target.instrument_name = "Camera"
+        mount = target.science_telescope()
+        assert mount is not None
+        run = create_ditl(config, [target], BEGIN, END)
+        assert isinstance(run, QueueDITL)
+        (queued,) = run.queue.targets
+        assert queued.science_telescope() is mount
+        assert queued.instrument_name == "Camera"
+        assert queued.config is run.config
+        queued.record_collection(T0 + 60, 60)
+        assert queued.collected_seconds == 60
+        assert target.collected_seconds == 0
+
     def test_execution_does_not_mutate_input_visit_history(self) -> None:
         config, _ = _setup(SchedulerConfig())
         target = Pointing(
