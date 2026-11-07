@@ -187,6 +187,10 @@ class SchedulingContext:
             self._initial_attitudes.append((float(ra), float(dec), float(roll)))
         return self._initial_attitudes[index]
 
+    def science_rest(self, entry: PlanEntry) -> tuple[float, Attitude]:
+        """The actual resting handoff after a fixed or tracked observation."""
+        return science_rest(entry, self.config.spacecraft_bus.attitude_control)
+
     def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
         ra, dec = target.position_at(utime)
@@ -629,3 +633,66 @@ def tracking_rest(
     except AttitudeExecutionError:
         return None
     return float(trajectory.end), trajectory.state(trajectory.end).attitude
+
+
+def science_tracking(
+    entry: PlanEntry, limits: AttitudeControlSystem
+) -> AttitudeTrajectory | None:
+    """The moving-science trajectory installed by ACS, including its stop."""
+    begin = float(entry.begin) + float(entry.slewtime or 0)
+    end = float(entry.end)
+    interval = ACS.TRACK_SAMPLE_SECONDS
+    if not entry.moves or end <= begin + interval:
+        return None
+    arrival = entry.spacecraft_attitude or entry.target_body_attitude()
+    samples: list[tuple[float, Attitude]] = [(begin, arrival)]
+    at = begin + interval
+    while at < end:
+        samples.append((at, entry.target_body_attitude(at=at)))
+        at += interval
+    samples.append((end, entry.target_body_attitude(at=end)))
+    return AttitudeTrajectory.tracking(samples, limits, initial_rate=(0.0, 0.0, 0.0))
+
+
+def science_rest(
+    entry: PlanEntry, limits: AttitudeControlSystem
+) -> tuple[float, Attitude]:
+    """Rest after tracking, including the terminal braking used by ACS.
+
+    Only the final tracking interval sets its terminal rate, so rebuilding
+    that interval gives the same stop without replaying the whole visit.
+    """
+    end = float(entry.end)
+    arrival = float(entry.begin) + entry.slewtime
+    step = ACS.TRACK_SAMPLE_SECONDS
+    if not entry.moves or end <= arrival + step:
+        return end, entry.target_body_attitude()
+    previous = arrival + (float(np.ceil((end - arrival) / step)) - 1) * step
+    trajectory = AttitudeTrajectory.tracking(
+        [
+            (previous, entry.target_body_attitude(at=previous)),
+            (end, entry.target_body_attitude(at=end)),
+        ],
+        limits,
+    )
+    return float(trajectory.end), trajectory.state(trajectory.end).attitude
+
+
+def contact_tracking(
+    gspass: Pass, acquire: float, limits: AttitudeControlSystem
+) -> AttitudeTrajectory | None:
+    """The selected body-tracking contact as ACS flies it, including its stop."""
+    if not gspass.requires_tracking:
+        return None
+    profile = list(
+        zip(
+            gspass.ra,
+            gspass.dec,
+            gspass.roll or [gspass.gsstartroll] * len(gspass.ra),
+            strict=True,
+        )
+    )
+    samples = tracking_samples(gspass, profile, acquire)
+    if len(samples) < MIN_SAMPLES:
+        return None
+    return AttitudeTrajectory.tracking(samples, limits, initial_rate=(0.0, 0.0, 0.0))
