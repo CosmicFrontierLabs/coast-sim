@@ -235,6 +235,42 @@ class MissionConfig(ConfigModel):
     ) -> dict[str, list[AttitudeConstraintScope]]:
         return _normalize_attitude_constraint_scopes(value)
 
+    @model_validator(mode="after")
+    def _panels_see_the_given_eclipses(self) -> MissionConfig:
+        """The solar panels take the intervals the constraint gives as
+        eclipse, read as the constraint's list stands."""
+        constraint = getattr(self, "constraint", None)
+        take = getattr(
+            getattr(self, "solar_panel", None), "take_eclipse_intervals_from", None
+        )
+        # A test double's constraint or panels take nothing.
+        if callable(take) and isinstance(constraint, Constraint):
+            take(constraint.eclipse_intervals_unix)
+        return self
+
+    @model_validator(mode="after")
+    def _budget_steps_name_known_modes(self) -> MissionConfig:
+        """The calibration steps of every timing budget name instruments the
+        payload has, in modes they define, allowed at once."""
+        payload = getattr(self, "payload", None)
+        check = getattr(payload, "check_request", None)
+        # A test double's payload or categories check nothing.
+        if not callable(check):
+            return self
+        timings = [getattr(payload, "observation_timing", None)]
+        categories = getattr(self, "observation_categories", None)
+        if isinstance(categories, ObservationCategories):
+            timings.extend(
+                category.observation_timing for category in categories.categories
+            )
+        for timing in timings:
+            if not isinstance(timing, ObservationTiming):
+                continue
+            for step in (*timing.setup_steps, *timing.cleanup_steps):
+                if step.instrument_modes:
+                    check(step.instrument_modes)
+        return self
+
     def observation_timing_for(self, obsid: int) -> ObservationTiming:
         """The setup, cleanup and handoff budgets of the observation ``obsid``:
         its category's where that sets them, else the payload's."""

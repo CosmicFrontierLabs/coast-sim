@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from .._version import __version__
+from ..common import unixtime_from
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
 
 if TYPE_CHECKING:
@@ -88,12 +89,10 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
 
     @field_validator("plan_start", "plan_end", mode="before")
     @classmethod
-    def _coerce_optional_time(cls, v: float | int | str | None) -> float | None:
-        if v is None:
-            return None
-        if isinstance(v, str):
-            return datetime.fromisoformat(v).timestamp()
-        return float(v)
+    def _coerce_optional_time(
+        cls, v: float | int | str | datetime | None
+    ) -> float | None:
+        return None if v is None else unixtime_from(v)
 
     @field_serializer("plan_start", "plan_end")
     def _serialize_optional_time(self, v: float | None) -> str | None:
@@ -137,12 +136,10 @@ class OrbitStateTimeseriesSchema(BaseModel):
 
     @field_validator("plan_start", "plan_end", mode="before")
     @classmethod
-    def _coerce_optional_time(cls, v: float | int | str | None) -> float | None:
-        if v is None:
-            return None
-        if isinstance(v, str):
-            return datetime.fromisoformat(v).timestamp()
-        return float(v)
+    def _coerce_optional_time(
+        cls, v: float | int | str | datetime | None
+    ) -> float | None:
+        return None if v is None else unixtime_from(v)
 
     @field_serializer("plan_start", "plan_end")
     def _serialize_optional_time(self, v: float | None) -> str | None:

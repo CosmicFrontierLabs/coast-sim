@@ -4,8 +4,9 @@ from functools import cached_property, lru_cache
 from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
-from pydantic import ConfigDict, Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr, field_validator
 from rust_ephem.constraints import (
     AndConstraint,
     AtLeastConstraint,
@@ -16,7 +17,7 @@ from rust_ephem.constraints import (
     XorConstraint,
 )
 
-from ..common import dtutcfromtimestamp
+from ..common import dtutcfromtimestamp, unixtime_from
 from ..common.enums import ACSMode
 from ._base import ConfigModel
 from .constants import (
@@ -125,6 +126,16 @@ class Constraint(ConfigModel):
         default=None,
         description="Moon constraint configuration",
     )
+    eclipse_intervals: list[tuple[float, float]] = Field(
+        default_factory=list,
+        description=(
+            "Intervals, as (start, end) in Unix seconds, datetimes or ISO-8601 "
+            "strings, during which the spacecraft is taken to be in eclipse "
+            "whatever the ephemeris says: for a test of an eclipse that the "
+            "orbit does not give. Power, the panels, the planners' ledgers, "
+            "the momentum sources, telemetry and the plots all see them"
+        ),
+    )
     earth_constraint: ConstraintConfig | None = Field(
         default=None,
         description="Earth constraint configuration",
@@ -207,7 +218,7 @@ class Constraint(ConfigModel):
     bestroll: float = Field(
         default=0.0, exclude=True, description="Best roll angle for optimization"
     )
-    bestpointing: np.ndarray = Field(
+    bestpointing: npt.NDArray[np.float64 | np.int_] = Field(
         default_factory=lambda: np.array([-1, -1, -1]),
         exclude=True,
         description="Best pointing vector for optimization",
@@ -540,7 +551,37 @@ class Constraint(ConfigModel):
             "earth", ra, dec, time, self.earth_constraint, target_roll=target_roll
         )
 
+    @field_validator("eclipse_intervals", mode="before")
+    @classmethod
+    def _intervals_as_unix(cls, value: object) -> object:
+        """Accept each interval's ends as Unix seconds, datetimes or ISO strings."""
+        if not isinstance(value, (list, tuple)):
+            return value
+        intervals = []
+        for interval in value:
+            if not isinstance(interval, (list, tuple)) or len(interval) != 2:
+                raise ValueError("an eclipse interval is a (start, end) pair")
+            start, end = (unixtime_from(interval[0]), unixtime_from(interval[1]))
+            if end <= start:
+                raise ValueError("an eclipse interval must end after it starts")
+            intervals.append((start, end))
+        return intervals
+
+    def eclipse_intervals_unix(self) -> list[tuple[float, float]]:
+        """The intervals given as eclipse, each end in Unix seconds, however
+        they were given: assignment to this model is not validated."""
+        return [
+            (unixtime_from(start), unixtime_from(end))
+            for start, end in self.eclipse_intervals
+        ]
+
+    def in_eclipse_interval(self, time: float) -> bool:
+        """Whether ``time`` falls in an interval given as eclipse."""
+        return any(start <= time < end for start, end in self.eclipse_intervals_unix())
+
     def in_eclipse(self, ra: float, dec: float, time: float) -> bool:
+        if self.in_eclipse_interval(time):
+            return True
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
@@ -864,7 +905,7 @@ class Constraint(ConfigModel):
         utime: float,
         constraint_types: list[ConstraintConfig | None],
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         if not ras:
             return np.zeros(0, dtype=bool)
 
@@ -883,7 +924,7 @@ class Constraint(ConfigModel):
         dt = dtutcfromtimestamp(utime)
 
         # Check all constraint types and OR the results
-        violations: np.ndarray | None = None
+        violations: npt.NDArray[np.bool_] | None = None
         for constraint_func in constraint_types:
             if constraint_func is None:
                 continue
@@ -909,7 +950,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check imaging-quality and power-generation constraints."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -934,7 +975,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check imaging-quality constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -958,7 +999,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check power-generation constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -974,7 +1015,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check ground-contact constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -990,7 +1031,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check hardware-safety constraints for multiple pointings."""
         return self._in_constraint_batch_for_components(
             ras,
@@ -1011,7 +1052,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check hardware-safety constraints for multiple pointings."""
         return self.in_safety_constraint_batch(
             ras, decs, utime, target_rolls=target_rolls
@@ -1023,7 +1064,7 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         """Check all built-in attitude constraint scopes.
 
         Uses batch evaluation via rust_ephem's in_constraint_batch() API,
@@ -1674,9 +1715,9 @@ def in_attitude_constraint_scopes_batch(
     decs: list[float],
     utime: float,
     target_rolls: list[float] | None = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.bool_]:
     """Check multiple pointings against configured scopes."""
-    violations = np.zeros(len(ras), dtype=bool)
+    violations: npt.NDArray[np.bool_] = np.zeros(len(ras), dtype=bool)
     for scope in _attitude_scope_values(scopes):
         if scope == AttitudeConstraintScope.HARDWARE_SAFETY.value:
             scoped = constraint.in_hardware_safety_constraint_batch(

@@ -19,6 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..config.acs import AttitudeControlSystem
 from ..config.observation_timing import ObservationTiming
 
+BORESIGHT: tuple[float, float, float] = (1.0, 0.0, 0.0)
+"""The body axis a roll at one pointing turns about."""
+
 
 class SequenceStep(BaseModel):
     """One step of a sequence."""
@@ -94,10 +97,11 @@ class ObservationSequence(BaseModel):
         for a step that asks for it, cleanup and handoff for the last step."""
         first = index == 0
         last = index == len(self.steps) - 1
+        pays_setup = first or self.steps[index].setup
         return ObservationTiming(
-            setup_seconds=base.setup_seconds
-            if first or self.steps[index].setup
-            else 0.0,
+            setup_steps=list(base.setup_steps) if pays_setup else [],
+            cleanup_steps=list(base.cleanup_steps) if last else [],
+            setup_seconds=base.setup_seconds if pays_setup else 0.0,
             cleanup_seconds=base.cleanup_seconds if last else 0.0,
             handoff_seconds=base.handoff_seconds if last else 0.0,
         )
@@ -111,15 +115,24 @@ class ObservationSequence(BaseModel):
     ) -> float:
         """Seconds a visit takes beyond its science and the visit's own setup
         and cleanup: calibration steps, the slews between steps that point
-        elsewhere, and the setup of steps that ask for it."""
+        elsewhere or roll at the same pointing, and the setup of steps that
+        ask for it. A roll between steps at one pointing is a slew about the
+        boresight, timed as the ACS flies it."""
         seconds = self.calibration_seconds
         previous = self.pointing_of(0, ra, dec)
+        previous_roll = self.steps[0].roll_offset_deg or 0.0
         for index, step in enumerate(self.steps):
             if index > 0:
                 current = self.pointing_of(index, ra, dec)
+                roll = step.roll_offset_deg or 0.0
                 if current != previous:
                     seconds += float(acs.slew_time(_separation_deg(previous, current)))
                     previous = current
+                else:
+                    seconds += float(
+                        acs.slew_time(_roll_delta_deg(previous_roll, roll), BORESIGHT)
+                    )
+                previous_roll = roll
                 if step.setup:
                     seconds += timing.setup_seconds
         return seconds
@@ -127,6 +140,12 @@ class ObservationSequence(BaseModel):
 
 def sequence_steps(sequence: ObservationSequence | None) -> Sequence[SequenceStep]:
     return sequence.steps if sequence is not None else ()
+
+
+def _roll_delta_deg(one: float, two: float) -> float:
+    """The smaller angle between two rolls in degrees."""
+    delta = abs(two - one) % 360.0
+    return min(delta, 360.0 - delta)
 
 
 def _separation_deg(one: tuple[float, float], two: tuple[float, float]) -> float:

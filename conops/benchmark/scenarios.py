@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 from rust_ephem import EarthLimbConstraint, SunConstraint, TLEEphemeris
 
 from ..config import (
@@ -366,7 +367,7 @@ def _along_sun_path(
     ephem = config.constraint.ephem
     assert ephem is not None
 
-    def unit(ra: float, dec: float) -> np.ndarray:
+    def unit(ra: float, dec: float) -> npt.NDArray[np.float64]:
         r, d = np.radians(ra), np.radians(dec)
         return np.array([np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)])
 

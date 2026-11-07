@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import rust_ephem
 
 from conops.config.battery import Battery
@@ -126,7 +127,7 @@ class EmergencyCharging:
 
     def _charging_candidate_violations(
         self, ras: list[float], decs: list[float], utime: float
-    ) -> np.ndarray:
+    ) -> npt.NDArray[np.bool_]:
         return in_attitude_constraint_scopes_batch(
             self.constraint, self._charging_scopes(), ras, decs, utime
         )

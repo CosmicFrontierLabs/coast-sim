@@ -11,11 +11,17 @@ COASTSim runs a scheduler in one of two ways:
   execution differed from the plan.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from ..config import ScienceData
-from ..targets import ObservationSequence, Plan, Pointing, TargetSlewEstimate
+from ..targets import (
+    ObservationSequence,
+    Plan,
+    Pointing,
+    TargetSlewEstimate,
+    VisitWindow,
+)
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -71,6 +77,23 @@ class DispatchPolicy(Protocol):
         """
         ...
 
+    def request_openings(self, utime: float) -> list[tuple[float, float, int]]:
+        """The requests dispatch keeps time for after ``utime``, as
+        ``(start, value, obsid)`` in time order, each at the time it must
+        start by; QueueDITL ends an observation ranked below a request
+        there."""
+        ...
+
+    def request_cut(
+        self,
+        target: Pointing,
+        openings: list[tuple[float, float, int]],
+        end: float,
+    ) -> tuple[float, int] | None:
+        """When, before ``end``, a request ranked above ``target`` must
+        start, and that request's obsid; None when none must."""
+        ...
+
     def add(
         self,
         ra: float = 0.0,
@@ -87,7 +110,11 @@ class DispatchPolicy(Protocol):
         science_data: Mapping[str, ScienceData] | None = None,
         sequence: ObservationSequence | None = None,
         visits: int = 1,
+        visit_windows: Sequence[VisitWindow] | None = None,
         instrument_modes: Mapping[str, str] | None = None,
+        roll_deg: float | None = None,
+        roll_offset_deg: float | None = None,
+        protect_opening: bool = False,
     ) -> Pointing:
         """Add a target and return it, as QueueDITL does for a Target of Opportunity.
 
@@ -97,6 +124,12 @@ class DispatchPolicy(Protocol):
                 may begin.
             science_data: Science data observing the target generates, keyed
                 by instrument name.
+            roll_deg: The instrument roll to observe at instead of the
+                power-optimal roll, in degrees.
+            roll_offset_deg: An offset from the power-optimal roll to observe
+                at, in degrees; give this or ``roll_deg``, not both.
+            protect_opening: Keep the target's window from its opening rather
+                than from the latest start that meets its deadline.
         """
         ...
 

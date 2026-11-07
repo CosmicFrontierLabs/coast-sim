@@ -27,6 +27,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 import plotly.graph_objects as go
 
 if TYPE_CHECKING:
@@ -60,13 +61,15 @@ _CONE_SIZE: float = 0.07
 # ---------------------------------------------------------------------------
 
 
-def _unit(v: Any) -> np.ndarray:
+def _unit(v: Any) -> npt.NDArray[np.float64]:
     a = np.asarray(v, dtype=float)
     n = np.linalg.norm(a)
     return a / n if n > 1e-12 else a
 
 
-def _perp_pair(v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _perp_pair(
+    v: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Two unit vectors perpendicular to *v*."""
     v = _unit(v)
     ref = np.array([0.0, 0.0, 1.0]) if abs(v[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
@@ -122,9 +125,9 @@ def _box_mesh(
 
 
 def _flat_rect_mesh(
-    center: np.ndarray,
-    u: np.ndarray,
-    v: np.ndarray,
+    center: npt.NDArray[np.float64],
+    u: npt.NDArray[np.float64],
+    v: npt.NDArray[np.float64],
     width: float,
     height: float,
     color: str,
@@ -158,8 +161,8 @@ def _flat_rect_mesh(
 
 
 def _cylinder_mesh(
-    start: np.ndarray,
-    axis: np.ndarray,
+    start: npt.NDArray[np.float64],
+    axis: npt.NDArray[np.float64],
     radius: float,
     length: float,
     color: str,
@@ -206,8 +209,8 @@ def _cylinder_mesh(
 
 
 def _disk_mesh(
-    center: np.ndarray,
-    normal: np.ndarray,
+    center: npt.NDArray[np.float64],
+    normal: npt.NDArray[np.float64],
     outer_r: float,
     inner_r: float,
     color: str,
@@ -265,8 +268,8 @@ def _disk_mesh(
 
 
 def _arrow_traces(
-    origin: np.ndarray,
-    direction: np.ndarray,
+    origin: npt.NDArray[np.float64],
+    direction: npt.NDArray[np.float64],
     length: float,
     color: str,
     name: str,
@@ -312,7 +315,7 @@ def _arrow_traces(
     return [line, cone]
 
 
-def _axis_label(pos: np.ndarray, text: str, color: str) -> go.Scatter3d:
+def _axis_label(pos: npt.NDArray[np.float64], text: str, color: str) -> go.Scatter3d:
     return go.Scatter3d(
         x=[float(pos[0])],
         y=[float(pos[1])],
@@ -331,10 +334,10 @@ def _axis_label(pos: np.ndarray, text: str, color: str) -> go.Scatter3d:
 
 
 def _face_placement(
-    normal: np.ndarray,
+    normal: npt.NDArray[np.float64],
     bus_hd: tuple[float, float, float],
     gap: float = 0.03,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """
     Given a component normal/boresight, return (center, span_u, span_v)
     placing the component on the bus face whose outward normal best matches.
@@ -420,7 +423,9 @@ def plot_spacecraft_3d(
 
     # Telescope geometry captured during section 2; used for ST mounting in section 5.
     # (tube_start, bore, outer_r, tube_len)
-    _scope_geom: tuple[np.ndarray, np.ndarray, float, float] | None = None
+    _scope_geom: (
+        tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float, float] | None
+    ) = None
 
     # ------------------------------------------------------------------ #
     # 1. Spacecraft bus body                                               #

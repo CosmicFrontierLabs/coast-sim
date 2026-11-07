@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 import numpy as np
+import numpy.typing as npt
 
 from .enums import ACSMode
 
@@ -52,12 +53,26 @@ def unixtime2yearday(utime: float) -> tuple[int, int]:
     return dt.year, dt.timetuple().tm_yday
 
 
+def unixtime_from(value: float | int | str | datetime) -> float:
+    """Unix seconds from a number, a datetime (naive means UTC) or an
+    ISO-8601 string."""
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    return float(value)
+
+
 def dtutcfromtimestamp(timestamp: float) -> datetime:
     """Return a timezone-aware UTC datetime from a unix timestamp"""
     return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
 
-def find_boundaries(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def find_boundaries(
+    mask: npt.NDArray[np.bool_],
+) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]:
     """Find contiguous True runs in a boolean mask.
 
     Returns (starts, ends) index arrays such that mask[starts[i]:ends[i]] is

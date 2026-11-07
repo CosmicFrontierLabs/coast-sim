@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple
 
 import numpy as np
+import numpy.typing as npt
 
 from ..common.enums import ACSMode, ObsType
 from ..config import MissionConfig
@@ -97,7 +98,7 @@ class _Stretch(NamedTuple):
     end: float
     attitude: Attitude | None
     """The charging attitude; None if no valid one was found."""
-    charge: np.ndarray
+    charge: npt.NDArray[np.float64]
     """Net charge rate, in watts, at each grid step of the run while the
     attitude is allowed; 0 from the first step it is not."""
 
@@ -212,7 +213,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             + self.step_size * np.ceil((begin - self.origin) / self.step_size - 1e-9)
         )
 
-    def steps(self, begin: float, end: float) -> np.ndarray:
+    def steps(self, begin: float, end: float) -> npt.NDArray[np.float64]:
         """The grid steps in ``[begin, end)``."""
         first = self._first_step(begin)
         if first >= end:
@@ -497,12 +498,19 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     return (float(track_ra), float(track_dec), float(track_roll))
             return own
 
-        # The instruments an observation, or an activity, uses while it holds.
-        modes = (
-            entry.effective_instrument_modes()
-            if mode is ACSMode.SCIENCE or obstype == ObsType.ACTIVITY
-            else None
-        )
+        # The instruments an observation, or an activity, uses while it
+        # holds; an observation's calibration steps have their own.
+        holds = mode is ACSMode.SCIENCE or obstype == ObsType.ACTIVITY
+        modes = entry.effective_instrument_modes() if holds else None
+        by_time = getattr(entry, "instrument_modes_at", None)
+
+        def modes_at(utime: float) -> Modes:
+            if not holds:
+                return None
+            if mode is ACSMode.SCIENCE and callable(by_time):
+                resolved = by_time(utime)
+                return resolved if isinstance(resolved, dict) else modes
+            return modes
 
         def held_at(utime: float) -> tuple[ACSMode, Attitude | None, Modes]:
             if utime < arrival:
@@ -516,7 +524,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             return (
                 step_mode,
                 attitude_at(utime),
-                modes if arrival <= utime < end else None,
+                modes_at(utime) if arrival <= utime < end else None,
             )
 
         addition = self._addition_over(begin, braking, held_at)
@@ -566,19 +574,19 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
                     float(step.end),
                     slew.attitude if slew is not None else None,
                     step.target_body_attitude(),
-                    step.effective_instrument_modes(),
+                    step.instrument_modes_at,
                 )
             )
 
         def held_at(utime: float) -> tuple[ACSMode, Attitude | None, Modes]:
-            for span_begin, arrival, span_end, path, own, modes in spans:
+            for span_begin, arrival, span_end, path, own, modes_at in spans:
                 if span_begin <= utime < arrival:
                     if path is None:
                         return ACSMode.SLEWING, None, None
                     ra, dec, roll = path(utime)
                     return ACSMode.SLEWING, (float(ra), float(dec), float(roll)), None
                 if arrival <= utime < span_end:
-                    return ACSMode.SCIENCE, own, modes
+                    return ACSMode.SCIENCE, own, modes_at(utime)
             return ACSMode.SLEWING, None, None
 
         addition = self._addition_over(begin, end, held_at)
