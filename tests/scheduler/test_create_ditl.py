@@ -20,7 +20,7 @@ from conops.config import (
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import SCHEDULERS, LocalSearchScheduler, PriorityScheduler
-from conops.targets import Pointing
+from conops.targets import Pointing, visit_windows
 from conops.targets.merit import MeritModel
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -47,6 +47,27 @@ def _run(ditl: QueueDITL | DITL | RollingHorizonDITL) -> None:
 
 
 class TestDispatch:
+    def test_execution_does_not_mutate_input_visit_history(self) -> None:
+        config, _ = _setup(SchedulerConfig())
+        target = Pointing(
+            config=config,
+            obsid=100,
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            ss_min=5 * MIN,
+            ss_max=5 * MIN,
+            visit_windows=visit_windows([T0 + 20 * MIN, T0 + HOUR], 10 * MIN),
+        )
+        run = create_ditl(config, [target], BEGIN, END)
+        _run(run)
+        assert isinstance(run, QueueDITL)
+        (executed,) = run.queue.targets
+        assert executed.visits_done == frozenset({0, 1})
+        assert target.visits_done == frozenset()
+        assert not target.visit_complete(0)
+        assert target.collected_seconds == 0
+        assert target.exptime == 10 * MIN
+
     def test_a_target_can_name_a_plain_instrument(self) -> None:
         """A plain instrument has no mounting, so the queued target keeps its
         name and its science coordinates are the body attitude."""

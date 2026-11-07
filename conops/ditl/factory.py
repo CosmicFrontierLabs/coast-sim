@@ -1,7 +1,9 @@
 """Build the simulation a mission configuration's scheduler section selects."""
 
 from collections.abc import Sequence
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 import rust_ephem
 
@@ -10,10 +12,31 @@ from ..config.scheduler import AllocationSettings, SchedulerMode
 from ..schedulers.allocator import LongRangeAllocator
 from ..schedulers.local_search_scheduler import LocalSearchScheduler
 from ..schedulers.registry import scheduler_class
-from ..targets import Plan, Pointing, Program, Queue, ScheduledActivity, TOORequest
+from ..targets import (
+    Plan,
+    PlanEntry,
+    Pointing,
+    Program,
+    Queue,
+    ScheduledActivity,
+    TOORequest,
+)
 from .ditl import DITL
 from .queue_ditl import QueueDITL
 from .rolling_ditl import RollingHorizonDITL
+
+RequestT = TypeVar("RequestT", bound=PlanEntry)
+
+
+def _copy_request(target: RequestT) -> RequestT:
+    """Copy request data/history while sharing its immutable runtime bindings."""
+    bindings = (
+        target.config,
+        target.constraint,
+        target.acs_config,
+        target.ephem,
+    )
+    return deepcopy(target, {id(v): v for v in bindings if v is not None})
 
 
 def create_ditl(
@@ -42,6 +65,8 @@ def create_ditl(
     submitted to the dispatch and rolling simulations before running them.
     Each simulation owns copies of the configured battery and recorder state,
     so reusing a configuration preserves its initial charge and stored volumes.
+    Dispatch also owns its request histories and program-supplied ToO wrappers,
+    so executing it does not change those states in the caller's program.
 
     Args:
         config: Mission configuration, including its ``scheduler`` section.
@@ -108,7 +133,9 @@ def create_ditl(
         )
         queue_targets(queue_ditl, targets)
         for too in toos:
-            queue_ditl.submit_too(too)
+            queue_ditl.submit_too(
+                too.model_copy(update={"request": _copy_request(too.request)})
+            )
         return queue_ditl
 
     scheduler = scheduler_class(settings.kind)
@@ -178,7 +205,7 @@ def queue_targets(ditl: QueueDITL, targets: Sequence[Pointing]) -> None:
     if not isinstance(queue, Queue):
         raise TypeError("targets can only be added to a QueueDITL's own Queue")
     config = ditl.config
-    copies = [target.model_copy() for target in targets]
+    copies = [_copy_request(target) for target in targets]
     _bind_targets(config, copies)
     for queued in copies:
         if queued.exptime is None:

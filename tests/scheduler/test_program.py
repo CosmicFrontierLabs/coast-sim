@@ -321,8 +321,10 @@ class TestRuns:
             return [(int(e.obsid), float(e.begin), float(e.end)) for e in ditl.plan]
 
         from_built = run(built)
+        assert not any(too.executed for too in built.toos)
+        from_reused = run(built)
         from_loaded = run(Program.load(path))
-        assert from_built == from_loaded
+        assert from_built == from_reused == from_loaded
         assert any(obsid == 9001 for obsid, _, _ in from_loaded)
         assert any(obsid == 103 for obsid, _, _ in from_loaded)
 
