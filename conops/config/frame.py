@@ -24,7 +24,11 @@ NEGLIGIBLE_NORM = 1e-15
 UNIT_MAGNITUDE_TOLERANCE = 0.01
 """How far from 1 a unit vector's magnitude may be."""
 
+IDENTITY_TOLERANCE = 1e-12
+
 if TYPE_CHECKING:
+    from rust_ephem.constraints import ConstraintConfig
+
     from .instrument import InstrumentMounting
 
 Vector = tuple[float, float, float]
@@ -112,6 +116,51 @@ class SpacecraftFrame(ConfigModel):
         vector = self.body_from_canonical.T @ np.asarray(body, dtype=np.float64)
         vector[np.abs(vector) < NEGLIGIBLE_NORM] = 0.0
         return float(vector[0]), float(vector[1]), float(vector[2])
+
+    def constraint_in_body(self, constraint: "ConstraintConfig") -> "ConstraintConfig":
+        """Place an unmounted reference-boresight constraint in body coordinates.
+
+        Explicit boresight-offset subtrees already describe body hardware and
+        are preserved. Other leaves follow this frame, including its clocking.
+        """
+        from rust_ephem.constraints import (
+            AndConstraint,
+            AtLeastConstraint,
+            BoresightOffsetConstraint,
+            NotConstraint,
+            OrConstraint,
+            XorConstraint,
+        )
+
+        if self.is_identity or isinstance(constraint, BoresightOffsetConstraint):
+            return constraint
+        if isinstance(constraint, NotConstraint):
+            return constraint.model_copy(
+                update={"constraint": self.constraint_in_body(constraint.constraint)}
+            )
+        if isinstance(
+            constraint, (AndConstraint, OrConstraint, XorConstraint, AtLeastConstraint)
+        ):
+            return constraint.model_copy(
+                update={
+                    "constraints": [
+                        self.constraint_in_body(c) for c in constraint.constraints
+                    ]
+                }
+            )
+        matrix = self.body_from_canonical
+        pitch = np.arctan2(-matrix[2, 0], np.hypot(matrix[0, 0], matrix[1, 0]))
+        if np.hypot(matrix[0, 0], matrix[1, 0]) > IDENTITY_TOLERANCE:
+            roll = np.arctan2(matrix[2, 1], matrix[2, 2])
+            yaw = np.arctan2(matrix[1, 0], matrix[0, 0])
+        else:
+            roll = 0.0
+            yaw = np.arctan2(-matrix[0, 1], matrix[1, 1])
+        return constraint.boresight_offset(
+            roll_deg=float(np.degrees(roll)),
+            pitch_deg=float(np.degrees(pitch)),
+            yaw_deg=float(np.degrees(yaw)),
+        )
 
     @property
     def mounting(self) -> "InstrumentMounting":

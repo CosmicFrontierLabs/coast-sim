@@ -343,6 +343,14 @@ The default is the frame COAST has always computed in, boresight +X and the Sun'
 * a :class:`~conops.config.Telescope` given neither a ``mounting`` nor a ``boresight``
   takes the frame's mounting, so science RA/Dec and roll convert to the body attitude
   as for any mounted telescope (see `Telescope Instruments`_); one given either keeps it;
+* a request naming a plain instrument without a mounting follows the bus's
+  declared boresight and clocking. The recorded instrument name remains that of
+  the configured instrument, including during moving-target tracking;
+* unmounted ``safety_constraint`` and ACS ``slew_constraint`` cones follow the
+  declared reference boresight. Explicit boresight-offset subtrees already describe
+  body hardware and are preserved. Slew waypoints are chosen in the reference
+  frame and transformed into physical body axes before execution and per-axis
+  timing; merely relabelling exported quaternions cannot make a frame conversion;
 * :func:`~conops.config.create_solar_panel_vector` and
   :func:`~conops.config.create_star_tracker_vector` take ``frame=`` and return their
   vectors in the mission's frame, so a ``'boresight'`` panel faces the frame's

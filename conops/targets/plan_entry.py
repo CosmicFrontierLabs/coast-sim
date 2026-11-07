@@ -30,8 +30,10 @@ from ..common.vector import (
 from ..config import (
     AttitudeControlSystem,
     Constraint,
+    Instrument,
     MissionConfig,
     ScienceData,
+    SpacecraftFrame,
     Telescope,
 )
 from ..config.acs import scheduled_slew_time
@@ -281,6 +283,10 @@ class PlanEntry(BaseModel):
     _last_collection_time: float | None = PrivateAttr(default=None)
     _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
+    _frame_telescope: Telescope | None = PrivateAttr(default=None)
+    _frame_axes: (
+        tuple[tuple[float, float, float], tuple[float, float, float]] | None
+    ) = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -586,9 +592,7 @@ class PlanEntry(BaseModel):
                 ra_deg=float(self.ra),
                 dec_deg=float(self.dec),
                 roll_deg=roll_deg,
-                instrument_name=(
-                    telescope.name if telescope is not None else self.instrument_name
-                ),
+                instrument_name=self.science_instrument_name(),
                 boresight_axis=(
                     _cardinal_body_axis(boresight_body)
                     if boresight_body is not None
@@ -663,11 +667,36 @@ class PlanEntry(BaseModel):
         return dict(modes) if isinstance(modes, dict) else {}
 
     def science_telescope(self) -> Telescope | None:
-        """Return the telescope assigned to this target, if configured."""
+        """Resolve the pointing mount, including the bus frame for plain instruments.
+
+        A plain instrument has no independent mount. Its target follows the
+        declared bus boresight, which is +X only in the canonical frame.
+        The cached frame adapter supplies geometry, not another payload device.
+        """
         if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return None
         instrument = self.config.payload.telescope_for_target(self.instrument_name)
-        return instrument if isinstance(instrument, Telescope) else None
+        if isinstance(instrument, Telescope):
+            return instrument
+        frame = getattr(self.config.spacecraft_bus, "frame", None)
+        if not isinstance(frame, SpacecraftFrame) or frame.is_identity:
+            return None
+        axes = (frame.boresight, frame.sun_side)
+        if self._frame_telescope is None or axes != self._frame_axes:
+            self._frame_telescope = Telescope(mounting=frame.mounting)
+            self._frame_axes = axes
+        return self._frame_telescope
+
+    def science_instrument_name(self) -> str | None:
+        """Configured instrument identity, independent of a frame-only adapter."""
+        if self.config is None:
+            return self.instrument_name
+        instrument = self.config.payload.telescope_for_target(self.instrument_name)
+        return (
+            instrument.name
+            if isinstance(instrument, Instrument)
+            else self.instrument_name
+        )
 
     def uses_mounted_attitude(self) -> bool:
         """Return whether science coordinates differ from the body attitude."""
