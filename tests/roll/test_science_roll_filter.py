@@ -184,7 +184,76 @@ def _turned(
     ]
 
 
+@pytest.mark.parametrize("caller", ["identity_mount", "charger"])
+def test_engineering_guidance_keeps_science_only_patch_out_of_its_roll(caller, ephem):
+    from conops.config import MissionConfig
+    from conops.simulation.emergency_charging import EmergencyCharging
+
+    ra, dec = _sun_north(ephem)
+    panels = _side_panel()
+    constraint = _constraint(ephem, BodyConstraint(body="Sun", fov_polygon=WEST_PATCH))
+    assert constraint.in_explicit_science(ra, dec, UTIME, target_roll=90.0)
+    expected = optimum_body_roll(
+        ra, dec, UTIME, ephem, panels, constraint, science_attitude=False
+    )
+    assert expected == pytest.approx(90.0)
+    if caller == "identity_mount":
+        actual = optimum_instrument_roll(
+            ra,
+            dec,
+            UTIME,
+            ephem,
+            Telescope(),
+            panels,
+            constraint,
+            science_attitude=False,
+        )
+    else:
+        charger = EmergencyCharging(
+            MissionConfig(constraint=constraint, solar_panel=panels)
+        )
+        actual = charger._optimal_roll(ra, dec, UTIME, ephem)
+    assert actual == expected
+
+
 class TestMountedRoll:
+    def test_engineering_roll_preserves_a_free_roll_safety_mask(self, ephem):
+        ra, dec = _sun_north(ephem)
+        telescope = Telescope(boresight=(0.0, 1.0, 0.0))
+        panel = SolarPanelSet(
+            panels=[SolarPanel(normal=(float(np.sqrt(0.75)), 0.5, 0.0), max_power=800)]
+        )
+        raw = rust_ephem.SunConstraint(min_angle=65).boresight_offset(yaw_deg=30)
+        constraint = Constraint(safety_constraint=raw, ignore_roll=True)
+        constraint.ephem = ephem
+        poses = [telescope.target_body_attitude(ra, dec, roll) for roll in range(360)]
+        blocked = np.array(
+            [
+                raw.in_constraint(
+                    ephemeris=ephem,
+                    target_ra=p[0],
+                    target_dec=p[1],
+                    time=BEGIN,
+                    target_roll=p[2],
+                )
+                for p in poses
+            ],
+            dtype=bool,
+        )
+        assert blocked.any() and not blocked.all()
+        unrestricted = optimum_instrument_roll(
+            ra, dec, UTIME, ephem, telescope, panel, science_attitude=False
+        )
+        assert blocked[int(unrestricted)]
+        roll = optimum_instrument_roll(
+            ra, dec, UTIME, ephem, telescope, panel, constraint, science_attitude=False
+        )
+        assert not blocked[int(roll)]
+        powers = np.array(
+            [panel.power(UTIME, p[0], p[1], ephem, roll=p[2]) for p in poses]
+        )
+        assert powers[int(roll)] == pytest.approx(powers[~blocked].max(), rel=1e-12)
+
     def test_mounted_telescope_clears_the_patch(self, ephem: TLEEphemeris) -> None:
         ra, dec = _sun_north(ephem)
         telescope = Telescope(boresight=(0.0, 1.0, 0.0))

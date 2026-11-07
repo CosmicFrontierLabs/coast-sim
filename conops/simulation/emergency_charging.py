@@ -162,6 +162,7 @@ class EmergencyCharging:
             self.solar_panel,
             self.constraint,
             drive_state=drive_state,
+            science_attitude=False,
         )
 
     def _charging_attitude_violates_scopes(

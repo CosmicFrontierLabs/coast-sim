@@ -308,6 +308,7 @@ def optimum_instrument_roll(
             reference_roll,
             max_roll_delta,
             drive_state,
+            science_attitude=science_attitude,
         )
 
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
