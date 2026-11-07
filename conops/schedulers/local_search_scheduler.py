@@ -264,8 +264,9 @@ class LocalSearchScheduler(PriorityScheduler):
         self.initial_score = self._timeline_score(science)
 
         self._fixed = fixed
-        if self.start_plan is not None:
-            self._settle_from(self.start_plan)
+        # A window rejected by priority order may fit another contender.
+        for request in self._by_obsid.values():
+            request.skipped.clear()
         # Released at their priority-first times, the snapshots decode to
         # the priority-first plan; moves release them one at a time.
         start = self._decode(
@@ -279,11 +280,36 @@ class LocalSearchScheduler(PriorityScheduler):
             ]
         )
         self.start_score = self._objective(start.final)
-        if self.start_plan is not None:
-            seeded = self._decode_plan(self.start_plan)
-            self.seed_score = self._objective(seeded.final)
-            if self.seed_score > self.start_score:
-                start, self.start_score = seeded, self.seed_score
+        priority_fixed = self._fixed
+        priority_volumes, priority_energy = self._initial_volumes, self._initial_energy
+        best_fixed = priority_fixed
+        best_volumes, best_energy = priority_volumes, priority_energy
+        self.seed_score = None
+        for candidate, dispatch_seed in (
+            (self.start_plan, True),
+            (self._momentum_seed, False),
+        ):
+            if candidate is None:
+                continue
+            # Each contender owns its hold reservations. A new dump can
+            # change the priority order while the preceding optimized plan
+            # still fits. Repair it with the same exact decoder checks.
+            self._fixed = [self._copy_block(block) for block in priority_fixed]
+            self._initial_volumes, self._initial_energy = (
+                priority_volumes,
+                priority_energy,
+            )
+            self._settle_from(candidate)
+            seeded = self._decode_plan(candidate)
+            candidate_score = self._objective(seeded.final)
+            if dispatch_seed:
+                self.seed_score = candidate_score
+            if candidate_score > self.start_score:
+                start, self.start_score = seeded, candidate_score
+                best_fixed = self._fixed
+                best_volumes, best_energy = self._initial_volumes, self._initial_energy
+            self._fixed = best_fixed
+            self._initial_volumes, self._initial_energy = best_volumes, best_energy
         return start
 
     def _settle_from(self, plan: Plan) -> None:
@@ -295,6 +321,7 @@ class LocalSearchScheduler(PriorityScheduler):
         a locked entry or science kept from the pass before, runs past is
         held when that ends, and one that would then run into the block
         after it is left where it was reserved."""
+        original = [self._copy_block(block) for block in self._fixed]
         held = {
             int(entry.obsid): float(entry.begin)
             for entry in plan
@@ -316,6 +343,9 @@ class LocalSearchScheduler(PriorityScheduler):
                 continue
             self._settle_block(block, begin)
             block.latest_ready = block.ready
+        changes = self._fixed_data_changes(original, self._fixed)
+        self._initial_volumes = self._ledger.add_all(self._initial_volumes, changes)
+        self._initial_energy = self._charged_energy(self._fixed)
 
     def _decode_plan(self, plan: Plan) -> _Decoded:
         """Decode a plan's science as a start sequence: one snapshot per
@@ -589,7 +619,7 @@ class LocalSearchScheduler(PriorityScheduler):
             # after a contact that makes room.
             additions = [
                 *self._block_additions(block),
-                *self._ingress_deltas(succ, succ_slew),
+                *self._following_data_changes(block, timeline[index:], succ_slew),
             ]
             if not self._ledger.fits_all(state.volumes, additions):
                 continue
