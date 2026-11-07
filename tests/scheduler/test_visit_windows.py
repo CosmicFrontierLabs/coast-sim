@@ -316,8 +316,11 @@ class TestDispatch:
         ]
         assert len(visits) == 3
         _in_windows(visits)
-        assert targets[0].visits_done == {0, 1, 2}
-        assert targets[0].done
+        executed = next(t for t in ditl.queue.targets if t.obsid == 900)
+        assert executed.visits_done == {0, 1, 2}
+        assert executed.done
+        assert targets[0].visits_done == frozenset()
+        assert not targets[0].done
 
     def test_a_window_points_and_rolls_on_its_own(self) -> None:
         """Windows with their own pointing are observed there, in dispatch
