@@ -2255,12 +2255,13 @@ class PriorityScheduler:
             return
         Plan(entries=[entry]).bind_runtime(self.config, self.ctx.ephem)
         attitude = entry.target_body_attitude()
+        rest, final_attitude = self.ctx.science_rest(entry)
         block = _Block(
             entry=entry,
             attitude_in=attitude,
-            attitude_out=attitude,
+            attitude_out=final_attitude,
             ready=float(entry.collection_begin) - self.ctx.setup_for(int(entry.obsid)),
-            end=float(entry.end),
+            end=rest,
         )
         entry.visibility()
         # The slew in only reaches the attitude; the lock must also hold it for
@@ -3290,12 +3291,13 @@ class PriorityScheduler:
                 collection_begin,
                 collection_end,
             )
+            rest, final_attitude = self.ctx.science_rest(entry)
             block = _Block(
                 entry=entry,
                 attitude_in=attitude,
-                attitude_out=attitude,
+                attitude_out=final_attitude,
                 ready=collection_begin - timing.setup_seconds,
-                end=float(entry.end),
+                end=rest,
             )
             fitted = self._check_snapshot(block, slew, ss_min)
             if fitted is not None:
@@ -3375,7 +3377,7 @@ class PriorityScheduler:
             return None
         entry.collection_end = collection_end
         entry.end = violation
-        block.end = violation
+        block.end, block.attitude_out = self.ctx.science_rest(entry)
         return block
 
     def _visit(

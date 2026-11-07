@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from functools import partial
 
 import numpy as np
 import rust_ephem
@@ -15,7 +16,14 @@ from ..config.data_storage import DataStorage, RecorderView
 from ..config.solar_panel import SolarArrayDriveState
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.battery import Addition, BatteryLedger
-from ..schedulers.context import Attitude, SchedulingContext, tracking_rest
+from ..schedulers.context import (
+    Attitude,
+    SchedulingContext,
+    contact_tracking,
+    science_rest,
+    science_tracking,
+    tracking_rest,
+)
 from ..schedulers.local_search_scheduler import LocalSearchScheduler
 from ..schedulers.priority_scheduler import PriorityScheduler, StartState
 from ..schedulers.recorder import (
@@ -24,6 +32,7 @@ from ..schedulers.recorder import (
     activity_data_time,
     combine_amounts,
 )
+from ..simulation.attitude import AttitudeState, AttitudeTrajectory
 from ..simulation.passes import Pass
 from ..simulation.slew import Slew
 from ..targets import Plan, PlanEntry, Pointing, ScheduledActivity, assign_obsids
@@ -1205,7 +1214,11 @@ class RollingHorizonDITL(DITL):
             cursor = end
 
         for entry in sorted(committed, key=lambda e: float(e.begin)):
-            if float(entry.end) <= utime or float(entry.begin) >= start:
+            if float(entry.begin) >= start:
+                continue
+            tracking = self._committed_tracking_motion(entry)
+            rest_time = tracking[1] if tracking is not None else float(entry.end)
+            if rest_time <= utime:
                 continue
             # Idle before an unflown command holds the preceding body pose.
             integrate(min(start, float(entry.begin)), lambda at: previous)
@@ -1214,7 +1227,13 @@ class RollingHorizonDITL(DITL):
             if slew is not None:
                 integrate(min(end, float(slew.slewend)), slew.attitude, slew)
             pose = entry.spacecraft_attitude or entry.target_body_attitude()
-            integrate(end, lambda at: pose)
+            if tracking is not None:
+                track_begin, _, attitude_at = tracking
+                integrate(min(start, track_begin), lambda at: pose)
+                integrate(min(start, rest_time), attitude_at)
+                pose = attitude_at(rest_time)
+            else:
+                integrate(end, lambda at: pose)
             if (
                 dump is not None
                 and entry.desaturation
@@ -1223,11 +1242,56 @@ class RollingHorizonDITL(DITL):
                 ahead = ahead * dump.residual_fraction
             previous = (
                 self._rest_after(entry)[1]
-                if entry.moves or entry_obstype(entry) == ObsType.GSP
+                if tracking is None and entry_obstype(entry) == ObsType.GSP
                 else pose
             )
         integrate(start, lambda at: previous)
         return (float(ahead[0]), float(ahead[1]), float(ahead[2]))
+
+    def _committed_tracking_motion(
+        self, entry: PlanEntry
+    ) -> tuple[float, float, Callable[[float], Attitude]] | None:
+        """Acquisition, rest and attitude along tracked science or a contact."""
+        end = float(entry.end)
+        limits = self.config.spacecraft_bus.attitude_control
+        predict: Callable[[float], AttitudeState | None]
+        future: Callable[[], AttitudeTrajectory | None]
+        if entry.moves:
+            acquire = float(entry.begin) + float(entry.slewtime or 0)
+            predict = partial(self.acs.science_tracking_state, entry)
+            future = partial(science_tracking, entry, limits)
+        elif entry_obstype(entry) == ObsType.GSP:
+            gspass = self._entry_passes.get(id(entry))
+            if gspass is None or not gspass.requires_tracking:
+                return None
+            acquire = float(entry.contact_begin or entry.begin)
+            predict = partial(self.acs.pass_tracking_state, gspass)
+            future = partial(contact_tracking, gspass, acquire, limits)
+        else:
+            return None
+        state = predict(end)
+        if state is not None:
+            # Retained entries can cut the originally installed motion. Brake
+            # from its actual terminal state rather than a rebuilt short track.
+            brake = AttitudeTrajectory.braking(state, limits)
+            rest = float(brake.end) if brake is not None else end
+
+            def installed(at: float) -> Attitude:
+                if at > end and brake is not None:
+                    return brake.state(at).attitude
+                predicted = predict(min(at, end))
+                assert predicted is not None
+                return predicted.attitude
+
+            return acquire, rest, installed
+        trajectory = future()
+        if trajectory is None:
+            return None
+        return (
+            float(trajectory.start),
+            max(end, float(trajectory.end)),
+            lambda at: trajectory.state(at).attitude,
+        )
 
     def _committed_slew(
         self, entry: PlanEntry, start: Attitude, utime: float
@@ -1311,6 +1375,11 @@ class RollingHorizonDITL(DITL):
             if rest is not None:
                 rest_time, attitude = rest
                 return max(float(entry.end), rest_time), attitude
+        if entry.moves:
+            handoff = self.acs.science_handoff_state(entry, float(entry.end))
+            if handoff is not None:
+                return handoff.utime, handoff.attitude
+            return science_rest(entry, self.config.spacecraft_bus.attitude_control)
         return float(entry.end), _final_attitude(entry)
 
     @staticmethod
