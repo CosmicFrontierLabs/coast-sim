@@ -2352,7 +2352,15 @@ class QueueDITL(DITLMixin, DITLStats):
             float(_sun_bv[2]),
         ]
         _pos = np.asarray(position_vectors(self.ephem, "gcrs")[ei], dtype=np.float64)
-        earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
+        earth_body_vector: list[float] = [
+            float(value)
+            for value in scbodyvector(
+                np.radians(ra),
+                np.radians(dec),
+                np.radians(roll),
+                -_pos / np.linalg.norm(_pos),
+            )
+        ]
 
         if mounted_science:
             assert self.ppt is not None
@@ -4176,7 +4184,11 @@ class QueueDITL(DITLMixin, DITLStats):
         telescope = (
             target.science_telescope() if issubclass(type(target), PlanEntry) else None
         )
-        slew.instrument_name = telescope.name if telescope is not None else None
+        slew.instrument_name = (
+            target.science_instrument_name()
+            if issubclass(type(target), PlanEntry)
+            else None
+        )
         slew.instrument_roll = instrument_roll
         if telescope is not None and not telescope.mounting.is_identity:
             target.roll = instrument_roll
