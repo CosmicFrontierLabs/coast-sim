@@ -98,6 +98,15 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        frame = getattr(config.spacecraft_bus, "frame", None)
+        self._guidance_frame = (
+            frame if isinstance(frame, SpacecraftFrame) else SpacecraftFrame()
+        )
+        self._guidance_telescope = (
+            None
+            if self._guidance_frame.is_identity
+            else Telescope(mounting=self._guidance_frame.mounting)
+        )
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
@@ -567,9 +576,14 @@ class ACS:
         # Initiate slew to Sun pointing for safe mode
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
-            safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
-            )
+            if self._guidance_telescope is None:
+                safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
+                    utime, self.ephem
+                )
+            else:
+                safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
+                    utime, self.ephem, frame=self._guidance_frame
+                )
         else:
             # Fallback: point directly at Sun if no solar panel config
             index = self.ephem.index(dtutcfromtimestamp(utime))
@@ -582,9 +596,31 @@ class ACS:
             f"{unixtime2date(utime)}: Initiating slew to safe mode pointing at RA={safe_ra:.2f} Dec={safe_dec:.2f}",
         )
         # Enqueue slew to safe pointing with a special obsid
-        self._enqueue_slew(
-            safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
-        )
+        if self._guidance_telescope is None:
+            self._enqueue_slew(
+                safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
+            )
+        else:
+            roll = optimum_instrument_roll(
+                safe_ra,
+                safe_dec,
+                utime,
+                self.ephem,
+                self._guidance_telescope,
+                self.solar_panel,
+                self.constraint,
+                drive_state=self.solar_array_drive_state,
+                science_attitude=False,
+            )
+            pose = self._guidance_frame.body_attitude(safe_ra, safe_dec, roll)
+            self._enqueue_slew(
+                pose[0],
+                pose[1],
+                obsid=-999,
+                utime=utime,
+                obstype=ObsType.SAFE,
+                roll=pose[2],
+            )
 
     def _start_slew(self, slew: Slew, utime: float) -> Slew | None:
         """Start executing a slew.
@@ -1104,25 +1140,49 @@ class ACS:
         executor = self._advance_attitude(utime)
         if executor.next_rest_time(utime) > utime:
             return
-        ra, dec = self.ra, self.dec
+        ra, dec, reference_roll = self._guidance_frame.canonical_attitude(
+            self.ra, self.dec, self.roll
+        )
         if self.in_safe_mode:
             if self.solar_panel is not None:
-                ra, dec = self.solar_panel.optimal_charging_pointing(utime, self.ephem)
+                if self._guidance_telescope is None:
+                    ra, dec = self.solar_panel.optimal_charging_pointing(
+                        utime, self.ephem
+                    )
+                else:
+                    ra, dec = self.solar_panel.optimal_charging_pointing(
+                        utime, self.ephem, frame=self._guidance_frame
+                    )
             else:
                 index = self.ephem.index(dtutcfromtimestamp(utime))
                 ra, dec = self.ephem.sun_ra_deg[index], self.ephem.sun_dec_deg[index]
-        roll = optimum_body_roll(
-            ra,
-            dec,
-            utime,
-            self.ephem,
-            self.solar_panel,
-            self.constraint,
-            reference_roll=self.roll,
-            max_roll_delta=180.0,
-            drive_state=self.solar_array_drive_state,
-        )
-        target = (ra, dec, roll)
+        if self._guidance_telescope is None:
+            roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                reference_roll=reference_roll,
+                max_roll_delta=180.0,
+                drive_state=self.solar_array_drive_state,
+            )
+        else:
+            roll = optimum_instrument_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self._guidance_telescope,
+                self.solar_panel,
+                self.constraint,
+                reference_roll=reference_roll,
+                max_roll_delta=180.0,
+                science_attitude=False,
+                drive_state=self.solar_array_drive_state,
+            )
+        target = self._guidance_frame.body_attitude(ra, dec, roll)
         distance, _ = _quaternion_delta(
             executor.state.quaternion, attitude_to_quat(*target)
         )
@@ -1613,6 +1673,7 @@ class ACS:
             lastdec,
             current_ppt,
             drive_state=self.solar_array_drive_state,
+            lastroll=self.roll,
         )
         if charging_ppt is not None:
             self.request_battery_charge(
