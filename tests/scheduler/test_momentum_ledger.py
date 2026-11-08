@@ -23,7 +23,7 @@ from conops.config import (
     ThrusterDumpConfig,
 )
 from conops.ditl import RollingHorizonDITL
-from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers import CpSatScheduler, LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.context import SchedulingContext
 from conops.schedulers.momentum import MomentumForecast
 from conops.simulation.attitude import Attitude
@@ -218,14 +218,28 @@ class TestPriorityScheduler:
         # Three steps' worth: one step of this hold stores about 0.2 N m s.
         assert loading > 0.5
 
-    def test_the_forecast_reads_integrated_spans_from_its_cache(self) -> None:
+    @pytest.mark.parametrize("kind", ["priority", "local_search", "cp_sat"])
+    def test_the_forecast_reads_integrated_spans_from_its_cache(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A plan's passes share the spans integrated so far: the profile
         from the cache is the profile integrated afresh, and a pass
         integrates only from the dump it reserves onwards."""
         config = _dumping()
-        scheduler = PriorityScheduler(
-            config, _targets(config), BEGIN, END, step_size=60
-        )
+        if kind == "priority":
+            scheduler = PriorityScheduler(
+                config, _targets(config), BEGIN, END, step_size=60
+            )
+        elif kind == "local_search":
+            scheduler = LocalSearchScheduler(
+                config, _targets(config), BEGIN, END, step_size=60, max_iterations=0
+            )
+        else:
+            # Solving is independent of sharing the momentum integration.
+            monkeypatch.setattr(CpSatScheduler, "_solve", lambda self, start: start)
+            scheduler = CpSatScheduler(
+                config, _targets(config), BEGIN, END, step_size=60, workers=1
+            )
         scheduler.schedule()
         assert scheduler._momentum is not None
         cache = scheduler._momentum.cache
@@ -241,6 +255,8 @@ class TestPriorityScheduler:
         # starts from, so the passes hit the same entries.
         spans = scheduler._momentum._spans(scheduler.timeline)
         assert len(cache) < 2 * len(spans) * len(scheduler.dumps)
+        scheduler.schedule()
+        assert scheduler._momentum_cache is not cache
 
     def test_without_thrusters_the_forecast_past_the_capacity_is_logged(self) -> None:
         config = _config(capacity_n_m_s=CAPACITY)
