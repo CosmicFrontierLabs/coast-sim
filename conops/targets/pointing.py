@@ -360,6 +360,7 @@ class Pointing(PlanEntry):
                 attempt = self._visit_attempt_seconds.pop(index, 0.0)
                 if attempt < self.per_visit_seconds - 1e-6:
                     self._visits_done.discard(index)
+                    self.done = False
                     self._exposure_is_the_visits_left()
 
     def visit_complete(self, index: int) -> bool:
