@@ -1192,9 +1192,15 @@ class CpSatScheduler(LocalSearchScheduler):
                 finish if finish is not None else self.ctx.uend,
                 _Decoded.model_construct(sequence=later, states=rest[len(planned) :]),
             )
-            used = (
-                solved is not None
-                and self._final_score(state, solved + later) >= unchanged
+            final = (
+                self._final_state(state, solved + later) if solved is not None else None
+            )
+            used = final is not None and self._improves(
+                self._objective(final),
+                final.timeline,
+                unchanged,
+                rest[-1].timeline,
+                accept_equal_timing=True,
             )
             self.solver_chunks_used.append(used)
             if used:
@@ -1230,9 +1236,7 @@ class CpSatScheduler(LocalSearchScheduler):
 
     def _final_score(self, state: _State, sequence: Sequence[_Snapshot]) -> float:
         """Objective after decoding ``sequence`` from ``state``."""
-        for snapshot in sequence:
-            state = self._step(state, snapshot)
-        return self._objective(state)
+        return self._objective(self._final_state(state, sequence))
 
     def _chunk_origin(self, state: _State) -> tuple[float, Attitude]:
         """Return when and from which attitude the next snapshot can start."""
@@ -2034,6 +2038,12 @@ class CpSatScheduler(LocalSearchScheduler):
                     cache[key] = seconds
                 result[i, j] = seconds
         return result
+
+    def _final_state(self, state: _State, sequence: Sequence[_Snapshot]) -> _State:
+        """Exactly decode a candidate once for both value and timing."""
+        for snapshot in sequence:
+            state = self._step(state, snapshot)
+        return state
 
 
 def _require_ortools() -> None:

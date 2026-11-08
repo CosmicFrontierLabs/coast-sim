@@ -342,7 +342,7 @@ class TestEarliness:
         plan = scheduler.schedule()
 
         assert [obsid for obsid, _, _ in _science(plan)] == [2, 1]
-        assert scheduler.score > scheduler.initial_score
+        assert scheduler.score == scheduler.initial_score == (60 + 50) * 20 * MIN
 
     def test_earliest_start_is_kept_by_every_change(self) -> None:
         config = _config(3)
@@ -763,3 +763,37 @@ class TestSearchBudgetReporting:
             )
         )
         assert record.search_iterations == record.search_limits == []
+
+
+def test_equal_value_does_not_postpone_the_priority_science() -> None:
+    config = _config(4)
+    config.constraint.sun_constraint = None
+    config.constraint.earth_constraint = None
+    target = _target(config, 100, *PATCH[0], minutes=20)
+    scheduler = LocalSearchScheduler(
+        config,
+        [target],
+        BEGIN,
+        BEGIN + timedelta(hours=4),
+        time_limit=0,
+        max_iterations=0,
+        include_passes=False,
+    )
+    start = scheduler._start_from_priority_plan()
+    delayed = scheduler._decode(
+        [
+            s.model_copy(update={"release": float(s.release or T0) + HOUR})
+            for s in start.sequence
+        ]
+    )
+    assert scheduler._objective(delayed.final) == scheduler.initial_score
+    assert (
+        delayed.final.timeline[0].entry.collection_begin
+        > scheduler._greedy_timeline[0].entry.collection_begin
+    )
+    plan = scheduler._finish_best(delayed)
+    assert (
+        plan.entries[0].collection_begin
+        == scheduler._greedy_timeline[0].entry.collection_begin
+    )
+    assert _execute([target], plan, 4).validate_plan_matches_execution() == []

@@ -1354,3 +1354,41 @@ def test_ambiguous_search_endings_are_reported_conservatively(
     status, wall, deterministic, expected
 ):
     assert search_ending(status, wall, 10.0, deterministic, 5.0) == expected
+
+
+@pytest.mark.parametrize("candidate_earlier", [False, True])
+def test_equal_value_solver_choice_prefers_earlier_science(
+    monkeypatch, candidate_earlier
+) -> None:
+    config = _config(4)
+    config.constraint.sun_constraint = None
+    config.constraint.earth_constraint = None
+    target = _target(config, 100, *PATCH[0], minutes=20)
+    scheduler = CpSatScheduler(
+        config,
+        [target],
+        BEGIN,
+        BEGIN + timedelta(hours=4),
+        chunk=timedelta(hours=4),
+        time_limit=0,
+        max_iterations=0,
+        include_passes=False,
+    )
+    early = scheduler._start_from_priority_plan()
+    late = scheduler._decode(
+        [
+            s.model_copy(update={"release": float(s.release or T0) + HOUR})
+            for s in early.sequence
+        ]
+    )
+    incumbent, proposed = (late, early) if candidate_earlier else (early, late)
+    assert scheduler._objective(incumbent.final) == scheduler._objective(proposed.final)
+    monkeypatch.setattr(
+        scheduler, "_solve_chunk", lambda *args, **kwargs: proposed.sequence
+    )
+    solved = scheduler._solve(incumbent)
+    assert scheduler.solver_chunks_used == [candidate_earlier]
+    assert (
+        solved.final.timeline[0].entry.collection_begin
+        == early.final.timeline[0].entry.collection_begin
+    )
