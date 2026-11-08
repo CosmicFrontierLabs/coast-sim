@@ -1648,7 +1648,9 @@ class CpSatScheduler(LocalSearchScheduler):
                         k,
                     )
                     for k in request.open_visits(
-                        state.last_visit.get(obsid), origin_time
+                        state.last_visit.get(obsid),
+                        origin_time,
+                        after_visit=state.last_visit_window.get(obsid),
                     )
                 ]
             for w0, w1 in request.windows:

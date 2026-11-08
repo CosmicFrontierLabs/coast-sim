@@ -265,16 +265,22 @@ class _Request(BaseModel):
             return own
         return group_deadline if own is None else min(own, group_deadline)
 
-    def open_visits(self, last_end: float | None, not_before: float) -> list[int]:
+    def open_visits(
+        self,
+        last_end: float | None,
+        not_before: float,
+        *,
+        after_visit: int | None = None,
+    ) -> list[int]:
         """The windows a visit may still go in, in order: the candidates not
         skipped, after the window of the visit that ended at ``last_end``,
         and still open at ``not_before``."""
         target = self.target
-        last = (
-            target.visit_index_at(last_end - target.per_visit_seconds)
-            if last_end is not None
-            else None
-        )
+        # Calibration and inter-step slews can extend a sequence beyond the
+        # next opening. Its recorded visit is authoritative when available.
+        last = after_visit
+        if last is None and last_end is not None:
+            last = target.visit_index_at(last_end - target.per_visit_seconds)
         return [
             k
             for k in self.visit_candidates
@@ -283,9 +289,17 @@ class _Request(BaseModel):
             and target.visit_windows[k].deadline >= not_before
         ]
 
-    def next_visit(self, last_end: float | None, not_before: float) -> int | None:
+    def next_visit(
+        self,
+        last_end: float | None,
+        not_before: float,
+        *,
+        after_visit: int | None = None,
+    ) -> int | None:
         """The window the next visit goes in, or None when none is left."""
-        return next(iter(self.open_visits(last_end, not_before)), None)
+        return next(
+            iter(self.open_visits(last_end, not_before, after_visit=after_visit)), None
+        )
 
 
 def program_shares(seconds: Mapping[str, float]) -> dict[str, float]:
@@ -564,6 +578,7 @@ class PriorityScheduler:
         """Science from the pass before that a pass planning on from a dump
         keeps where it stands (see :meth:`_keep_before`)."""
         self._kept_visits: dict[int, float] = {}
+        self._kept_visit_windows: dict[int, int] = {}
         """When each target's last kept visit finishes collecting."""
         self._resume_from: float | None = None
         """Where a pass planning on from a dump places from: the first slew
@@ -1064,6 +1079,7 @@ class PriorityScheduler:
         self._kept = [block for block in self._kept if self._insert_kept(block)]
         kept = {id(block.entry) for block in self._kept}
         self._kept_visits = {}
+        self._kept_visit_windows = {}
         for block in self._kept:
             end = block.entry.collection_end
             if end is not None:
@@ -1071,6 +1087,10 @@ class PriorityScheduler:
                 self._kept_visits[obsid] = max(
                     self._kept_visits.get(obsid, float(end)), float(end)
                 )
+                if block.entry.visit is not None:
+                    self._kept_visit_windows[obsid] = max(
+                        self._kept_visit_windows.get(obsid, -1), block.entry.visit
+                    )
         self._locked_visits: dict[int, list[tuple[float, float]]] = defaultdict(list)
         """Locked and kept science visits by obsid: when each slew starts
         and its collection ends. Cadence visits are kept clear of them."""
@@ -1355,6 +1375,9 @@ class PriorityScheduler:
                     request.next_visit(
                         self._last_visit.get(int(request.target.obsid)),
                         self.ctx.ustart,
+                        after_visit=self._last_visit_window.get(
+                            int(request.target.obsid)
+                        ),
                     ),
                     self.ctx,
                 )
@@ -1599,6 +1622,10 @@ class PriorityScheduler:
                 self._last_visit.get(obsid, float("-inf")), float(entry.collection_end)
             )
             self._planned_visits[obsid].append(block)
+            if entry.visit is not None:
+                self._last_visit_window[obsid] = max(
+                    self._last_visit_window.get(obsid, -1), entry.visit
+                )
 
     # ── Requests ──────────────────────────────────────────────────────────
 
@@ -1619,9 +1646,14 @@ class PriorityScheduler:
         self._group_seconds: dict[str, float] = {}
         """The same by observation group, for the groups' time budgets."""
         self._last_visit: dict[int, float] = {}
+        self._last_visit_window = dict(self._kept_visit_windows)
         """When each cadence target was last observed, collected or planned."""
         for target in self.targets:
             obsid = int(target.obsid)
+            if target.visits_done:
+                self._last_visit_window[obsid] = max(
+                    self._last_visit_window.get(obsid, -1), *target.visits_done
+                )
             seconds = target.collected_seconds + reserved.get(obsid, 0.0)
             if seconds > 0.0:
                 category = merit_model.category(target)
@@ -1673,10 +1705,11 @@ class PriorityScheduler:
                 # a committed visit's window, and not closed before the plan.
                 last = self._last_visit.get(int(target.obsid))
                 visited = set(target.visits_done)
-                if last is not None:
+                index = self._last_visit_window.get(int(target.obsid))
+                if index is None and last is not None:
                     index = target.visit_index_at(last - target.per_visit_seconds)
-                    if index is not None:
-                        visited.update(range(index + 1))
+                if index is not None:
+                    visited.update(range(index + 1))
                 candidates = [
                     k
                     for k, window in enumerate(target.visit_windows)
