@@ -677,13 +677,16 @@ through it:
 * the segments start at each sunrise, and the plan is checked at every segment's
   peak.
 
-The scheduler charges where it can. As it evaluates each placement, it puts a charge
-into every idle sunlit stretch of the timeline long enough for one and its two
-slews: slewing from the activity before to the charging attitude, found as emergency
-charging finds it, holding it while the charging mode's constraints allow until the
-stretch ends, and leaving the activity after it reachable from the charging attitude,
-shortened or dropped where it is not. A snapshot is placed only where the deficit,
-with those charges, stays within the limit from there to the end of the horizon.
+The scheduler reserves charging where the full battery forecast needs it. It
+first evaluates the timeline with passive generation and the actual idle and
+observing loads. Where that already stays within the limit, no discretionary
+charging excursion is added. Otherwise, it considers idle sunlit stretches long
+enough for a hold and its two slews: from the preceding activity to the charging
+attitude and back to the following activity. Charges are removed or shortened
+where the complete forecast still fits, including both turns, battery saturation
+and finite array drives. A charge whose turn costs worsen the forecast can be
+removed; explicitly supplied charges are preserved. A snapshot is placed only
+where the deficit stays within the limit to the end of the horizon.
 Where it does not, the scheduler tries the snapshot later in the same gap, after the
 charging time its idle sunlit start then leaves, before moving to a later gap; it is
 never shortened to fit, and the log says when a request waits for charge. The
@@ -694,9 +697,9 @@ The ledger is the simulation's own arithmetic at the attitudes the simulation fl
 so a plan it accepts keeps the battery above the level when executed. A spacecraft
 whose panels generate more than observing draws, such as a side-mounted array rolled
 towards the Sun, charges only in the sunlit idle time it has anyway and fills the
-day with science. One whose panels only generate pointing at the Sun charges in
-every idle sunlit stretch and refuses the science the battery cannot carry through
-the eclipse after it; it is then the lowest-merit science that waits, as with the
+day with science. One whose panels only generate pointing at the Sun reserves
+the charging it needs and refuses science the battery cannot carry through
+the following eclipse; it is then the lowest-merit science that waits, as with the
 recorder. Local search decodes its sequences through the same check;
 :class:`~conops.ditl.RollingHorizonDITL` starts each plan from the battery the
 committed activities, charges included, leave by the time the plan takes over; and

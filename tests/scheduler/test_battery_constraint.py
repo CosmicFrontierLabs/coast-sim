@@ -516,7 +516,13 @@ class TestPriorityScheduler:
         first = float(_observations(plan)[0].begin)
         assert T0 + MIN_CHARGE_SECONDS < first < T0 + 3 * HOUR
         assert _charges(plan)
-        assert float(_charges(plan)[0].end) <= first
+        # Passive generation can cover the early visit, so the first
+        # discretionary charge may now serve a later forecast deficit.
+        assert scheduler._within_level(scheduler._timeline_energy(scheduler.timeline))
+        config.battery.charge_level = config.battery.watthour - (LIMIT_WH - 80.0)
+        ditl = _execute(config, plan)
+        assert min(ditl.batterylevel) >= LEVEL - 1e-6
+        assert ditl.validate_plan_matches_execution() == []
 
 
 class TestLocalSearch:
