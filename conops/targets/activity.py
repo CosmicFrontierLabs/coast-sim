@@ -19,7 +19,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..common import ObsType
-from ..config import MissionConfig
+from ..config import ActivityAttitude, MissionConfig
 from .plan_entry import PlanEntry
 
 ACTIVITY_OBSID = 998000
@@ -39,6 +39,10 @@ class ScheduledActivity(BaseModel):
     name: str
     begin: float = Field(description="When the activity starts, in Unix seconds")
     duration_seconds: float = Field(gt=0.0)
+    attitude: ActivityAttitude = Field(
+        default_factory=ActivityAttitude,
+        description="Inherited or fixed body attitude for the full hold, after ingress",
+    )
     instrument_modes: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -180,6 +184,7 @@ def periodic_activities(
     data_gb: float = 0.0,
     fixed: bool = False,
     slide_seconds: float = 0.0,
+    attitude: ActivityAttitude | None = None,
 ) -> list[ScheduledActivity]:
     """Activities named ``name`` every ``interval_seconds`` from ``first``,
     each ``duration_seconds`` long, ``count`` of them or as many as begin by
@@ -205,6 +210,7 @@ def periodic_activities(
                 data_gb=data_gb,
                 fixed=fixed,
                 slide_seconds=slide_seconds,
+                attitude=attitude or ActivityAttitude(),
             )
         )
         k += 1

@@ -494,6 +494,33 @@ cadences without replanning the science schedule.
 Momentum-constrained queue scheduling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+``ThrusterDumpConfig.attitude`` accepts the same
+:class:`~conops.config.activity_attitude.ActivityAttitude` as scheduled holds.
+The default is inherited. With a required fixed pose, dispatch and the planners
+reserve the ingress turn as well as the full ``duration_seconds`` of firing at
+that pose. The wheel reset occurs at firing end, once; an incomplete firing at
+the physical simulation end does not reset the wheels. A configured dump waits
+for an indivisible visit before turning and firing.
+
+This illustrative pose is a test input; the firing rule remains a mission
+input. Place ``thruster_dump`` under
+``spacecraft_bus.attitude_control.stored_momentum``. Its angles use the physical GCRS body-attitude convention of plan entries,
+including when the declared spacecraft frame has a +Z payload boresight.
+
+.. code-block:: yaml
+
+   thruster_dump:
+     duration_seconds: 120.0
+     residual_fraction: 0.0
+     attitude:
+       kind: fixed
+       ra_deg: 105.0
+       dec_deg: 10.0
+       roll_deg: 25.0
+
+Power-positive scheduled safe holds and fault-mode guidance are the next
+consumers of this attitude model.
+
 Set ``stored_momentum.enforce_capacity`` with a finite positive spherical actuator
 momentum limit in ``stored_momentum.capacity_n_m_s`` to enable admission and
 execution checks. The default leaves existing scheduling unchanged. A physical

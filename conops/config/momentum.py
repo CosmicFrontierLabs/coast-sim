@@ -4,10 +4,13 @@ import numpy as np
 from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
+from .activity_attitude import ActivityAttitude
 
 
 class ThrusterDumpConfig(ConfigModel):
     """A thruster momentum dump: a hold during which the wheels are unloaded."""
+
+    attitude: ActivityAttitude = Field(default_factory=ActivityAttitude)
 
     duration_seconds: float = Field(
         default=120.0,
