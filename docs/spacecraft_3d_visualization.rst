@@ -9,7 +9,15 @@ any browser or Jupyter notebook without running a full DITL simulation.
 Features
 --------
 
-* **Spacecraft bus** — lit, solid-shaded box with configurable dimensions.
+* **Spacecraft surfaces** — when ``spacecraft_bus.surfaces`` has plates, render
+  their configured centers, normals and areas in the declared body frame. A
+  plate's optional ``geometry`` supplies its rectangular outline; otherwise a
+  square of equal area illustrates it. Area and normal alone cannot recover a
+  facet's aspect ratio or the outline of a scarfed baffle. The configured model
+  replaces the synthetic bus and telescope. Coincident panel front/back plates
+  are represented once by the panel geometry. Plot bounds include all components.
+* **Spacecraft bus fallback** — lit, solid-shaded box with configurable dimensions
+  when no surfaces are configured.
 * **Telescope assembly** — cylindrical baffle tube with aperture ring, mid-tube
   baffle rings, and secondary mirror housing.  Sized automatically from
   ``optics.aperture_m`` and ``optics.tube_length_m``.
@@ -29,7 +37,9 @@ Features
 Coordinate system
 -----------------
 
-All geometry is expressed in the spacecraft body frame:
+All geometry is expressed directly in ``spacecraft_bus.frame``; vectors are not
+rotated a second time. The boresight label follows the declared frame. The
+following axes describe the default frame:
 
 .. list-table::
    :header-rows: 1
