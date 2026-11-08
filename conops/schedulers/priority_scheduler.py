@@ -593,10 +593,6 @@ class PriorityScheduler:
     def schedule(self) -> Plan:
         """Build and return the plan, within the wheels' momentum where the
         configuration tracks it (see :meth:`_plan_within_momentum`)."""
-        self._momentum_cache: SpanCache = {}
-        """Spans of the timeline integrated for the momentum forecast, shared
-        by the passes of this plan: each pass changes the timeline only from
-        the dump it reserves onwards."""
         return self._plan_within_momentum(self._plan_once)
 
     def _plan_once(self) -> Plan:
@@ -634,6 +630,10 @@ class PriorityScheduler:
         slowest, a dump goes before the observation where its slew fits from
         empty wheels, and the observation is not planned where it does not.
         """
+        # Every planner enters here, including those overriding schedule().
+        # Share exact integrations across this plan's momentum passes, then
+        # start fresh on the next schedule if configuration or state changed.
+        self._momentum_cache: SpanCache = {}
         self._momentum_seed = None
         plan = build()
         forecast = self._momentum
