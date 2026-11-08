@@ -81,6 +81,8 @@ class _State(BaseModel):
     """The same by observation group, for the groups' time budgets."""
     last_visit: dict[int, float]
     """When each cadence target was last observed, collected or planned."""
+    last_visit_window: dict[int, int] = {}
+    """The actual window of each timed visit, independent of sequence overhead."""
     volumes: tuple[RecorderAmount, ...]
     """Science production planned in each segment of the recorder ledger."""
     energy: tuple[Additions, ...]
@@ -247,6 +249,7 @@ class LocalSearchScheduler(PriorityScheduler):
             for n, span in enumerate(spans)
         }
         self._initial_last_visit = dict(self._last_visit)
+        self._initial_last_visit_window = dict(self._last_visit_window)
         self._initial_categories = dict(self._category_seconds)
         self._initial_groups = dict(self._group_seconds)
         self._initial_volumes = tuple(self._volumes)
@@ -544,6 +547,7 @@ class LocalSearchScheduler(PriorityScheduler):
             categories=dict(self._initial_categories),
             groups=dict(self._initial_groups),
             last_visit=dict(self._initial_last_visit),
+            last_visit_window=dict(self._initial_last_visit_window),
             volumes=self._initial_volumes,
             energy=self._initial_energy,
             allocated_left=dict(self._initial_allocated),
@@ -592,7 +596,11 @@ class LocalSearchScheduler(PriorityScheduler):
                 else self.ctx.ustart
             )
             request.select_visit(
-                request.next_visit(last, max(cursor_time, not_before or cursor_time)),
+                request.next_visit(
+                    last,
+                    max(cursor_time, not_before or cursor_time),
+                    after_visit=state.last_visit_window.get(obsid),
+                ),
                 self.ctx,
             )
             if request.visit is None:
@@ -654,10 +662,13 @@ class LocalSearchScheduler(PriorityScheduler):
                     request.group.name, 0.0
                 ) + _collection_seconds(block)
             last_visit = state.last_visit
+            last_visit_window = state.last_visit_window
             if (
                 request.cadence is not None or request.timed
             ) and block.entry.collection_end is not None:
                 last_visit = {**last_visit, obsid: float(block.entry.collection_end)}
+                if block.entry.visit is not None:
+                    last_visit_window = {**last_visit_window, obsid: block.entry.visit}
             return _State.model_construct(
                 timeline=placed,
                 cursor=index + 1,
@@ -667,6 +678,7 @@ class LocalSearchScheduler(PriorityScheduler):
                 categories=categories,
                 groups=groups,
                 last_visit=last_visit,
+                last_visit_window=last_visit_window,
                 volumes=self._ledger.add_all(state.volumes, additions),
                 energy=self._charged_energy(placed),
                 allocated_left=allocated_left,
@@ -705,6 +717,7 @@ class LocalSearchScheduler(PriorityScheduler):
         if (
             a.remaining != b.remaining
             or a.last_visit != b.last_visit
+            or a.last_visit_window != b.last_visit_window
             or a.allocated_left != b.allocated_left
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
         ):
@@ -774,6 +787,7 @@ class LocalSearchScheduler(PriorityScheduler):
                     categories=later.categories,
                     groups=later.groups,
                     last_visit=later.last_visit,
+                    last_visit_window=later.last_visit_window,
                     volumes=tuple(
                         combine_amounts(combine_amounts(a, b), c, -1.0)
                         for a, b, c in zip(
