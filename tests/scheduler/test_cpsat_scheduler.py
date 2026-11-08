@@ -1251,31 +1251,59 @@ class TestSolverSearchReporting:
         scheduler = self._scheduler()
         scheduler.solver_search_statuses.append("UNKNOWN")
         scheduler.solver_search_limits.append("wall clock")
+        scheduler._solve_cache.hits = 3
         empty = Plan(entries=[])
 
         def passes(build):
             assert (
                 scheduler.solver_search_statuses == scheduler.solver_search_limits == []
             )
+            assert scheduler.solver_reused_chunks == 0
             return empty
 
         monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
         assert scheduler.schedule() is empty
 
+    def test_only_final_chunks_reuse_and_reuse_is_not_an_actual_search(
+        self, monkeypatch
+    ):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        scheduler.workers = 1
+        scheduler._deterministic_per_chunk = 0.05
+        original = cp_model.CpSolver.solve
+        calls = []
+
+        def counted(self, *args, **kwargs):
+            calls.append(True)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", counted)
+        for end in [scheduler.ctx.uend - MIN] * 2 + [scheduler.ctx.uend] * 2:
+            scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+        assert len(calls) == 3
+        assert scheduler.solver_reused_chunks == 1
+        assert scheduler.solver_limits == ["optimal", "optimal", "optimal", "reused"]
+        assert scheduler.solver_search_limits == ["optimal"] * 3
+
     def test_replan_keeps_discarded_candidates_and_resets_next_time(self, monkeypatch):
         reports = iter(
             [
-                (["UNKNOWN", "OPTIMAL"], ["wall clock", "optimal"]),
-                (["FEASIBLE"], ["deterministic budget"]),
-                (["INFEASIBLE"], ["solver"]),
-                ([], []),
+                (["UNKNOWN", "OPTIMAL"], ["wall clock", "optimal"], 2),
+                (["FEASIBLE"], ["deterministic budget"], 1),
+                (["INFEASIBLE"], ["solver"], 0),
+                ([], [], 0),
             ]
         )
         built = []
 
         class ReportOnlyScheduler(PriorityScheduler):
             def schedule(self):
-                self.solver_search_statuses, self.solver_search_limits = next(reports)
+                (
+                    self.solver_search_statuses,
+                    self.solver_search_limits,
+                    self.solver_reused_chunks,
+                ) = next(reports)
                 self.solver_statuses = self.solver_search_statuses[-1:]
                 self.solver_limits = self.solver_search_limits[-1:]
                 built.append(self)
@@ -1318,6 +1346,8 @@ class TestSolverSearchReporting:
         ]
         assert run.replans[1].solver_search_statuses == ["INFEASIBLE"]
         assert run.replans[1].solver_search_limits == ["solver"]
+        assert run.replans[0].solver_reused_chunks == 3
+        assert run.replans[1].solver_reused_chunks == 0
         assert (
             ReplanRecord.model_validate_json(run.replans[0].model_dump_json())
             == run.replans[0]
@@ -1339,6 +1369,7 @@ class TestSolverSearchReporting:
             )
         )
         assert record.solver_search_statuses == record.solver_search_limits == []
+        assert record.solver_reused_chunks == 0
 
 
 @pytest.mark.parametrize(

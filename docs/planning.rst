@@ -1084,6 +1084,14 @@ each plan by local search or with CP-SAT.
   and ``solver_chunks_used`` keep their final-pass, selected-plan scope. Older
   records default to empty cumulative lists; they cannot retrospectively prove
   that earlier attempts avoided wall-clock limits.
+  ``solver_reused_chunks`` counts cached responses across all candidates, including
+  rejected ones, and defaults to zero for older records. A cached response is
+  labelled ``"reused"`` in ``solver_limits`` and is excluded from the actual-search
+  histories. Reuse is limited to a schedule's final chunks with one worker and a
+  deterministic budget, where the complete compiled model and solver parameters
+  agree. The response is decoded using the current requests and exact state;
+  executable entries from another plan are not reused. The cache resets on each
+  schedule and wall-clock-ended searches are ineligible for reuse.
 * ``ditl.too_response_times()`` gives the seconds from each ToO's submission to its
   first science, or None if it was never observed.
 * ``ditl.plan`` is the plan that was actually followed: the committed parts of
