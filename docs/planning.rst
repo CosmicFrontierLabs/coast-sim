@@ -1335,3 +1335,31 @@ them, with rolling replans every six hours (or four times in a shorter run) and 
 steered by an allocator with one-day bins::
 
    uv run python scripts/benchmark_schedulers.py --scenario all --time-limit 10
+
+
+Cross-process dispatch verification
+-----------------------------------
+
+A seed alone does not establish repeatability. From the repository root, capture
+identical inputs and run dispatch in fresh Python processes::
+
+   PYTHONPATH=. .venv/bin/python scripts/check_program_repeatability.py \
+       --config mission.yaml --program program.json --ephemeris orbit.e \
+       --output out/repeatability --hash-seeds 2029 2029 1
+
+The destination must be new, preserving earlier results. Initialize the cached
+Earth-orientation provider before capture. Moving targets must already carry
+saved tracks; this command does not refresh them. The first two workers load the
+same saved program; subsequent workers save and reload it before execution.
+The default uses analytic planetary models; supply ``--planetary-kernel`` for an
+explicit SPICE kernel. Each worker records the loaded EOP data, source hashes,
+dependency versions and actual input hashes.
+
+``conops.benchmark.reproducibility.execution_record`` retains exact entries,
+decisions, telemetry, ToOs and science reports. ``compare_runs`` reports the
+first differing value and event, without rounding away timestamps or attitudes.
+Equality passes only for complete, valid runs with identical provenance; two
+identical failures do not pass. Exceptions retain their original diagnostic
+state rather than replacing it with validation of an unfinished plan. This
+checks dispatch and saved-program round trips; it does not establish planned-run
+science quality or solver repeatability.
