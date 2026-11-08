@@ -240,11 +240,11 @@ def test_feasible_short_tracking_curve_is_not_rejected_by_the_bound():
 @pytest.mark.parametrize("first,last", [(0.0, 1.0), (0.2, 0.7), (0.47, 0.52)])
 def test_tracking_momentum_bound_matches_dense_vector_demand(first, last):
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(20, -10, 35)),
-        tuple(attitude_to_quat(23, -8, 40)),
-        (0.1, -0.2, 0.15),
-        (-0.15, 0.1, 0.2),
-        30.0,
+        first=tuple(attitude_to_quat(20, -10, 35)),
+        last=tuple(attitude_to_quat(23, -8, 40)),
+        first_rate=(0.1, -0.2, 0.15),
+        last_rate=(-0.15, 0.1, 0.2),
+        duration=30.0,
     )
     inertia = np.array(
         [[1000.0, 120.0, 90.0], [120.0, 850.0, -70.0], [90.0, -70.0, 600.0]]
@@ -267,11 +267,11 @@ def test_tracking_momentum_bound_matches_dense_vector_demand(first, last):
 
 def test_tracking_momentum_bound_retains_vector_cancellation():
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(0, 0, 0)),
-        tuple(attitude_to_quat(0.005, 0, 0)),
-        (0, 0, 0),
-        (0, 0, 0),
-        0.2,
+        first=tuple(attitude_to_quat(0, 0, 0)),
+        last=tuple(attitude_to_quat(0.005, 0, 0)),
+        first_rate=(0, 0, 0),
+        last_rate=(0, 0, 0),
+        duration=0.2,
     )
     inertia = np.eye(3) * 1000
     momentum = np.array([[0.0, 0.0, 0.35], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
@@ -439,7 +439,11 @@ def test_fixed_axis_bound_covers_changing_quadratic_momentum(coefficients):
 
     _, _, executor = setup_budget(capacity=1000, inertia=(1000, 800, 600))
     budget = executor.momentum
-    initial = AttitudeState(0, tuple(attitude_to_quat(15, 25, 10)), (0, 0, 20))
+    initial = AttitudeState(
+        utime=0,
+        quaternion=tuple(attitude_to_quat(15, 25, 10)),
+        angular_velocity_body=(0, 0, 20),
+    )
     duration = 3.0
     coefficients = np.asarray(coefficients, dtype=float)
     # Independent dense evaluation of the physical demand, without the

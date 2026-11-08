@@ -730,7 +730,7 @@ class ACS:
         tracking = self._tracking_after(slew, trajectory, slew.motion_limits)
         if tracking is not None:
             trajectory = AttitudeTrajectory(
-                (*trajectory.legs, *tracking.legs), tracking.end
+                legs=(*trajectory.legs, *tracking.legs), end=tracking.end
             )
         executor.install(trajectory, momentum_end=slew._momentum_hold_end)
         self._tracked_slew = slew if tracking is not None else None

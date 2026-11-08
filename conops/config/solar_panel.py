@@ -1,12 +1,18 @@
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from ..common import dtutcfromtimestamp
 from ..common.enums import ACSMode
@@ -224,8 +230,7 @@ class SingleAxisSolarArrayDrive(ConfigModel):
         return float(np.clip(current + delta, self.min_angle_deg, self.max_angle_deg))
 
 
-@dataclass(frozen=True, slots=True)
-class SolarArrayDriveState:
+class SolarArrayDriveState(BaseModel):
     """Executed finite-drive state, kept separate from panel configuration.
 
     ``angles_deg`` is aligned with ``SolarPanelSet.panels``. Entries are ``None``
@@ -235,11 +240,14 @@ class SolarArrayDriveState:
     caches can identify the state snapshot they scored.
     """
 
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     angles_deg: tuple[float | None, ...]
     updated_at_s: float | None = None
     revision: int = 0
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_state(self) -> "SolarArrayDriveState":
         if self.updated_at_s is not None and not np.isfinite(self.updated_at_s):
             raise ValueError("drive-state update time must be finite")
         if self.revision < 0:
@@ -248,6 +256,7 @@ class SolarArrayDriveState:
             angle is not None and not np.isfinite(angle) for angle in self.angles_deg
         ):
             raise ValueError("drive-state angles must be finite")
+        return self
 
     @property
     def driven_angles_deg(self) -> list[float] | None:

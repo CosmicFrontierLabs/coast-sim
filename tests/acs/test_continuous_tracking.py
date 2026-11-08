@@ -107,11 +107,11 @@ def test_acquisition_from_rest_must_fit_the_first_interval(limits):
 
 def test_interval_check_catches_rate_peak_between_endpoints():
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(0, 0, 0)),
-        tuple(attitude_to_quat(6, 0, 0)),
-        (0, 0, 0),
-        (0, 0, 0),
-        60,
+        first=tuple(attitude_to_quat(0, 0, 0)),
+        last=tuple(attitude_to_quat(6, 0, 0)),
+        first_rate=(0, 0, 0),
+        last_rate=(0, 0, 0),
+        duration=60,
     )
     assert np.linalg.norm(curve.evaluate(0)[1]) == 0
     assert np.linalg.norm(curve.evaluate(1)[1]) < 1e-12
@@ -123,11 +123,11 @@ def test_interval_check_catches_rate_peak_between_endpoints():
 
 def test_quaternion_curve_rates_and_acceleration_match_independent_differences():
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(10, 20, 30)),
-        tuple(attitude_to_quat(12, 22, 31)),
-        (0.1, 0.02, 0.03),
-        (0.02, 0.01, 0.04),
-        60,
+        first=tuple(attitude_to_quat(10, 20, 30)),
+        last=tuple(attitude_to_quat(12, 22, 31)),
+        first_rate=(0.1, 0.02, 0.03),
+        last_rate=(0.02, 0.01, 0.04),
+        duration=60,
     )
     assert curve.within_limits((0.2, 0.1, 0.1), (0.05, 0.03, 0.02))
     for fraction in np.linspace(0, 1, 101):
@@ -197,7 +197,13 @@ def test_nonuniform_tracking_wrap_pole_half_turn_and_reversal(attitudes):
 @pytest.mark.parametrize("duration", [0, -1, float("inf"), float("nan")])
 def test_curve_rejects_invalid_duration(duration):
     with pytest.raises(ValueError, match="duration"):
-        QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (0, 0, 0), (0, 0, 0), duration)
+        QuaternionHermite(
+            first=(1, 0, 0, 0),
+            last=(1, 0, 0, 0),
+            first_rate=(0, 0, 0),
+            last_rate=(0, 0, 0),
+            duration=duration,
+        )
 
 
 def test_tracking_converts_each_sample_once(limits):
@@ -226,10 +232,22 @@ def test_unit_quaternion_check_preserves_numpy_tolerance(endpoint):
         quaternions[endpoint] = (value, 0, 0, 0)
         valid = np.isclose(np.linalg.norm(quaternions[endpoint]), 1, rtol=0, atol=1e-10)
         if valid:
-            QuaternionHermite(*quaternions, (0, 0, 0), (0, 0, 0), 60)
+            QuaternionHermite(
+                first=quaternions[0],
+                last=quaternions[1],
+                first_rate=(0, 0, 0),
+                last_rate=(0, 0, 0),
+                duration=60,
+            )
         else:
             with pytest.raises(ValueError, match="unit quaternions"):
-                QuaternionHermite(*quaternions, (0, 0, 0), (0, 0, 0), 60)
+                QuaternionHermite(
+                    first=quaternions[0],
+                    last=quaternions[1],
+                    first_rate=(0, 0, 0),
+                    last_rate=(0, 0, 0),
+                    duration=60,
+                )
 
 
 @pytest.mark.parametrize("axis", range(3))
@@ -249,12 +267,24 @@ def test_constant_spin_check_preserves_numpy_tolerance(limits, axis):
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
 def test_nonfinite_rates_and_limits_still_rejected(limits, value):
     with pytest.raises(ValueError, match="rates must be finite"):
-        QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (value, 0, 0), (0, 0, 0), 60)
+        QuaternionHermite(
+            first=(1, 0, 0, 0),
+            last=(1, 0, 0, 0),
+            first_rate=(value, 0, 0),
+            last_rate=(0, 0, 0),
+            duration=60,
+        )
     with pytest.raises(AttitudeExecutionError, match="angular velocity must be finite"):
         AttitudeTrajectory.tracking(
             [(0, (0, 0, 0)), (60, (0, 0, 0))], limits, initial_rate=(0, value, 0)
         )
-    curve = QuaternionHermite((1, 0, 0, 0), (1, 0, 0, 0), (0, 0, 0), (0, 0, 0), 60)
+    curve = QuaternionHermite(
+        first=(1, 0, 0, 0),
+        last=(1, 0, 0, 0),
+        first_rate=(0, 0, 0),
+        last_rate=(0, 0, 0),
+        duration=60,
+    )
     assert not curve.within_limits((value, 1, 1), (1, 1, 1))
     assert not curve.within_limits((1, 1, 1), (1, value, 1))
 
@@ -302,7 +332,22 @@ def test_fixed_size_polynomials_match_generic_reference(seed):
         endpoints = np.array([attitude_to_quat(0, 0, 0), attitude_to_quat(6, 0, 0)])
         rates[:] = 0
     args = (*map(tuple, endpoints), *map(tuple, rates), duration)
-    actual, reference = QuaternionHermite(*args), _PolynomialReference(*args)
+    actual, reference = (
+        QuaternionHermite(
+            first=args[0],
+            last=args[1],
+            first_rate=args[2],
+            last_rate=args[3],
+            duration=args[4],
+        ),
+        _PolynomialReference(
+            first=args[0],
+            last=args[1],
+            first_rate=args[2],
+            last_rate=args[3],
+            duration=args[4],
+        ),
+    )
     fractions = np.linspace(0, 1, 51)
     expected = np.array([reference.evaluate(fraction)[1:] for fraction in fractions])
     for fraction in fractions:

@@ -1,9 +1,9 @@
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
 from datetime import datetime
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 
 from ..common import ChargeState, normalize_acs_mode, unixtime2date
 from ..config.acs import AttitudeControlSystem
@@ -24,9 +24,10 @@ _ECLIPSE_PANEL_FRACTION = 0.01
 """A panel illumination below this fraction counts as a step in eclipse."""
 
 
-@dataclass(frozen=True)
-class CategorySummary:
+class CategorySummary(BaseModel):
     """What one observation category got over a run."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     category: str
     program: str
@@ -49,9 +50,10 @@ class CategorySummary:
     """The fraction of that budget the run's science used."""
 
 
-@dataclass(frozen=True)
-class GroupSummary:
+class GroupSummary(BaseModel):
     """What one observation group got over a run."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     group: str
     members: int
@@ -69,9 +71,10 @@ class GroupSummary:
     """The group's window, where it sets one."""
 
 
-@dataclass(frozen=True)
-class VisitRecord:
+class VisitRecord(BaseModel):
     """One visit of a target as executed, against its window where it has one."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     obsid: int
     name: str
@@ -95,8 +98,9 @@ class VisitRecord:
     cut short and taken again within its window counts each attempt."""
 
 
-@dataclass(frozen=True)
-class _Visit:
+class _Visit(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     entries: list[PlanEntry]
 
     @property
@@ -175,7 +179,7 @@ class DITLStats:
             ):
                 last.entries.append(entry)
             else:
-                visits.append(_Visit([entry]))
+                visits.append(_Visit(entries=[entry]))
         return visits
 
     def summary_by_category(self) -> list[CategorySummary]:
@@ -399,7 +403,7 @@ class DITLStats:
             taken = [r for r in attempts if r.status == "complete"]
             verdict = taken[0] if taken else attempts[-1]
             begun = [r for r in attempts if r.status != "missed"]
-            verdicts.append(replace(verdict, attempts=len(begun)))
+            verdicts.append(verdict.model_copy(update={"attempts": len(begun)}))
         return verdicts
 
     def _print_reporting(self) -> None:

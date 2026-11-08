@@ -1,7 +1,6 @@
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from copy import copy, deepcopy
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import ceil, floor
 from typing import Protocol, TypedDict
@@ -85,15 +84,17 @@ _ROOM_BISECTIONS = 40
 schedulers' ledger does: the recorder's red alert fires at the threshold."""
 
 
-@dataclass(frozen=True)
-class _ObservationRequest:
+class _ObservationRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     start: float
     requested: float
     recorder_room: float | Mapping[str, float] | None
 
 
-@dataclass(frozen=True)
-class _ScienceWindow:
+class _ScienceWindow(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     deadline: float
     requested: float
     collection_begin: float
@@ -136,9 +137,10 @@ class _ScienceDeadlineInputs(BaseModel):
     """The requests whose windows are still to open, from the queue."""
 
 
-@dataclass(frozen=True)
-class _CommittedTOO:
+class _CommittedTOO(BaseModel):
     """An admitted replacement whose predecessor has reserved teardown."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     request: TOORequest
     target: Pointing
@@ -150,9 +152,10 @@ class _CommittedTOO:
     momentum_recovery: Slew | None = None
 
 
-@dataclass
-class _SequenceRun:
+class _SequenceRun(BaseModel):
     """A visit of a sequence target under way, step by step."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     parent: Pointing
     """The sequence target, credited with each step's science or calibration."""
@@ -848,14 +851,14 @@ class QueueDITL(DITLMixin, DITLStats):
         # The value admission settled on, over the collection it admitted.
         admitted = preview.ppt.merit_breakdown or value
         return _CommittedTOO(
-            too,
-            target,
-            preview.ppt,
-            slew,
-            self.ppt,
-            admitted,
-            dispatch_time,
-            preview._momentum_recovery,
+            request=too,
+            target=target,
+            prepared=preview.ppt,
+            slew=slew,
+            interrupted=self.ppt,
+            value=admitted,
+            dispatch_time=dispatch_time,
+            momentum_recovery=preview._momentum_recovery,
         )
 
     def _dispatch_committed_too(self, utime: float) -> bool:
@@ -4928,7 +4931,9 @@ class QueueDITL(DITLMixin, DITLStats):
             )
             return None
 
-        return _ObservationRequest(execution_time, requested, recorder_room)
+        return _ObservationRequest(
+            start=execution_time, requested=requested, recorder_room=recorder_room
+        )
 
     def _validate_ppt_slew(
         self, target: Pointing, slew: Slew, utime: float, request: _ObservationRequest
@@ -5085,7 +5090,9 @@ class QueueDITL(DITLMixin, DITLStats):
             target
         ):
             return None
-        return _ScienceWindow(deadline, remaining, collection_start)
+        return _ScienceWindow(
+            deadline=deadline, requested=remaining, collection_begin=collection_start
+        )
 
     def _fetch_new_ppt_inner(
         self, utime: float, ra: float, dec: float, *, enqueue_slew: bool = True
