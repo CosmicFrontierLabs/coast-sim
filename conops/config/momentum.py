@@ -6,6 +6,7 @@ import numpy.typing as npt
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ._base import ConfigModel
+from .activity_attitude import ActivityAttitude
 
 _AXIS_TOLERANCE = 1e-9
 _DIMENSIONS = 3
@@ -14,6 +15,8 @@ _RANK_TOLERANCE = 1e-9
 
 class ThrusterDumpConfig(ConfigModel):
     """A thruster momentum dump: a hold during which the wheels are unloaded."""
+
+    attitude: ActivityAttitude = Field(default_factory=ActivityAttitude)
 
     duration_seconds: float = Field(
         default=120.0,
