@@ -604,6 +604,8 @@ def test_candidate_copies_keep_the_sliding_activity_hold() -> None:
     assert float(original.entry.begin) == activity.begin
     candidate = original.model_copy(update={"entry": original.entry.model_copy()})
     # Candidate reconnection records the reserved latest start on the copy.
+    candidate.ready = activity.latest_start
+    candidate.end = activity.latest_start + activity.duration_seconds
     candidate.entry.begin = candidate.ready
     candidate.entry.end = candidate.end
     assert float(candidate.entry.begin) == activity.latest_start
