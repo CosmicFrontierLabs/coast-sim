@@ -766,15 +766,25 @@ gave it, so the starting point is that plan. The search then tries:
 
 A change is kept when it is no worse than the current plan, or than the plan of
 ``history_length`` steps ago (late-acceptance hill climbing), which lets the search
-cross plateaus. The objective is merit-weighted science time, with each snapshot's completion deficit taken from the program
-shares in the plan before it. A snapshot of a request with a deadline is worth less
-the later it starts, so ToOs and other time-critical requests are not pushed later
-than they need to be. The best plan found is returned, and it is never worse than the
-priority-first plan.
+cross plateaus. The objective is merit-weighted science time, with each snapshot's
+completion deficit taken from the program shares in the plan before it. By default,
+science keeps its value throughout its allowed window; equal-valued plans prefer
+earlier delivery. An explicit positive ``earliness_weight`` reduces a deadline
+snapshot's value as its start moves later. The best plan found is returned.
 
 Cadence visits keep their spacing, from each other and from locked visits, and each
 plan entry's ``merit`` is the value its snapshot has where it is placed, as in the
 priority-first scheduler.
+
+After momentum reservations and sliding activities settle, local search and
+CP-SAT make two deterministic placement passes. If a hold settled earlier, the
+first tries rebuilding the remaining science while preserving committed science
+and the settled hold times. The second fills unused time while retaining all
+selected science collection windows and hold poses, reserving a return slew where
+needed. A candidate must improve the finalized objective and pass the existing
+recorder, battery, momentum, timing and safety checks. Rejected candidates leave
+the selected plan and log unchanged. These are construction passes, separate from
+the search iteration budget; their elapsed time is included in the whole schedule.
 
 .. code-block:: python
 

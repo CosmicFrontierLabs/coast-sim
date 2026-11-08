@@ -1119,7 +1119,9 @@ class CpSatScheduler(LocalSearchScheduler):
         self.search_limits.clear()
         self.solver_search_statuses.clear()
         self.solver_search_limits.clear()
-        return self._plan_within_momentum(self._plan_once)
+        plan = self._plan_within_momentum(self._plan_once)
+        plan = self._refine_settled_plan(plan)
+        return self._augment_selected_plan(plan)
 
     def _plan_once(self) -> Plan:
         start = self._start_from_priority_plan()
