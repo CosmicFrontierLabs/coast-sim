@@ -1353,7 +1353,12 @@ saved tracks; this command does not refresh them. The first two workers load the
 same saved program; subsequent workers save and reload it before execution.
 The default uses analytic planetary models; supply ``--planetary-kernel`` for an
 explicit SPICE kernel. Each worker records the loaded EOP data, source hashes,
-dependency versions and actual input hashes.
+dependency versions and actual input hashes. The runtime fingerprint also covers
+the verification driver. Before execution, each worker checks the runtime and
+inputs against the captured manifest; after execution it checks them again.
+A checkout, dependency or input change fails verification even if all workers
+otherwise agree. Changes detected after execution are retained in the failed
+run record.
 
 ``conops.benchmark.reproducibility.execution_record`` retains exact entries,
 decisions, telemetry, ToOs and science reports. ``compare_runs`` reports the
