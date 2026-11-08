@@ -54,8 +54,11 @@ def runtime_provenance() -> dict:
             ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
         ).strip(),
         "sources": {
-            str(p.relative_to(REPO)): digest(p)
-            for p in sorted((REPO / "conops").rglob("*.py"))
+            **{
+                str(p.relative_to(REPO)): digest(p)
+                for p in sorted((REPO / "conops").rglob("*.py"))
+            },
+            "scripts/check_program_repeatability.py": digest(Path(__file__)),
         },
         "dependencies": dict(
             sorted(
@@ -69,6 +72,18 @@ def runtime_provenance() -> dict:
             for p in sorted(Path(rust_ephem.__file__).parent.glob("*.so"))
         },
     }
+
+
+def verify_snapshot(output: Path, manifest: dict, provenance: dict) -> None:
+    """Require the captured inputs and runtime, not merely matching workers."""
+    from conops.benchmark.reproducibility import first_difference
+
+    for name, expected in manifest["inputs"].items():
+        if digest(output / "inputs" / name) != expected["sha256"]:
+            raise ValueError(f"Frozen input changed: {name}")
+    difference = first_difference(manifest["runtime"], provenance)
+    if difference is not None:
+        raise ValueError(f"Captured runtime changed at {difference['path']}")
 
 
 def check_tracks(program) -> None:
@@ -94,11 +109,8 @@ def run_worker(args) -> int:
 
     manifest = json.loads((args.output / "manifest.json").read_text())
     inputs = args.output / "inputs"
-    # Detect input edits between capture and execution rather than comparing
-    # results from files whose manifest no longer describes them.
-    for name, expected in manifest["inputs"].items():
-        if digest(inputs / name) != expected["sha256"]:
-            raise ValueError(f"Frozen input changed: {name}")
+    initial_runtime = runtime_provenance()
+    verify_snapshot(args.output, manifest, initial_runtime)
     config = MissionConfig.from_yaml_file(str(inputs / "mission.yaml"))
     if config.scheduler.mode is not SchedulerMode.DISPATCH:
         raise ValueError("This baseline checks dispatch; supply a dispatch config")
@@ -144,7 +156,15 @@ def run_worker(args) -> int:
         error = f"{type(exc).__name__}: {exc}"
         traceback.print_exc()
     record = execution_record(simulation, completed=completed, error=error)
-    provenance = runtime_provenance()
+    provenance = initial_runtime
+    try:
+        provenance = runtime_provenance()
+        verify_snapshot(args.output, manifest, provenance)
+    except (OSError, ValueError) as exc:
+        message = f"Snapshot verification failed: {exc}"
+        record["error"] = "; ".join(filter(None, (record["error"], message)))
+        record["completed"] = False
+        provenance = {**provenance, "snapshot_verification_error": str(exc)}
     provenance["inputs"] = {k: v["sha256"] for k, v in manifest["inputs"].items()}
     provenance["step_size"] = manifest["step_size"]
     provenance["planetary_model"] = planetary_model
