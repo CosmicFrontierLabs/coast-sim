@@ -136,8 +136,9 @@ class LocalSearchScheduler(PriorityScheduler):
     * moving a snapshot to a nearby position.
 
     A change is kept by late-acceptance hill climbing: when it is no worse than
-    the current plan, or than the plan of ``history_length`` steps ago, so the
-    search can cross plateaus. The objective is merit-weighted science time.
+    the current plan, or than the plan of ``history_length`` evaluated changes
+    ago, so the search can cross plateaus. The objective is merit-weighted
+    science time.
     By default, science retains its value anywhere within its allowed window;
     equal-valued plans prefer earlier delivery. With an explicit positive
     ``earliness_weight``, a snapshot is worth less the later it starts:
@@ -162,7 +163,8 @@ class LocalSearchScheduler(PriorityScheduler):
             ``time_limit`` alone for reproducible plans.
         seed: Random seed; defaults to the configuration's.
         neighborhood: How many positions apart a swap or move can be.
-        history_length: Length of the late-acceptance history.
+        history_length: Evaluated changes retained in the late-acceptance history.
+            No-op proposals still consume the max_iterations attempt budget.
         earliness_weight: Optional fraction of a deadline request's value lost
             by starting at its deadline, in [0, 1]; defaults to zero. Values
             below 1 keep a late snapshot worth more than none.
@@ -1061,15 +1063,17 @@ class LocalSearchScheduler(PriorityScheduler):
         history = [current_score] * self.history_length
         deadline = time.perf_counter() + self.time_limit
         self.iterations = self.accepted = 0
+        evaluated = 0
 
         while time.perf_counter() < deadline and (
             self.max_iterations is None or self.iterations < self.max_iterations
         ):
             move = self._random_move(current, rng)
-            slot = self.iterations % self.history_length
             self.iterations += 1
             if move is None:
                 continue
+            slot = evaluated % self.history_length
+            evaluated += 1
             candidate = self._redecode(current, *move)
             score = self._objective(candidate.final)
             if score >= current_score or score >= history[slot]:
