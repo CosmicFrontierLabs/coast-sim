@@ -1,4 +1,5 @@
 from .acs import AttitudeControlSystem
+from .activity_attitude import ActivityAttitude
 from .battery import Battery
 from .communications import (
     AntennaPointing,
@@ -86,6 +87,7 @@ from .thermal import Heater
 from .visualization import VisualizationConfig
 
 __all__ = [
+    "ActivityAttitude",
     "AntennaPointing",
     "AttitudeControlSystem",
     "AttitudeConstraintScope",
