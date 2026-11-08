@@ -80,7 +80,8 @@ class Addition(NamedTuple):
     counts the addition at the angles it is reached with."""
     profile: int = -1
     """The ledger's record of the mode and attitude held at each of its
-    steps, from which the walk counts it at any drive angles; -1 if none."""
+    steps, from which the walk counts it at any drive angles; -1 when no
+    drive needs it, so identical static-panel additions compare equal."""
 
 
 Additions = tuple[Addition, ...]
@@ -673,9 +674,12 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         counts for nothing.
         """
         profile = tuple(held_at(float(step)) for step in self.steps(begin, end))
-        self._profiles.append(profile)
+        profile_index = -1
+        if self.driven:
+            profile_index = len(self._profiles)
+            self._profiles.append(profile)
         deltas = self._deltas(begin, profile, self.drive_start)[0]
-        return Addition(begin, end, sum(deltas), deltas, len(self._profiles) - 1)
+        return Addition(begin, end, sum(deltas), deltas, profile_index)
 
     def _deltas(
         self, begin: float, profile: _Profile, angles: Angles
