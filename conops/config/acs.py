@@ -289,7 +289,7 @@ class AttitudeControlSystem(ConfigModel):
         vmax = self.effective_max_slew_rate(rotation_axis_body)
         if a <= 0 or vmax <= 0:
             return 0.0
-        return RestToRestMotion(angle_deg, a, vmax).duration
+        return RestToRestMotion(angle=angle_deg, acceleration=a, rate=vmax).duration
 
     def max_motion_angle(
         self,
@@ -330,7 +330,7 @@ class AttitudeControlSystem(ConfigModel):
         if a <= 0 or vmax <= 0:
             return min(max(0.0, t * vmax), angle_deg)  # best-effort fallback
 
-        return RestToRestMotion(angle_deg, a, vmax).at(t)[0]
+        return RestToRestMotion(angle=angle_deg, acceleration=a, rate=vmax).at(t)[0]
 
     def slew_time(
         self,

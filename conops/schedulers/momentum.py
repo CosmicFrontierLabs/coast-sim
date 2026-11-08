@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..common.ephemeris import position_vectors, velocity_vectors
@@ -63,7 +63,7 @@ class _Span(BaseModel):
     unload_at_end: float | None = None
     """The residual fraction a thruster dump leaves when the span ends."""
 
-    motion: SkipValidation[AttitudeTrajectory | None] = None
+    motion: AttitudeTrajectory | None = None
     """A continuous tracking trajectory, including its terminal brake."""
 
     @cached_property

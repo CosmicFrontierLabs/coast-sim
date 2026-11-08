@@ -11,7 +11,8 @@ roll lengthens, since requirements are written in great-circle degrees.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict
 
 from ..config.acs import AttitudeControlSystem, SlewRequirement
 from ..targets.plan_entry import PlanEntry
@@ -20,9 +21,10 @@ BEYOND_THE_TABLE = "beyond the table"
 """The class of a slew wider than the widest requirement."""
 
 
-@dataclass(frozen=True)
-class SlewRequirementViolation:
+class SlewRequirementViolation(BaseModel):
     """A slew that took longer than its requirement class allows."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     utime: float
     """When the slew started."""
@@ -40,9 +42,10 @@ class SlewRequirementViolation:
         )
 
 
-@dataclass(frozen=True)
-class SlewClassSummary:
+class SlewClassSummary(BaseModel):
     """What a run's slews did against one requirement class."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     name: str
     max_great_circle_deg: float | None

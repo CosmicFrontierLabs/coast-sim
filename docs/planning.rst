@@ -35,6 +35,25 @@ and improves it (see `Improving plans by local search`_), and
 :class:`~conops.schedulers.CpSatScheduler` optimizes it with a constraint solver (see
 `Optimizing plans with CP-SAT`_).
 
+Runtime records and reporting
+-----------------------------
+
+Attitude states and trajectories, finite solar-array drive states, and category,
+group and visit summaries are Pydantic models. Construct them with named fields.
+Use ``model_copy(update={...})`` to derive another record and ``model_dump()``
+to inspect its fields. Physical snapshots and report rows are frozen; attempts
+to assign their fields raise Pydantic's ``ValidationError``. Existing physical
+checks also run during model validation.
+
+For example, reporting rows can be exported as JSON-compatible dictionaries::
+
+    categories = [row.model_dump(mode="json")
+                  for row in simulation.summary_by_category()]
+    visits = [row.model_dump(mode="json")
+              for row in simulation.visit_table(per_window=True)]
+
+Taking or copying a record does not advance its executor or solar-array drive.
+
 Building and executing a plan
 -----------------------------
 
