@@ -1602,7 +1602,9 @@ class PriorityScheduler:
     def _record_visit(self, request: _Request, block: _Block) -> None:
         """Count a placed snapshot towards its program and the target's last visit."""
         entry = block.entry
-        seconds = entry.collection_seconds_between(entry.begin, entry.end)
+        # A sequence's composite span also contains calibration and slews.
+        # Science budgets and program shares count only its science steps.
+        seconds = _collection_seconds(block)
         program = request.category.program_name
         self._program_seconds[program] = (
             self._program_seconds.get(program, 0.0) + seconds
