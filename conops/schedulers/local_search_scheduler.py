@@ -36,7 +36,7 @@ from .priority_scheduler import (
     _Request,
     program_shares,
 )
-from .recorder import RecorderAmount, amounts_equal, combine_amounts
+from .recorder import RecorderAmount
 
 # A move is drawn uniformly from [0, 1) and its kind read off these
 # cumulative bounds: insert a snapshot, replace one, release one, remove
@@ -711,19 +711,18 @@ class LocalSearchScheduler(PriorityScheduler):
         """Return whether decoding continues identically from two states.
 
         Equal remaining exposure means equal program totals, so the program
-        shares, and with them every later snapshot's value, agree too. When
-        the recorder limits the plan, what is on it must agree as well.
+        shares, and with them every later snapshot's value, agree too. Scores
+        and recorder histories must match exactly: rebasing cumulative values
+        can change an unchanged plan through floating-point cancellation.
         """
         if (
-            a.remaining != b.remaining
+            a.score != b.score
+            or a.remaining != b.remaining
+            or a.volumes != b.volumes
             or a.last_visit != b.last_visit
             or a.last_visit_window != b.last_visit_window
             or a.allocated_left != b.allocated_left
             or len(a.timeline) - a.cursor != len(b.timeline) - b.cursor
-        ):
-            return False
-        if self._ledger.active and any(
-            not amounts_equal(x, y) for x, y in zip(a.volumes, b.volumes, strict=True)
         ):
             return False
         if self._battery.active and a.energy != b.energy:
@@ -769,31 +768,26 @@ class LocalSearchScheduler(PriorityScheduler):
         states: list[_State],
         old: int,
     ) -> _Decoded:
-        """Finish a decoding with the current one's states from position ``old``."""
+        """Reuse a suffix after its exact score/resource state was reached."""
         here = states[-1]
         there = current.states[old]
         prefix = here.timeline[: here.cursor]
         offset = here.cursor - there.cursor
         for later in current.states[old + 1 :]:
-            # What the reused snapshots add to the score is the same from here.
-            score = here.score + later.score - there.score
+            # Keep cumulative values unchanged. Even adding and subtracting
+            # the same prefix can introduce a rounding difference.
             states.append(
                 _State.model_construct(
                     timeline=[*prefix, *later.timeline[there.cursor :]],
                     cursor=later.cursor + offset,
                     remaining=later.remaining,
-                    score=score,
+                    score=later.score,
                     programs=later.programs,
                     categories=later.categories,
                     groups=later.groups,
                     last_visit=later.last_visit,
                     last_visit_window=later.last_visit_window,
-                    volumes=tuple(
-                        combine_amounts(combine_amounts(a, b), c, -1.0)
-                        for a, b, c in zip(
-                            here.volumes, later.volumes, there.volumes, strict=True
-                        )
-                    ),
+                    volumes=later.volumes,
                     energy=self._charged_energy(
                         [*prefix, *later.timeline[there.cursor :]]
                     ),
