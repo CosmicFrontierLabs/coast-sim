@@ -326,6 +326,45 @@ How a plan is built
    inherited or fixed; the power-positive policy does not define thruster
    geometry.
 
+   Activity entries store ``activity_hold_begin`` and ``activity_hold_end`` for
+   that full hold, while ``begin`` and ``end`` bound the portion in this run.
+   ``activity_partial`` reports missing time at either boundary;
+   ``activity_finishes`` says whether the interval reaches the full hold's end.
+   A resumed activity logs ``resumes`` and has no new ``fixed_data_gb``; its
+   start data is not generated again. A hold cut short at the run end logs
+   ``stops before completion``. A partial dump unloads the wheels only if its
+   remaining hold reaches the full end, in execution and in both the planner's
+   and rolling replan's momentum forecasts. Older plans without hold metadata
+   continue to use their entry bounds as the full hold bounds.
+   **Emergency recharge in dispatch.** A battery alert can wait for a block
+   when a step-by-step forecast keeps the remaining hold, any eclipse wait,
+   and the actual slew to useful charging above the physical discharge floor.
+   The forecast includes the block's modes, panel generation, saturation and
+   executed finite-drive state. It does not mutate the live drive or charging
+   state. The alert threshold is distinct from this safety floor.
+
+   If the block cannot finish safely and a valid emergency charging manoeuvre
+   can be dispatched, dispatch closes its executed segment before that manoeuvre. Its ``activity_interruption`` records
+   the time, reason ``emergency_recharge``, unexecuted seconds and disposition.
+   Ordinary holds resume their remaining duration after the battery alert clears;
+   a dump restarts its full firing duration so partial firing never resets the
+   wheels. Resumed segments carry ``activity_resumed=True``, retain the original
+   activity ID and do not generate the once-only data again. ``activity_partial``
+   identifies the fragments; the final fragment can also have
+   ``activity_finishes=True``.
+
+   A block due during emergency charging waits with its full duration retained.
+   A critically low battery is checked before beginning a new block or generating
+   its start data. Deferral and resumption may exceed the original start window
+   as a logged safety override. A paused block waits through an eclipse that
+   ends charging early, until recharge has cleared the alert, and through a
+   ground contact already under way. If the physical run ends first, interruption
+   metadata retains the unfinished work; no zero-length execution entry is
+   invented. Charging and its actual ingress are exported as separate ``CHARGE``
+   entries, with their actual instrument modes. Saved execution plans replay
+   those fragments and charges; planned runs continue to execute only their
+   recorded commands rather than adding unplanned charges.
+
    A thruster momentum dump is an activity
    dispatch calls for itself, when the stored momentum reaches the planning level of
    the wheels' capacity (see the stored momentum under :doc:`configuration`), and

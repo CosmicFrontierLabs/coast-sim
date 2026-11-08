@@ -44,6 +44,7 @@ from ..schedulers import ActivitySchedulingError, DispatchPolicy, SchedulingCont
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
+from ..simulation.activity_charging import can_finish_before_recharge
 from ..simulation.attitude import AttitudeState, AttitudeTrajectory
 from ..simulation.emergency_charging import EmergencyCharging
 from ..simulation.idle_safety import IdleSafetyPlanner
@@ -63,7 +64,11 @@ from ..targets import (
     assign_obsids,
 )
 from ..targets.merit import MeritBreakdown, MeritModel
-from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
+from ..targets.plan_entry import (
+    ActivityInterruption,
+    instrument_modes_of,
+    snapshot_min_seconds,
+)
 from ..targets.sequence import ObservationSequence
 from ..targets.too import TOORequest
 from .ditl_log import DITLLog
@@ -98,6 +103,13 @@ class _ScienceWindow(BaseModel):
     deadline: float
     requested: float
     collection_begin: float
+
+
+class _PausedActivity(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source: ScheduledActivity
+    remaining_seconds: float
 
 
 class _PendingCommandStatus(TypedDict):
@@ -277,6 +289,10 @@ class QueueDITL(DITLMixin, DITLStats):
         self._activity_context: SchedulingContext | None = None
         self._activity_end: float = 0.0
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._paused_activity: _PausedActivity | None = None
+        self._activity_continuation = False
+        self._charge_deferred_activities: set[int] = set()
+        self._charge_waiting_activity: int | None = None
         self._activity_waiting: ScheduledActivity | None = None
         """The activity due now that waits for the slew under way to end."""
         self._desaturations = 0
@@ -1213,6 +1229,27 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             self.acs.begin_desaturation()
         if self._active_activity is None:
+            if self._paused_activity is not None:
+                if (
+                    self.charging_ppt is not None
+                    or self._slew_under_way(utime)
+                    or self.battery.battery_alert
+                    or self._gsp_activity_in_progress(utime)
+                ):
+                    return changed
+                paused = self._paused_activity
+                self._paused_activity = None
+                source = paused.source.model_copy(
+                    update={
+                        "begin": utime,
+                        "duration_seconds": paused.remaining_seconds,
+                        "fixed": False,
+                        "slide_seconds": 0.0,
+                        "data_gb": 0.0,
+                    }
+                )
+                self._begin_activity(source, utime, (ra, dec, roll), continuation=True)
+                return True
             self._call_for_desaturation(utime)
             due = next(
                 (a for a in self._activities_left if a.begin <= utime),
@@ -1221,6 +1258,18 @@ class QueueDITL(DITLMixin, DITLStats):
             if due is None:
                 due = self._activity_needing_ingress(utime)
             if due is not None:
+                pending_source = due
+                if self.charging_ppt is not None:
+                    self._defer_activity_for_charging(due, utime)
+                    return changed
+                if due.obsid in self._charge_deferred_activities:
+                    if self.battery.battery_alert or self._gsp_activity_in_progress(
+                        utime
+                    ):
+                        return changed
+                    due = due.model_copy(
+                        update={"begin": utime, "fixed": False, "slide_seconds": 0.0}
+                    )
                 waits_for = self._activity_waits_for(due, utime)
                 if waits_for is not None:
                     if self._activity_waiting is not due:
@@ -1239,9 +1288,79 @@ class QueueDITL(DITLMixin, DITLStats):
                     due, utime
                 ):
                     return changed
+                if self._should_initiate_charging(utime):
+                    # Before starting a block, decide whether its whole hold
+                    # can wait out the alert. Do not begin a zero-length
+                    # calibration or generate its data just to cancel it.
+                    ingress = None
+                    pose = (ra, dec, roll)
+                    begin = max(utime, due.begin)
+                    if due.attitude.kind != "inherited":
+                        ingress = self._activity_ingress(due, utime)
+                        pose = (ingress.endra, ingress.enddec, ingress.endroll)
+                        begin = max(
+                            begin, self._activity_model().ceil_step(ingress.slewend)
+                        )
+                    end = begin + due.duration_seconds
+                    assumed = due.hold_start_for_run(self.ustart)
+                    if utime == self.ustart and assumed < self.ustart:
+                        end = assumed + due.duration_seconds
+                    if not self._activity_fits_before_recharge(
+                        due, utime, begin, end, pose, ingress
+                    ):
+                        self._initiate_charging(utime, ra, dec)
+                        if self.charging_ppt is not None:
+                            self._defer_activity_for_charging(due, utime)
+                            return True
                 self._begin_activity(due, utime, (ra, dec, roll))
+                assert due.obsid is not None
+                self._charge_deferred_activities.discard(due.obsid)
+                self._activities_left = [
+                    a for a in self._activities_left if a is not pending_source
+                ]
                 changed = True
         return changed
+
+    def _defer_activity_for_charging(
+        self, activity: ScheduledActivity, utime: float
+    ) -> None:
+        assert activity.obsid is not None
+        if activity.obsid not in self._charge_deferred_activities:
+            self._charge_deferred_activities.add(activity.obsid)
+            self.log.log_event(
+                utime=utime,
+                event_type="ACTIVITY",
+                obsid=activity.obsid,
+                description=f"Scheduled activity {activity.name} deferred until emergency charging ends; full duration retained",
+                acs_mode=self.acs.acsmode,
+            )
+
+    def _activity_fits_before_recharge(
+        self,
+        activity: ScheduledActivity,
+        now: float,
+        begin: float,
+        end: float,
+        attitude: tuple[float, float, float],
+        ingress: Slew | None,
+    ) -> bool:
+        current = self.acs.current_slew
+        if ingress is None and current is not None and current.is_slewing(now):
+            ingress = current
+            attitude = (current.endra, current.enddec, current.endroll)
+        return can_finish_before_recharge(
+            self.config,
+            self._activity_model(),
+            now=now,
+            hold_begin=begin,
+            hold_end=end,
+            attitude=attitude,
+            ingress=ingress,
+            mode=activity.hold_mode,
+            instrument_modes=activity.instrument_modes,
+            charge_wh=float(self.battery.charge_level),
+            drive_state=self.acs.solar_array_drive_state,
+        )
 
     def _activity_model(self) -> SchedulingContext:
         """Geometry shared with the planners, for explicit activity ingress."""
@@ -1826,7 +1945,11 @@ class QueueDITL(DITLMixin, DITLStats):
         activity: ScheduledActivity,
         utime: float,
         attitude: tuple[float, float, float],
+        *,
+        continuation: bool = False,
     ) -> None:
+        self._activity_continuation = continuation
+        self._charge_waiting_activity = None
         if self.ppt is not None:
             if self.ppt == self.charging_ppt:
                 self._terminate_charging_ppt(utime)
@@ -1906,11 +2029,9 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.begin_safe_hold()
         if activity.desaturation and utime >= self._activity_hold_begin:
             self.acs.begin_desaturation()
-        if not resumed:
+        if not resumed and not continuation:
             self._add_activity_data(float(activity.data_gb), activity)
-        description = (
-            f"Scheduled activity {activity.name} {'resumes' if resumed else 'begins'}"
-        )
+        description = f"Scheduled activity {activity.name} {'resumes' if resumed or continuation else 'begins'}"
         if delayed and not resumed:
             description += f", {utime - activity.begin:.0f}s after its start"
         self.log.log_event(
@@ -1921,13 +2042,19 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
 
-    def _end_activity(self, utime: float) -> None:
+    def _end_activity(
+        self, utime: float, interruption: ActivityInterruption | None = None
+    ) -> None:
         activity = self._active_activity
         assert activity is not None
         entry = activity.plan_entry(
             self.config, self._activity_attitude, begin=self._activity_started
         )
         entry.end = min(utime, self._activity_end)
+        entry.activity_resumed = self._activity_continuation
+        if self._activity_continuation:
+            entry.activity_requires_stationary = True
+        entry.activity_interruption = interruption
         entry.activity_hold_begin = self._activity_hold_begin
         entry.activity_hold_end = self._activity_end
         if self._activity_slew is not None:
@@ -1937,7 +2064,10 @@ class QueueDITL(DITLMixin, DITLStats):
                 ceil(float(self._activity_slew.slewend) - self._activity_started)
             )
             entry.activity_requires_stationary = True
-        if self._activity_hold_begin < self._activity_started:
+        if (
+            self._activity_hold_begin < self._activity_started
+            or self._activity_continuation
+        ):
             entry.fixed_data_gb = 0.0
         # Recorded when it ends, after any contact that began inside it: the
         # plan is kept in order of beginning.
@@ -1945,7 +2075,8 @@ class QueueDITL(DITLMixin, DITLStats):
         index = len(entries)
         while index > 0 and float(entries[index - 1].begin) > float(entry.begin):
             index -= 1
-        entries.insert(index, entry)
+        if float(entry.end) > float(entry.begin):
+            entries.insert(index, entry)
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
@@ -2952,9 +3083,22 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.roll = float(slew.endroll)
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
-        """Sync slew metadata onto the GSP or PPT plan entry the slew belongs to."""
+        """Sync executed contact, science or charging slew metadata."""
         if slew.obstype == ObsType.GSP:
             self._sync_gsp_slew_metadata(slew)
+            return
+
+        if slew.obstype == ObsType.CHARGE:
+            if self.charging_ppt is not None and self.charging_ppt.obsid == slew.obsid:
+                self._apply_slew_metadata(self.charging_ppt, slew)
+            for entry in reversed(list(self.plan)):
+                if (
+                    entry.obstype == ObsType.CHARGE
+                    and entry.obsid == slew.obsid
+                    and float(entry.begin) <= float(slew.slewstart) < float(entry.end)
+                ):
+                    self._apply_slew_metadata(entry, slew)
+                    break
             return
 
         if slew.obstype != ObsType.PPT:
@@ -2974,7 +3118,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 return
 
     def _sync_acs_slew_metadata(self) -> None:
-        """Copy ACS science slew metadata onto exported plan entries."""
+        """Copy executed ACS slew metadata onto exported plan entries."""
         new_commands = self.acs.executed_commands[self._synced_executed_slew_count :]
         for command in new_commands:
             if command.command_type == ACSCommandType.SLEW_TO_TARGET:
@@ -3037,7 +3181,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self, utime: float, ra: float, dec: float, mode: ACSMode
     ) -> None:
         """Handle science mode operations: charging, observations, and target acquisition."""
-        if mode == ACSMode.SAFE:
+        recoverable_safe_hold = (
+            self._active_activity is not None
+            and self._active_activity.safe_hold
+            and not self.acs.in_safe_mode
+        )
+        if mode == ACSMode.SAFE and not recoverable_safe_hold:
             if self.ppt is not None:
                 self._terminate_ppt(
                     utime, "Observation interrupted by safehold", interrupted=True
@@ -3053,6 +3202,9 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             self._initiate_charging(utime, ra, dec)
+
+        if self._active_activity is not None or self._paused_activity is not None:
+            return
 
         # Check for TOO interrupts (before managing PPT lifecycle)
         # This allows TOOs to preempt ongoing observations
@@ -3254,12 +3406,59 @@ class QueueDITL(DITLMixin, DITLStats):
         end: the contact takes precedence, and charging would slew away from the
         tracking attitude the contact needs.
         """
-        return (
+        eligible = (
             self.charging_ppt is None
             and not self._gsp_activity_in_progress(utime)
             and self.emergency_charging.should_initiate_charging(
                 utime, self.ephem, self.battery.battery_alert
             )
+        )
+        activity = self._active_activity
+        if not eligible or activity is None:
+            return eligible
+        can_finish = self._activity_fits_before_recharge(
+            activity,
+            utime,
+            self._activity_hold_begin,
+            self._activity_end,
+            self._activity_attitude,
+            self._activity_slew,
+        )
+        if can_finish and self._charge_waiting_activity != activity.obsid:
+            self._charge_waiting_activity = activity.obsid
+            self.log.log_event(
+                utime=utime,
+                event_type="CHARGING",
+                obsid=activity.obsid,
+                description=f"Emergency charging waits for {activity.name}; remaining hold and charge ingress stay above the discharge floor",
+                acs_mode=self.acs.acsmode,
+            )
+        return not can_finish
+
+    def _pause_activity_for_charging(self, utime: float) -> None:
+        activity = self._active_activity
+        if activity is None:
+            return
+        remaining = max(0.0, self._activity_end - max(utime, self._activity_hold_begin))
+        if activity.desaturation:
+            remaining = activity.duration_seconds
+        self._paused_activity = _PausedActivity(
+            source=activity, remaining_seconds=remaining
+        )
+        interruption = ActivityInterruption(
+            time=utime,
+            remaining_seconds=remaining,
+            disposition="restart" if activity.desaturation else "resume",
+        )
+        assert activity.obsid is not None
+        self.acs.cancel_pending_slews(activity.obsid)
+        self._end_activity(utime, interruption)
+        self.log.log_event(
+            utime=utime,
+            event_type="ACTIVITY",
+            obsid=activity.obsid,
+            description=f"Emergency charging interrupted {activity.name}; {remaining:g}s retained to {interruption.disposition} after recharge",
+            acs_mode=self.acs.acsmode,
         )
 
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
@@ -3306,6 +3505,7 @@ class QueueDITL(DITLMixin, DITLStats):
             self.emergency_charging.current_charging_ppt = None
             return
 
+        self._pause_activity_for_charging(utime)
         interrupted_ppt = self.ppt
         self.charging_ppt = charging_ppt
         if interrupted_ppt is not None and not interrupted_ppt.done:
