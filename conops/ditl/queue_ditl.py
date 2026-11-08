@@ -3928,7 +3928,9 @@ class QueueDITL(DITLMixin, DITLStats):
         request = self._request_of(self.ppt)
         if not request.visit_windows:
             return
-        index = request.visit_index_at(utime)
+        # Admission windows bound the start, so the flown visit can extend
+        # past the next window's opening. Keep the entry's visit identity.
+        index = self.ppt.visit
         if index is None or request.visit_complete(index):
             return
         deadline = request.visit_windows[index].deadline
