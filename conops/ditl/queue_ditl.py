@@ -1795,6 +1795,15 @@ class QueueDITL(DITLMixin, DITLStats):
         ppt = self.ppt if target is None else target
         if ppt is None:
             return None
+        if (
+            self._sequence is not None
+            and self._sequence.index == 0
+            and ppt.obsid == self._sequence.parent.obsid
+        ):
+            # The first step is admitted in place of its parent. Its exact
+            # ingress must still meet the visit's latest collection start.
+            # Subsequent steps belong to the already admitted whole visit.
+            return self._sequence.parent.current_deadline
         current = getattr(ppt, "current_deadline", None)
         if isinstance(current, (int, float)):
             return float(current)
