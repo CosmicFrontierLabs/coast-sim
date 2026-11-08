@@ -274,6 +274,20 @@ class TestSlews:
 
         assert "replay event" not in capsys.readouterr().out
 
+    def test_initial_pose_does_not_execute_a_hypothetical_faulted_flight(
+        self, ctx: SchedulingContext, config: MissionConfig
+    ) -> None:
+        acs = ACS(config=config)
+        expected = acs._advance_attitude(T0).state.attitude
+        with patch.object(
+            ACS, "pointing", side_effect=AssertionError("synthetic flight")
+        ):
+            assert ctx.initial_attitude(T0 + 4 * 86400) == pytest.approx(expected)
+            assert ctx.initial_attitude(T0 + 60) == pytest.approx(expected)
+        # Candidate generation must not disable the physical safety checks.
+        sun = (float(ctx.ephem.sun_ra_deg[0]), float(ctx.ephem.sun_dec_deg[0]), 0.0)
+        assert ctx.first_hold_violation(sun, T0, T0 + 60, ACSMode.SCIENCE) == T0
+
 
 class TestConstraints:
     def test_attitude_at_the_sun_is_not_allowed(self, ctx: SchedulingContext) -> None:

@@ -1374,9 +1374,9 @@ class RollingHorizonDITL(DITL):
                 (self._rest_after(e) for e in pending), key=lambda rest: rest[0]
             )
             return StartState(time=max(cutoff, rest_time), attitude=attitude)
-        if not committed:
-            # Never commanded: the scheduler replays the freshly started spacecraft.
-            return None
+        # Before the first command, the real ACS may already have an explicit
+        # initial pose. With no pending entry, keep the pose it actually holds;
+        # constructing a fresh ACS would silently replace that boundary state.
         return StartState(
             time=cutoff,
             attitude=(float(self.acs.ra), float(self.acs.dec), float(self.acs.roll)),
