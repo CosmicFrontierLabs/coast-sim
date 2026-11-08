@@ -518,8 +518,8 @@ including when the declared spacecraft frame has a +Z payload boresight.
        dec_deg: 10.0
        roll_deg: 25.0
 
-Power-positive scheduled safe holds and fault-mode guidance are the next
-consumers of this attitude model.
+Power-positive scheduled safe holds and fault-mode guidance also use this
+attitude model; see :ref:`power-positive-fault-safe-mode`.
 
 Set ``stored_momentum.enforce_capacity`` with a finite positive spherical actuator
 momentum limit in ``stored_momentum.capacity_n_m_s`` to enable admission and
@@ -2228,3 +2228,27 @@ For detailed API documentation, see:
 * :class:`~conops.config.CommunicationsSystem`
 * :class:`~conops.config.ObservationCategories`
 * :class:`~conops.config.VisualizationConfig`
+
+.. _power-positive-fault-safe-mode:
+
+Power-positive fault safe mode
+------------------------------
+
+``AttitudeControlSystem.safe_mode_attitude`` optionally takes the same
+:class:`~conops.config.activity_attitude.ActivityAttitude` used by scheduled
+holds. ``None`` preserves the existing guidance. For fixed body-mounted panels,
+``ActivityAttitude(kind="power_positive")`` selects a feasible fixed pose with
+positive net generation at every sunlit sample through the remaining ephemeris,
+including the configured bus and payload SAFE loads. Ecliptic-pole preference
+uses ``SpacecraftBus.frame`` to orient the declared boresight; it does not assume
+body +X. A fixed request is also supported, with its full hold and ingress
+checked for attitude safety, without a promise of positive power.
+
+The chosen whole-hold pose is retained rather than replaced by the legacy
+per-step charging heuristic. If no sampled pose and ingress qualify,
+:class:`~conops.simulation.safe_hold.SafeHoldUnavailableError` is raised explicitly;
+there is no unverified fallback. Fault SAFE remains latched and normal commands
+remain rejected. This differs from ``ScheduledActivity(safe_hold=True)``, whose
+SAFE interval ends with the activity. The power-positive policy supports fixed
+body-mounted arrays, uses the ephemeris sampling, and permits battery draw in
+eclipse; see :doc:`planning` for the candidate search and margin settings.
