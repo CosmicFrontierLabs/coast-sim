@@ -1794,7 +1794,8 @@ class PriorityScheduler:
                 # The target's own windows, computed once and kept with
                 # it from plan to plan: a candidate at its pointing, or
                 # along its track, has the same.
-                if not target.windows:
+                if not target.windows or target._visibility_key is not None:
+                    # Partial caller queries cannot stand in for full coverage.
                     target.visibility()
                 windows = [list(w) for w in target.windows]
             else:

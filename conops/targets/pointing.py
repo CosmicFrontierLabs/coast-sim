@@ -716,9 +716,14 @@ class MovingPointing(Pointing):
             return "given"
         return "looked up"
 
-    def visibility(self, *args: object, **kwargs: object) -> int:
+    def visibility(
+        self,
+        *,
+        begin: float | int | str | datetime | None = None,
+        end: float | int | str | datetime | None = None,
+    ) -> int:
         """As :meth:`PlanEntry.visibility`, after the body's track is looked
         up when none was given."""
         if not self.track and self.body is not None:
             self.fetch_track()
-        return super().visibility(*args, **kwargs)
+        return super().visibility(begin=begin, end=end)

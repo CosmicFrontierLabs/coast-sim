@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
+from hashlib import sha256
 from typing import ClassVar, Literal
 
 import numpy as np
@@ -18,7 +20,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from rust_ephem.constraints import ConstraintConfig
+from rust_ephem.constraints import CombinedConstraintConfig, ConstraintConfig
 
 from ..common import givename, unixtime2date, unixtime_from
 from ..common.enums import ACSMode, ObsType
@@ -196,6 +198,9 @@ class PlanEntry(BaseModel):
         description="The entry's class, for a file to read it back as that class",
     )
 
+    _visibility_key: tuple[object, ...] | None = PrivateAttr(default=None)
+    _visibility_spans: list[tuple[float, float]] = PrivateAttr(default_factory=list)
+    _bounded_windows: list[list[float]] = PrivateAttr(default_factory=list)
     _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
         {ObsType.PPT, ObsType.AT, ObsType.TOO}
     )
@@ -925,14 +930,117 @@ class PlanEntry(BaseModel):
 
     def visibility(
         self,
+        *,
+        begin: float | int | str | datetime | None = None,
+        end: float | int | str | datetime | None = None,
     ) -> int:
-        """Calculate the visibility windows for a target for a given day(s).
+        """Compute visibility over the ephemeris, or only a requested interval.
 
-        Note: year, day, length, and hires parameters are kept for backwards
-        compatibility but are no longer used. The visibility is calculated over
-        the entire ephemeris time range.
+        Bounded calls accumulate known windows on this entry. Wider/later calls
+        extend coverage; changes to geometry, track, roll or configuration
+        invalidate it. Omitting both bounds retains the whole-ephemeris API.
+        Evaluations use the original grid with adjacent samples so interval
+        boundaries agree with clipping a whole-window evaluation.
         """
+        if begin is None and end is None:
+            self._visibility_key = None
+            self._visibility_spans = []
+            self._bounded_windows = []
+            return self._evaluate_visibility()
+        assert self.ephem is not None and self.config is not None
+        assert self.constraint is not None
+        timestamps = list(self.ephem.timestamp)
+        grid = [float(t.timestamp()) for t in timestamps]
+        if not grid:
+            raise ValueError("Cannot calculate visibility on an empty ephemeris")
+        first = grid[0] if begin is None else unixtime_from(begin)
+        last = grid[-1] if end is None else unixtime_from(end)
+        if not np.isfinite(first) or not np.isfinite(last) or first > last:
+            raise ValueError("Visibility bounds must be finite and begin <= end")
+        first, last = max(first, grid[0]), min(last, grid[-1])
+        key = (
+            id(self.ephem),
+            len(grid),
+            grid[0],
+            grid[-1],
+            self.ra,
+            self.dec,
+            self.roll,
+            self.instrument_name,
+            self.obsid,
+            tuple((p.utime, p.ra, p.dec) for p in self.track),
+            sha256(self.config.model_dump_json().encode()).digest(),
+            sha256(self.constraint.model_dump_json().encode()).digest(),
+        )
+        if key != self._visibility_key:
+            self._visibility_key = key
+            self._visibility_spans = []
+            self._bounded_windows = []
+        for missing_begin, missing_end in self._uncovered_visibility(first, last):
+            left = max(0, bisect_left(grid, missing_begin) - 1)
+            right = min(len(grid), bisect_right(grid, missing_end) + 1)
+            self._evaluate_visibility(timestamps[left:right])
+            clipped = [
+                [max(a, missing_begin), min(b, missing_end)]
+                for a, b in self.windows
+                if a <= missing_end and b >= missing_begin
+            ]
+            self._bounded_windows = self._merge_visibility(
+                [*self._bounded_windows, *clipped]
+            )
+            self._visibility_spans = [
+                (w[0], w[1])
+                for w in self._merge_visibility(
+                    [*self._visibility_spans, (missing_begin, missing_end)]
+                )
+            ]
+        self.windows = [list(w) for w in self._bounded_windows]
+        return 0
 
+    def _uncovered_visibility(
+        self, begin: float, end: float
+    ) -> list[tuple[float, float]]:
+        """Intervals whose visibility is unknown, including shared endpoints.
+
+        Each missing interval is evaluated with its original-grid halo. Shared
+        endpoints preserve transitions when its windows join the cached ones.
+        """
+        if begin > end:
+            return []
+        if begin == end:
+            return (
+                []
+                if any(a <= begin <= b for a, b in self._visibility_spans)
+                else [(begin, end)]
+            )
+        missing = []
+        cursor = begin
+        for first, last in self._visibility_spans:
+            if last < cursor:
+                continue
+            if first > end:
+                break
+            if cursor < first:
+                missing.append((cursor, first))
+            cursor = max(cursor, last)
+            if cursor >= end:
+                break
+        if cursor < end:
+            missing.append((cursor, end))
+        return missing
+
+    @staticmethod
+    def _merge_visibility(windows: Sequence[Sequence[float]]) -> list[list[float]]:
+        merged: list[list[float]] = []
+        for begin, end in sorted(windows, key=lambda w: (w[0], w[1])):
+            if merged and begin <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([begin, end])
+        return merged
+
+    def _evaluate_visibility(self, times: list[datetime] | None = None) -> int:
+        """Evaluate original grid samples; bounded callers provide a grid halo."""
         assert self.config is not None, "Config must be set to calculate visibility"
         assert self.config.constraint is not None, (
             "Constraint must be set to calculate visibility"
@@ -943,6 +1051,13 @@ class PlanEntry(BaseModel):
         assert self.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
+        if times is not None:
+            # A bounded cache miss can follow configuration mutation. Rebuild
+            # composite trees and the backend rather than reuse their old geometry.
+            self.constraint.invalidate_combined_constraint_cache()
+            telescope = self.science_telescope()
+            if telescope is not None and telescope.constraint is not None:
+                telescope.constraint.invalidate_combined_constraint_cache()
         if self.uses_mounted_attitude():
             # Visibility belongs to the selected science line of sight. Physical
             # bus hardware constraints are checked after a concrete instrument
@@ -971,11 +1086,16 @@ class PlanEntry(BaseModel):
             combined_constraint = self.constraint.constraint
             effective_roll = self.roll
 
+        if times is not None and combined_constraint is not None:
+            combined_constraint = CombinedConstraintConfig.validate_json(
+                combined_constraint.model_dump_json()
+            )
+
         if combined_constraint is None:
             self.windows = [
                 [
-                    float(self.ephem.begin.timestamp()),
-                    float(self.ephem.end.timestamp()),
+                    float((times[0] if times else self.ephem.begin).timestamp()),
+                    float((times[-1] if times else self.ephem.end).timestamp()),
                 ]
             ]
             return 0
@@ -983,7 +1103,7 @@ class PlanEntry(BaseModel):
         if self.track:
             # A moving target: the constraint along its track, resampled on
             # the ephemeris grid, which the moving-body evaluation wants.
-            times = list(self.ephem.timestamp)
+            times = list(self.ephem.timestamp) if times is None else times
             ras, decs = positions_along(
                 self.track, [float(t.timestamp()) for t in times]
             )
@@ -1000,12 +1120,21 @@ class PlanEntry(BaseModel):
             ]
             return 0
 
-        in_constraint = combined_constraint.evaluate(
-            ephemeris=self.ephem,
-            target_ra=self.ra,  # already in degrees
-            target_dec=self.dec,
-            target_roll=effective_roll,
-        )
+        if times is None:
+            in_constraint = combined_constraint.evaluate(
+                ephemeris=self.ephem,
+                target_ra=self.ra,  # already in degrees
+                target_dec=self.dec,
+                target_roll=effective_roll,
+            )
+        else:
+            in_constraint = combined_constraint.evaluate(
+                ephemeris=self.ephem,
+                target_ra=self.ra,
+                target_dec=self.dec,
+                target_roll=effective_roll,
+                times=times,
+            )
         # Construct the visibility windows
 
         self.windows = [
