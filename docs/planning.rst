@@ -389,9 +389,10 @@ executed:
   last visit either, so it is not revisited as soon as nothing outranks it. The
   priority-first scheduler and local search place each visit at the
   earliest fit once it is due; CP-SAT keeps the same spacing between a target's
-  candidates and discounts a visit by ``earliness_weight`` for each cadence it waits
+  candidates. With an explicit positive ``earliness_weight``, it discounts a visit
+  for each cadence it waits
   after falling due, a cadence after the visit before it, up to ``earliness_weight``
-  in all.
+  in all. The default applies no value discount.
 
 When :class:`~conops.ditl.RollingHorizonDITL` replans, observations it has already
 committed but not finished collecting count too: their exposure towards their
@@ -776,10 +777,11 @@ priority-first scheduler.
 * ``seed``: random seed, defaulting to the configuration's;
 * ``neighborhood``: how many positions apart a swap or move can be (default 3);
 * ``history_length``: length of the late-acceptance history (default 50);
-* ``earliness_weight``: fraction of a deadline request's value lost if it starts at
+* ``earliness_weight``: optional fraction of a deadline request's value lost if it starts at
   its deadline rather than at the start of the horizon, or at its earliest start if
-  that is later (default 0.5). It must be at most 1, so a late snapshot is always
-  worth more than none.
+  that is later (default 0.0). Values are in [0, 1]; values below 1 keep a late
+  snapshot worth more than none. Primary science value ranks first; earlier
+  delivery breaks ties.
 
 Ground passes and locked entries stay where the priority-first plan put them.
 

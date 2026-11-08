@@ -177,7 +177,10 @@ class SchedulerConfig(ConfigModel):
         default=None,
         ge=0,
         le=1,
-        description="Fraction of a deadline request's value lost by starting at its deadline",
+        description=(
+            "Optional fraction of a deadline request's value lost by starting "
+            "at its deadline; defaults to no discount"
+        ),
     )
     neighborhood: int | None = Field(
         default=None, ge=1, description="Positions apart a local-search move can be"

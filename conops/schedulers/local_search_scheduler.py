@@ -135,8 +135,10 @@ class LocalSearchScheduler(PriorityScheduler):
     A change is kept by late-acceptance hill climbing: when it is no worse than
     the current plan, or than the plan of ``history_length`` steps ago, so the
     search can cross plateaus. The objective is merit-weighted science time.
-    A snapshot of a request with a
-    deadline is worth less the later it starts: starting at the deadline
+    By default, science retains its value throughout its allowed window;
+    equal-valued plans prefer earlier delivery.
+    With an explicit positive ``earliness_weight``, a snapshot of a request
+    with a deadline is worth less the later it starts: starting at the deadline
     rather than the start of the horizon, or its earliest start if later,
     costs ``earliness_weight`` of its value. With ``allocated`` time, a
     snapshot's seconds that use what is left of the span its collection starts
@@ -158,9 +160,9 @@ class LocalSearchScheduler(PriorityScheduler):
         seed: Random seed; defaults to the configuration's.
         neighborhood: How many positions apart a swap or move can be.
         history_length: Length of the late-acceptance history.
-        earliness_weight: Fraction of a deadline request's value lost by
-            starting at its deadline, in [0, 1]. Values below 1 keep a late
-            snapshot worth more than none.
+        earliness_weight: Optional fraction of a deadline request's value lost
+            by starting at its deadline, in [0, 1]; defaults to zero. Values
+            below 1 keep a late snapshot worth more than none.
     """
 
     scheduler_name = "local_search"
@@ -177,7 +179,7 @@ class LocalSearchScheduler(PriorityScheduler):
         seed: int | None = None,
         neighborhood: int = 3,
         history_length: int = 50,
-        earliness_weight: float = 0.5,
+        earliness_weight: float = 0.0,
         start_plan: Plan | None = None,
         **options: object,
     ) -> None:
@@ -307,7 +309,12 @@ class LocalSearchScheduler(PriorityScheduler):
             candidate_score = self._objective(seeded.final)
             if dispatch_seed:
                 self.seed_score = candidate_score
-            if candidate_score > self.start_score:
+            if self._improves(
+                candidate_score,
+                seeded.final.timeline,
+                self.start_score,
+                start.final.timeline,
+            ):
                 start, self.start_score = seeded, candidate_score
                 best_fixed = self._fixed
                 best_volumes, best_energy = self._initial_volumes, self._initial_energy
@@ -426,12 +433,17 @@ class LocalSearchScheduler(PriorityScheduler):
     def _finish_best(self, best: _Decoded) -> Plan:
         """Return the best plan found, or the priority-first plan if better."""
         best_score = self._objective(best.final)
-        if best_score >= self.initial_score:
+        if self._improves(
+            best_score, best.final.timeline, self.initial_score, self._greedy_timeline
+        ):
             self.score = best_score
             self._set_unplaced(best.final.remaining)
-            return self._finish(best.final.timeline)
-        self.score = self.initial_score
-        return self._finish(self._greedy_timeline)
+            timeline = best.final.timeline
+        else:
+            self.score = self.initial_score
+            timeline = self._greedy_timeline
+
+        return self._finish(timeline)
 
     # ── Objective ────────────────────────────────────────────────────────
 
@@ -820,7 +832,9 @@ class LocalSearchScheduler(PriorityScheduler):
             if score >= current_score or score >= history[slot]:
                 current, current_score = candidate, score
                 self.accepted += 1
-                if score > best_score:
+                if self._improves(
+                    score, candidate.final.timeline, best_score, best.final.timeline
+                ):
                     best, best_score = candidate, score
             history[slot] = current_score
         self.search_iterations.append(self.iterations)
@@ -945,3 +959,78 @@ class LocalSearchScheduler(PriorityScheduler):
         return _Snapshot(
             obsid=obsid, seconds=float(self._by_obsid[obsid].target.ss_max)
         )
+
+    def _improves(
+        self,
+        score: float,
+        timeline: Sequence[_Block],
+        incumbent_score: float,
+        incumbent: Sequence[_Block],
+        *,
+        accept_equal_timing: bool = False,
+    ) -> bool:
+        """Prefer more value, then earlier science, retaining an exact tie.
+
+        Postponing equal-valued science can lose it at a rolling commitment
+        boundary. Complete timing ties may reproduce a solver hint; the
+        search's best plan retains its incumbent on a complete tie.
+        A lower primary score is never accepted by this comparison.
+        """
+        if score < incumbent_score:
+            return False
+        if score > incumbent_score:
+            return True
+        early = (
+            self._deadline_earliness(timeline),
+            self._frontloaded_science(timeline),
+        )
+        previous = (
+            self._deadline_earliness(incumbent),
+            self._frontloaded_science(incumbent),
+        )
+        return early > previous or (accept_equal_timing and early == previous)
+
+    def _deadline_earliness(self, timeline: Sequence[_Block]) -> float:
+        """Prefer earlier windowed science only after primary value ties."""
+        total = 0.0
+        for block in timeline:
+            if block.is_fixed or block.entry.collection_begin is None:
+                continue
+            request = self._by_obsid.get(int(block.entry.obsid))
+            if request is None:
+                continue
+            if request.timed and request.visit != block.entry.visit:
+                request = request.model_copy(update={"visit": block.entry.visit})
+            deadline = request.deadline
+            if deadline is None:
+                continue
+            opens = max(self.ctx.ustart, request.earliest_start or self.ctx.ustart)
+            available = deadline - opens
+            if available <= 0:
+                continue
+            delay = max(0.0, float(block.entry.collection_begin) - opens)
+            total += (
+                float(request.target.merit)
+                * _collection_seconds(block)
+                * (1.0 - min(1.0, delay / available))
+            )
+        return total
+
+    def _frontloaded_science(self, timeline: Sequence[_Block]) -> float:
+        """Integral of fixed-merit science delivered before the horizon ends."""
+        total = 0.0
+        for block in timeline:
+            if block.is_fixed:
+                continue
+            request = self._by_obsid.get(int(block.entry.obsid))
+            merit = float(
+                request.target.merit if request is not None else block.entry.merit
+            )
+            for entry in block.steps or [block.entry]:
+                if entry.calibration:
+                    continue
+                begin, end = entry.collection_interval_between(
+                    float(entry.begin), float(entry.end)
+                )
+                total += merit * (end - begin) * (self.ctx.uend - (begin + end) * 0.5)
+        return total
