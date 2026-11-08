@@ -14,11 +14,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from copy import copy
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict
 
 from ..common.geodesy import EARTH_ROTATION_RATE_RAD_S
 from ..common.vector import quaternion_to_rotation_matrix
@@ -174,12 +174,13 @@ def aerodynamic_drag_torque_body(
     return torque
 
 
-@dataclass(frozen=True)
-class OrbitSample:
+class OrbitSample(BaseModel):
     """The orbit, Sun and attitude at one instant, as the torque sources
     see them: the ECI position, the vector from the spacecraft to the Sun
     (None where unknown), whether the spacecraft is sunlit, and the rotation
     from ECI into the body frame."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     utime: float
     position_eci_km: npt.NDArray[np.float64]
@@ -222,11 +223,12 @@ class OrbitSample:
         )
 
 
-@dataclass(frozen=True)
-class OrbitTables:
+class OrbitTables(BaseModel):
     """An ephemeris as the arrays a torque bound is taken over: the sample
     times, the ECI positions, and where the ephemeris has them the ECI
     velocities, the Earth-fixed positions and the Sun's ECI positions."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     times: npt.NDArray[np.float64]
     positions_eci_km: npt.NDArray[np.float64]
@@ -256,11 +258,15 @@ class OrbitTables:
         ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
         velocities = velocity_vectors(ephem)
         return cls(
-            times,
-            positions,
-            velocities,
-            np.asarray(ecef, dtype=np.float64) if ecef is not None else None,
-            np.asarray(sun, dtype=np.float64) if sun is not None else None,
+            times=times,
+            positions_eci_km=positions,
+            velocities_eci_km_s=velocities,
+            positions_ecef_km=np.asarray(ecef, dtype=np.float64)
+            if ecef is not None
+            else None,
+            sun_positions_eci_km=np.asarray(sun, dtype=np.float64)
+            if sun is not None
+            else None,
         )
 
     def min_radius_km(self) -> float:
@@ -548,9 +554,10 @@ class ResidualDipoleTorque:
         )
 
 
-@dataclass(frozen=True)
-class MomentumSample:
+class MomentumSample(BaseModel):
     """Instantaneous disturbance torques and accumulated stored momentum."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     gravity_gradient_torque_body_n_m: tuple[float, float, float]
     stored_momentum_body_n_m_s: tuple[float, float, float]
@@ -574,11 +581,12 @@ def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
     return (float(vector[0]), float(vector[1]), float(vector[2]))
 
 
-@dataclass(frozen=True)
-class MomentumState:
+class MomentumState(BaseModel):
     """A tracker's integration state, to continue from later: the stored
     momentum in inertial coordinates, the torque at the last sample and
     when it was, each None before the first sample."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     momentum_eci_n_m_s: tuple[float, float, float] | None
     previous_torque_eci_n_m: tuple[float, float, float] | None

@@ -11,11 +11,11 @@ reaches a level. The planners reserve a thruster dump there and plan again.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
 from ..common.ephemeris import position_vectors, velocity_vectors
@@ -28,10 +28,10 @@ from ..simulation.momentum import (
     slew_sample_interval_s,
     tracker_from_config,
 )
+from ..simulation.slew import Slew
 
 if TYPE_CHECKING:
     from ..config import MissionConfig
-    from ..simulation.slew import Slew
     from .context import SchedulingContext
     from .priority_scheduler import _Block
 
@@ -39,9 +39,10 @@ if TYPE_CHECKING:
 _SpanKey = tuple[float, float, Attitude | None, tuple[float, ...] | None, float | None]
 
 
-@dataclass(frozen=True)
-class _Span:
+class _Span(BaseModel):
     """An interval of the timeline at one attitude or along one slew."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     begin: float
     end: float
@@ -173,7 +174,7 @@ class MomentumForecast:
             for step, slew in zip(steps, slews, strict=False):
                 begin = float(step.begin)
                 if begin > cursor:
-                    spans.append(_Span(cursor, begin, attitude))
+                    spans.append(_Span(begin=cursor, end=begin, attitude=attitude))
                     cursor = begin
                 target = (
                     step.spacecraft_attitude
@@ -183,7 +184,9 @@ class MomentumForecast:
                 if slew is not None and float(slew.slewtime) > 0.0:
                     slew_end = min(float(slew.slewend), float(step.end))
                     if slew_end > cursor:
-                        spans.append(_Span(cursor, slew_end, None, slew=slew))
+                        spans.append(
+                            _Span(begin=cursor, end=slew_end, attitude=None, slew=slew)
+                        )
                         cursor = slew_end
                 end = float(step.end)
                 unload = None
@@ -194,11 +197,15 @@ class MomentumForecast:
                 ):
                     unload = dump.residual_fraction
                 if end > cursor:
-                    spans.append(_Span(cursor, end, target, unload_at_end=unload))
+                    spans.append(
+                        _Span(
+                            begin=cursor, end=end, attitude=target, unload_at_end=unload
+                        )
+                    )
                     cursor = end
                 attitude = target
         if self.ctx.uend > cursor:
-            spans.append(_Span(cursor, self.ctx.uend, attitude))
+            spans.append(_Span(begin=cursor, end=self.ctx.uend, attitude=attitude))
         return spans
 
     def _attitude_at(self, span: _Span, utime: float) -> Attitude:

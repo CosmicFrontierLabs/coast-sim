@@ -524,3 +524,29 @@ class TestRolling:
         assert ditl.validate_plan_matches_execution() == []
         _check_execution(ditl)
         _check_following(ditl.plan, config)
+
+
+def test_candidate_copies_keep_the_sliding_activity_hold() -> None:
+    """Reconnecting a candidate timeline must preserve a calibration's window."""
+    activity = ScheduledActivity(
+        name="Sliding calibration",
+        begin=T0 + 2 * HOUR,
+        duration_seconds=30 * MIN,
+        slide_seconds=HOUR,
+    )
+    scheduler = PriorityScheduler(
+        _config(HOURS), [], BEGIN, END, step_size=STEP, activities=[activity]
+    )
+    scheduler.schedule()
+    original = next(b for b in scheduler.timeline if b.is_activity)
+    assert float(original.entry.begin) == activity.begin
+    candidate = original.model_copy(update={"entry": original.entry.model_copy()})
+    # Candidate reconnection records the reserved latest start on the copy.
+    candidate.entry.begin = candidate.ready
+    candidate.entry.end = candidate.end
+    assert float(candidate.entry.begin) == activity.latest_start
+    scheduler._settle_sliding_activities([candidate])
+    assert float(candidate.entry.begin) == activity.begin
+    assert float(candidate.entry.end) == activity.end
+    assert float(original.entry.begin) == activity.begin
+    assert float(original.entry.end) == activity.end

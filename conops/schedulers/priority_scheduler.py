@@ -79,6 +79,8 @@ class _Block(BaseModel):
     step_slews: list[Slew | None] = Field(default_factory=list)
     """The slew into each step: the block's own for the first, the slew
     between pointings for a later step, None where it stays put."""
+    activity: ScheduledActivity | None = None
+    """Sliding reservation carried with its block and any candidate copies."""
     follows: bool = False
     """Whether the block holds the attitude of whatever precedes it, as a
     scheduled activity does: it is reached by no slew, its attitude is set
@@ -414,8 +416,6 @@ class PriorityScheduler:
         self.targets = list(targets)
         self.activities = assign_obsids(activities)
         """Fixed-time activities to reserve, in time order."""
-        self._slidable: dict[int, ScheduledActivity] = {}
-        """The activities reserved with a slide window, by their block."""
         self.dumps: list[ScheduledActivity] = []
         """The thruster dumps this scheduler has reserved where its momentum
         forecast reached the level, in time order."""
@@ -1862,7 +1862,7 @@ class PriorityScheduler:
         has ended: at its start at the earliest and where it was reserved at
         the latest, for its length."""
         for index, block in enumerate(timeline):
-            activity = self._slidable.get(id(block))
+            activity = block.activity
             if activity is None:
                 continue
             begin = activity.begin
@@ -1871,7 +1871,7 @@ class PriorityScheduler:
                 # A settled activity before it ends where its entry does.
                 ended = (
                     float(previous.entry.end)
-                    if id(previous) in self._slidable
+                    if previous.activity is not None
                     else float(previous.end)
                 )
                 begin = max(begin, self.ctx.ceil_step(ended))
@@ -1961,9 +1961,8 @@ class PriorityScheduler:
             ready=ready,
             end=end,
             follows=True,
+            activity=activity if late else None,
         )
-        if late:
-            self._slidable[id(block)] = activity
         if not self._insert_fixed(block):
             self._log(
                 activity.begin,

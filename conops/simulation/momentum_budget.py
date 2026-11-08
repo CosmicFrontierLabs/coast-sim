@@ -12,12 +12,12 @@ holds; no other unloading or unknown disturbance torque is invented here.
 
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
 from math import floor
 
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
@@ -38,26 +38,30 @@ class MomentumLimitError(AttitudeExecutionError):
     """No physically admitted continuation: the run must not report success."""
 
 
-@dataclass(frozen=True)
-class MomentumForecast:
+class MomentumForecast(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     tracker: StoredMomentumTracker
     sample: MomentumSample
     utime: float
     peak_n_m_s: float
     first_violation: float | None = None
     uncertified_interval: tuple[float, float] | None = None
-    path: "_MomentumPath | None" = field(default=None, compare=False, repr=False)
+    path: "_MomentumPath | None" = Field(default=None, repr=False, exclude=True)
 
 
-@dataclass
-class _MomentumPath:
+class _MomentumPath(BaseModel):
     """Integration knots owned by an immutable physical trajectory.
 
     Partial scheduler ticks read the same torque polynomial, without inserting
     a new integration knot or changing the forecast for subsequent ticks.
     """
 
-    trajectory: AttitudeTrajectory | None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Trajectories are validated by the executor and retained by identity.
+    # Their protocol-based internals are not another record-validation boundary.
+    trajectory: SkipValidation[AttitudeTrajectory | None]
     state_at: Callable[[float], AttitudeState]
     signature: tuple[float, float, bytes]
     nodes: list[MomentumForecast]
@@ -140,11 +144,11 @@ class MomentumBudget:
         assert sample.actuator_momentum_norm_n_m_s is not None
         peak = sample.actuator_momentum_norm_n_m_s
         self.current = MomentumForecast(
-            self.live,
-            sample,
-            initial.utime,
-            peak,
-            initial.utime if peak > self.capacity else None,
+            tracker=self.live,
+            sample=sample,
+            utime=initial.utime,
+            peak_n_m_s=peak,
+            first_violation=initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
         slowest_fraction = settings.slew_rate_fractions[-1]
@@ -179,11 +183,11 @@ class MomentumBudget:
         assert sample.actuator_momentum_norm_n_m_s is not None
         norm = sample.actuator_momentum_norm_n_m_s
         self.current = MomentumForecast(
-            tracker,
-            sample,
-            state.utime,
-            norm,
-            state.utime if norm > self.capacity else None,
+            tracker=tracker,
+            sample=sample,
+            utime=state.utime,
+            peak_n_m_s=norm,
+            first_violation=state.utime if norm > self.capacity else None,
         )
         self.live.assign(tracker)
         return self.current
@@ -352,7 +356,14 @@ class MomentumBudget:
                 )
             if not safe:
                 violation, uncertified = base.utime, (base.utime, end)
-        return MomentumForecast(tracker, sample, end, peak, violation, uncertified)
+        return MomentumForecast(
+            tracker=tracker,
+            sample=sample,
+            utime=end,
+            peak_n_m_s=peak,
+            first_violation=violation,
+            uncertified_interval=uncertified,
+        )
 
     def forecast(
         self,
@@ -393,15 +404,21 @@ class MomentumBudget:
             ):
                 violation = base.utime
             origin = MomentumForecast(
-                tracker,
-                sample,
-                base.utime,
-                peak,
-                violation,
-                base.uncertified_interval if initial is not None else None,
+                tracker=tracker,
+                sample=sample,
+                utime=base.utime,
+                peak_n_m_s=peak,
+                first_violation=violation,
+                uncertified_interval=base.uncertified_interval
+                if initial is not None
+                else None,
             )
             path = _MomentumPath(
-                trajectory, frozen_state_at, signature, [origin], [base.utime]
+                trajectory=trajectory,
+                state_at=frozen_state_at,
+                signature=signature,
+                nodes=[origin],
+                times=[base.utime],
             )
         boundaries = trajectory.boundaries if trajectory is not None else ()
         origin_time = path.times[0]
@@ -429,7 +446,7 @@ class MomentumBudget:
             result = self._interval(
                 path, before, end, torque=first + fraction * (last_torque - first)
             )
-        return replace(result, path=path)
+        return result.model_copy(update={"path": path})
 
     def require(self, forecast: MomentumForecast) -> None:
         if forecast.uncertified_interval is not None:

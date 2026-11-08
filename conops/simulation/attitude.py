@@ -6,7 +6,7 @@ snapshots; guidance changes cannot rewrite previously executed motion.
 
 from bisect import bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cached_property
 from math import inf, isclose, isfinite, nextafter
 from typing import TYPE_CHECKING, Protocol
@@ -612,7 +612,7 @@ class AttitudeExecutor:
             before, forecast = self._certify_momentum(trajectory, momentum_end)
             # Execution reads the same certified integration cells, including
             # partial ticks; it does not re-grid this immutable trajectory.
-            self.momentum.commit(replace(before, path=forecast.path))
+            self.momentum.commit(before.model_copy(update={"path": forecast.path}))
         self._state = state
         self._trajectory = trajectory
         self._record(trajectory.start, trajectory)

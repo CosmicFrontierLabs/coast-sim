@@ -21,6 +21,19 @@ stored vector in the current body frame together with its norm. The integrator i
 ``spacecraft_bus.attitude_control.stored_momentum``, and the inertia tensor it needs
 is ``spacecraft_bus.inertia_tensor_body_kg_m2``.
 
+**Runtime snapshots.** ``MomentumState`` and ``MomentumSample`` are frozen
+Pydantic models. Construct records with named fields, use ``model_copy()``
+instead of ``dataclasses.replace()``, and use ``model_dump()`` instead of
+``dataclasses.asdict()``. Taking or copying a snapshot does not advance its
+tracker. A saved state can be validated and restored without changing its
+physical values::
+
+    from conops.simulation.momentum import MomentumState
+
+    snapshot = tracker.state
+    restored = MomentumState.model_validate(snapshot.model_dump())
+    tracker.restore(restored)
+
 **Sources.** Each torque source is evaluated in the body frame at every sample from
 the ephemeris and the attitude, and reported by name in the telemetry
 (``disturbance_torques_body_n_m``), so a run shows which term fills the wheels.
