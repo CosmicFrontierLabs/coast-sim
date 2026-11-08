@@ -52,6 +52,9 @@ from .recorder import RecorderAmount, RecorderLedgers, combine_amounts
 TrackingProfile = list[tuple[float, float, float]]
 
 
+_CHARGE_ENERGY_TOLERANCE_WH = 1e-9
+
+
 _MAX_DUMPS = 50
 """How many thruster dumps a plan reserves at most."""
 
@@ -2233,7 +2236,7 @@ class PriorityScheduler:
                     f"The block after {pred.entry.obsid if pred else 'the start'} "
                     "cannot be reached from the attitude it follows"
                 )
-            copy = block.model_copy(update={"entry": block.entry.model_copy()})
+            copy = self._copy_for_reconnection(block)
             if slew is not None:
                 self._apply_slew(copy, slew)
             if index == 0 and copy.activity is not None:
@@ -3671,14 +3674,14 @@ class PriorityScheduler:
     def _plan_charging(self, timeline: list[_Block]) -> list[_Block]:
         """Put the charges a finished plan relies on into it.
 
-        Every placement was checked with the charges its idle sunlit time
-        holds (see :meth:`_charged_timeline`); this commits them: each charge
+        Every placement was checked with forecast-driven charges
+        (see :meth:`_charged_timeline`); this commits them: each charge
         goes into the plan, and the activity after it is re-slewed from the
         charging attitude.
         """
         if not self._battery.active:
             return timeline
-        charged = self._charged_timeline(timeline, commit=True)
+        charged = self._charged_timeline(timeline)
         for block in charged:
             if block.is_charge:
                 self._log(
@@ -3697,16 +3700,109 @@ class PriorityScheduler:
             )
         return charged
 
-    def _charged_timeline(
-        self, timeline: Sequence[_Block], commit: bool = False
-    ) -> list[_Block]:
-        """The timeline with a charge in every idle sunlit stretch one fits.
+    @staticmethod
+    def _copy_for_reconnection(block: _Block) -> _Block:
+        """Copy the mutable entries and slew list before speculative reconnection."""
+        return block.model_copy(
+            update={
+                "entry": block.entry.model_copy(),
+                "steps": [step.model_copy() for step in block.steps],
+                "step_slews": list(block.step_slews),
+            }
+        )
 
-        Between each pair of blocks, charges are chained through the sunlit
-        stretches of the idle time (see :meth:`_gap_charges`), and the block
-        after them is re-slewed from the last charging attitude. Unless
-        ``commit`` is set, that re-slew goes on a copy, so the timeline given
-        is not changed.
+    def _charge_excess(self, timeline: Sequence[_Block]) -> float:
+        limit = self._battery.limit
+        assert limit is not None
+        return max(
+            0.0, max(self._battery.peaks(self._timeline_energy(timeline))) - limit
+        )
+
+    def _replace_charge(
+        self, timeline: Sequence[_Block], index: int, replacement: _Block | None
+    ) -> list[_Block] | None:
+        """Remove/shorten a charge and validate its actual departure connection."""
+        pred = replacement or (timeline[index - 1] if index else self._origin)
+        after = timeline[index + 1 :]
+        if after:
+            chain = self._connect_chain(pred, after)
+            if chain is None:
+                return None
+            tail = self._reconnected(pred, after, chain[0][1])
+            # A following sliding activity may settle earlier on reconnection.
+            first = tail[0]
+            if first.is_activity and (
+                first.arrival > first.ready
+                or self.ctx.first_hold_violation(
+                    first.attitude_out,
+                    first.ready,
+                    self.ctx.ceil_step(first.end),
+                    ACSMode.IDLE,
+                )
+                is not None
+            ):
+                return None
+        else:
+            tail = []
+        return [*timeline[:index], *([replacement] if replacement else []), *tail]
+
+    def _charged_timeline(self, timeline: Sequence[_Block]) -> list[_Block]:
+        """Reserve charging only where the full forecast needs it.
+
+        Price actual ingress, departure and idle generation, with battery
+        saturation and finite drives. Removing a candidate must leave a safe
+        connection; shortening retains a verified feasible endpoint even when
+        drive behaviour makes charge duration non-monotonic.
+        """
+        if not self._battery.active or self._within_level(
+            self._timeline_energy(timeline)
+        ):
+            return list(timeline)
+        charged = self._all_charge_timeline(timeline)
+        excess = self._charge_excess(charged)
+        preserved = {b.entry.obsid for b in timeline if b.is_charge}
+        # Keep explicit/committed charges. Candidate charges are reversible;
+        # work backwards so each accepted removal prices all later loads.
+        for index in range(len(charged) - 1, -1, -1):
+            block = charged[index]
+            if not block.is_charge or block.entry.obsid in preserved:
+                continue
+            trial = self._replace_charge(charged, index, None)
+            if trial is not None:
+                trial_excess = self._charge_excess(trial)
+                if trial_excess <= max(excess, _CHARGE_ENERGY_TOLERANCE_WH):
+                    charged, excess = trial, trial_excess
+                    continue
+            if excess > _CHARGE_ENERGY_TOLERANCE_WH:
+                continue
+            # Find a shorter feasible hold on the simulation grid. Every
+            # accepted trial includes its outgoing slew and the entire tail.
+            lower = self.ctx.ceil_step(block.ready + MIN_CHARGE_SECONDS)
+            upper = self.ctx.floor_step(block.end)
+            best = charged
+            while lower < upper:
+                stop = self.ctx.floor_step((lower + upper) / 2)
+                shorter = self._copy_for_reconnection(block)
+                shorter.end = stop
+                shorter.entry.end = stop
+                shorter.entry.ss_max = stop - shorter.ready
+                shorter.entry.exptime = stop - shorter.ready
+                trial = self._replace_charge(charged, index, shorter)
+                if trial is not None and self._within_level(
+                    self._timeline_energy(trial)
+                ):
+                    best = trial
+                    upper = stop
+                else:
+                    lower = stop + self.ctx.step_size
+            charged = best
+        return charged
+
+    def _all_charge_timeline(self, timeline: Sequence[_Block]) -> list[_Block]:
+        """Generate geometry-feasible candidates in the idle sunlit stretches.
+
+        Reconnect on copies: forecast trials must not change visits or the
+        mandatory holds in their input timeline.
         """
         if not self._battery.active:
             return list(timeline)
@@ -3741,8 +3837,7 @@ class PriorityScheduler:
                         f"attitude activity {pred.entry.obsid} follows"
                     )
             if (charges or stale) and succ_slew is not None:
-                if not commit:
-                    succ = succ.model_copy(update={"entry": succ.entry.model_copy()})
+                succ = self._copy_for_reconnection(succ)
                 if succ.activity is not None:
                     # A block that may begin late follows the charges before
                     # it, as the chain into it was checked.
