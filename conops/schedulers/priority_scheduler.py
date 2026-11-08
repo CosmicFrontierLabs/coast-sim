@@ -2013,7 +2013,7 @@ class PriorityScheduler:
         """
         slew = self._connect_to(pred, block, earliest, attitude_in)
         if slew is None and block.follows and attitude_in is None:
-            mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+            mode = block.entry.activity_mode
             for target in self.ctx.idle_hold_candidates(
                 self._start_attitude(pred, earliest), block.ready
             ):
@@ -2106,7 +2106,7 @@ class PriorityScheduler:
                 target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
             )
             if wait_violation is None:
-                mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+                mode = block.entry.activity_mode
                 wait_violation = self.ctx.first_hold_violation(
                     target,
                     block.ready,
@@ -2424,7 +2424,7 @@ class PriorityScheduler:
                 continue
             previous = timeline[index - 1] if index > 0 else None
             self._settle_block(block, previous.end if previous is not None else None)
-            mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+            mode = block.entry.activity_mode
             violation = self.ctx.first_hold_violation(
                 block.attitude_out,
                 block.ready,
@@ -2564,8 +2564,9 @@ class PriorityScheduler:
                 else self.ctx.initial_attitude(self.ctx.ustart)
             )
         )
-        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        mode = activity.hold_mode
         fixed_attitude = activity.attitude.fixed_pointing
+        explicit = activity.attitude.kind != "inherited"
         if fixed_attitude is not None:
             attitude = fixed_attitude
         entry = activity.plan_entry(self.config, attitude)
@@ -2588,25 +2589,42 @@ class PriorityScheduler:
             attitude_out=attitude,
             ready=ready,
             end=end,
-            follows=fixed_attitude is None,
-            activity=activity if late and fixed_attitude is None else None,
+            follows=not explicit,
+            activity=activity if late and not explicit else None,
             latest_ready=ready if late else None,
         )
-        if fixed_attitude is not None and activity.slides and not resumed:
-            # A required pose cannot be replaced by another attitude. Search
-            # its start window, then keep that validated reservation fixed.
+        if explicit:
             earliest = self.ctx.ceil_step(max(activity.begin, self.ctx.ustart))
-            trial = self.ctx.floor_step(ready)
-            while trial >= earliest:
+            trial = (
+                self.ctx.floor_step(ready) if activity.slides and not resumed else ready
+            )
+            failure = None
+            while not activity.slides or resumed or trial >= earliest:
                 block.ready = trial
-                block.end = self._activity_end(activity, trial)
+                block.end = self._activity_end(
+                    activity, hold_begin if resumed else trial
+                )
                 block.latest_ready = trial
-                block.entry.activity_hold_begin = trial
-                block.entry.activity_hold_end = trial + activity.duration_seconds
+                block.entry.activity_hold_begin = hold_begin if resumed else trial
+                block.entry.activity_hold_end = (
+                    block.entry.activity_hold_begin + activity.duration_seconds
+                )
                 block.entry.end = block.end
-                if self._insert_fixed(block):
-                    return
+                try:
+                    for pose in self.ctx.activity_attitudes(
+                        activity, trial, self._required_hold_end(block)
+                    ):
+                        block.attitude_in = block.attitude_out = pose
+                        block.entry.ra, block.entry.dec, block.entry.roll = pose
+                        if self._insert_fixed(block):
+                            return
+                except ValueError as exc:
+                    failure = exc
+                if not activity.slides or resumed:
+                    break
                 trial -= self.ctx.step_size
+            if failure is not None:
+                raise ActivitySchedulingError(activity, str(failure)) from failure
             placed = False
         else:
             placed = self._insert_fixed(block)

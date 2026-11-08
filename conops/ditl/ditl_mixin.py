@@ -180,7 +180,9 @@ class DITLMixin:
             acs_mode = ACSMode(int(mode))
         except (TypeError, ValueError):
             return None
-        if acs_mode in (ACSMode.IDLE, ACSMode.DESAT):
+        if acs_mode == ACSMode.SAFE and getattr(self.acs, "in_safe_mode", False):
+            return None
+        if acs_mode in (ACSMode.IDLE, ACSMode.DESAT, ACSMode.SAFE):
             # Dispatch holds the activity itself; a plan holds its entry.
             active = getattr(self, "_active_activity", None)
             modes = getattr(active, "instrument_modes", None)

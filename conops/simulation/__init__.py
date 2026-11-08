@@ -22,6 +22,7 @@ from .roll import (
     optimum_roll_sidemount,
 )
 from .saa import SAA
+from .safe_hold import SafeHoldUnavailableError
 from .slew import Slew
 
 __all__ = [
@@ -50,5 +51,6 @@ __all__ = [
     "TorqueSource",
     "gravity_gradient_torque_body",
     "SAA",
+    "SafeHoldUnavailableError",
     "Slew",
 ]
