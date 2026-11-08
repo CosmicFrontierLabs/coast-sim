@@ -110,8 +110,7 @@ class SchedulingContext:
         """The longest cleanup and handoff any observation can have."""
         self._own_timings: dict[int, ObservationTiming] = {}
         """Targets' own budgets, by obsid, in place of their categories'."""
-        self._initial_acs: ACS | None = None
-        self._initial_attitudes: list[Attitude] = []
+        self._initial_pose: Attitude | None = None
         # A quaternion slew's path does not depend on when it starts, so one
         # slew per attitude pair is predicted and retimed for each start: its
         # settle follows the Sun where a thermal settling table is configured.
@@ -170,22 +169,17 @@ class SchedulingContext:
     # ── Attitudes and slews ───────────────────────────────────────────────
 
     def initial_attitude(self, utime: float) -> Attitude:
-        """Return the attitude a freshly started simulation holds at ``utime``.
+        """Return the uncommanded initial pose, without simulating a flight.
 
-        Before its first command the spacecraft idles at an Earth-opposite
-        attitude whose roll ACS keeps optimizing, so the attitude depends on
-        time. It is replayed step by step with a real ACS. The replay's events
-        go to a log of their own, which is discarded: the simulation records
-        its own, and an ACS without a log prints them.
+        ACS chooses its initial roll at the simulation origin and holds that
+        pose until commanded. A later query must not fly a hypothetical idle
+        trajectory through keep-outs and trigger fault recovery. Callers check
+        whether this candidate's actual ingress and hold are safe separately.
         """
-        if self._initial_acs is None:
-            self._initial_acs = ACS(config=self.config, log=DITLLog())
-        index = int(round((self.floor_step(utime) - self.origin) / self.step_size))
-        while len(self._initial_attitudes) <= index:
-            step = self.origin + len(self._initial_attitudes) * self.step_size
-            ra, dec, roll, _ = self._initial_acs.pointing(step)
-            self._initial_attitudes.append((float(ra), float(dec), float(roll)))
-        return self._initial_attitudes[index]
+        if self._initial_pose is None:
+            acs = ACS(config=self.config, log=DITLLog())
+            self._initial_pose = acs._advance_attitude(self.origin).state.attitude
+        return self._initial_pose
 
     def science_rest(self, entry: PlanEntry) -> tuple[float, Attitude]:
         """The actual resting handoff after a fixed or tracked observation."""
