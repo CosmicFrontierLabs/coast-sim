@@ -523,6 +523,10 @@ class LocalSearchScheduler(PriorityScheduler):
         placed (see :meth:`_value`).
         """
         entry = block.entry
+        # A request's selected visit is mutable placement state. Historical
+        # blocks must use their own window, not whichever visit was tried last.
+        if request.timed and request.visit != entry.visit:
+            request = request.model_copy(update={"visit": entry.visit})
         worth = value * _collection_seconds(block)
         deadline = request.deadline
         if deadline is None or self.earliness_weight == 0.0:
