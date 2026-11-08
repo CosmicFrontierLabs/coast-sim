@@ -773,8 +773,10 @@ gave it, so the starting point is that plan. The search then tries:
 * **swapping** two nearby snapshots, or **moving** one a few positions.
 
 A change is kept when it is no worse than the current plan, or than the plan of
-``history_length`` steps ago (late-acceptance hill climbing), which lets the search
-cross plateaus. The objective is merit-weighted science time, with each snapshot's
+``history_length`` evaluated changes ago (late-acceptance hill climbing), which
+lets the search cross plateaus. A no-op consumes the attempt budget without
+advancing or skipping a history slot. The objective is merit-weighted science
+time, with each snapshot's
 completion deficit taken from the program shares in the plan before it. By default,
 science keeps its value throughout its allowed window; equal-valued plans prefer
 earlier delivery. An explicit positive ``earliness_weight`` reduces a deadline
