@@ -934,7 +934,9 @@ class DITL(DITLMixin, DITLStats):
             entry.activity_hold_end = float(entry.end)
         if entry.safe_hold and utime >= entry.activity_hold_begin:
             self.acs.begin_safe_hold()
-        resumed = entry.activity_hold_begin < max(float(entry.begin), self.ustart)
+        resumed = entry.activity_resumed or entry.activity_hold_begin < max(
+            float(entry.begin), self.ustart
+        )
         entry.begin = max(float(entry.begin), self.ustart)
         entry.end = min(float(entry.end), self.uend)
         if resumed:
