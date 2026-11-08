@@ -1079,11 +1079,13 @@ each plan by local search or with CP-SAT.
   ``solver_reused_chunks`` counts cached responses across all candidates, including
   rejected ones, and defaults to zero for older records. A cached response is
   labelled ``"reused"`` in ``solver_limits`` and is excluded from the actual-search
-  histories. Reuse is limited to a schedule's final chunks with one worker and a
-  deterministic budget, where the complete compiled model and solver parameters
-  agree. The response is decoded using the current requests and exact state;
-  executable entries from another plan are not reused. The cache resets on each
-  schedule and wall-clock-ended searches are ineligible for reuse.
+  histories. Reuse requires one worker, a deterministic budget, and equality of
+  the complete compiled model and solver parameters, including hints and all
+  downstream resource reservations. Both final and intermediate chunks can reuse
+  responses. Separate stores retain at most 16 models each per schedule, so
+  intermediate-model churn preserves the existing final-chunk retention.
+  Responses are decoded using the current requests and exact state. Both stores
+  reset on each schedule; wall-clock-ended searches are ineligible for reuse.
 * ``ditl.too_response_times()`` gives the seconds from each ToO's submission to its
   first science, or None if it was never observed.
 * ``ditl.plan`` is the plan that was actually followed: the committed parts of

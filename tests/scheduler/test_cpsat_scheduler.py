@@ -1252,6 +1252,7 @@ class TestSolverSearchReporting:
         scheduler.solver_search_statuses.append("UNKNOWN")
         scheduler.solver_search_limits.append("wall clock")
         scheduler._solve_cache.hits = 3
+        scheduler._intermediate_solve_cache.hits = 2
         empty = Plan(entries=[])
 
         def passes(build):
@@ -1264,7 +1265,7 @@ class TestSolverSearchReporting:
         monkeypatch.setattr(scheduler, "_plan_within_momentum", passes)
         assert scheduler.schedule() is empty
 
-    def test_only_final_chunks_reuse_and_reuse_is_not_an_actual_search(
+    def test_identical_intermediate_and_final_chunks_reuse_without_extra_searches(
         self, monkeypatch
     ):
         scheduler = self._scheduler()
@@ -1279,12 +1280,42 @@ class TestSolverSearchReporting:
             return original(self, *args, **kwargs)
 
         monkeypatch.setattr(cp_model.CpSolver, "solve", counted)
+        proposals = []
         for end in [scheduler.ctx.uend - MIN] * 2 + [scheduler.ctx.uend] * 2:
-            scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
-        assert len(calls) == 3
-        assert scheduler.solver_reused_chunks == 1
-        assert scheduler.solver_limits == ["optimal", "optimal", "optimal", "reused"]
-        assert scheduler.solver_search_limits == ["optimal"] * 3
+            proposals.append(
+                scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+            )
+        assert all(proposal == proposals[0] for proposal in proposals)
+        assert proposals[0] is not None and proposals[0][0].seconds == 60
+        assert len(calls) == 2
+        assert scheduler.solver_reused_chunks == 2
+        assert scheduler.solver_limits == ["optimal", "reused", "optimal", "reused"]
+        assert scheduler.solver_search_limits == ["optimal"] * 2
+
+    def test_intermediate_churn_preserves_existing_final_chunk_reuse(self, monkeypatch):
+        scheduler = self._scheduler()
+        start = self._mock_chunk_inputs(monkeypatch, scheduler)
+        scheduler.workers = 1
+        scheduler._deterministic_per_chunk = 0.05
+        original = cp_model.CpSolver.solve
+        calls = []
+
+        def counted(self, *args, **kwargs):
+            calls.append(True)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(cp_model.CpSolver, "solve", counted)
+        end = scheduler.ctx.uend
+        first = scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+        for offset in range(1, 21):
+            scheduler._solve_chunk(
+                start.final, end - offset * MIN, [], 2.0, {100: 60}, end
+            )
+        before_repeat = len(calls)
+        repeated = scheduler._solve_chunk(start.final, end, [], 2.0, {100: 60}, end)
+        assert first == repeated
+        assert len(calls) == before_repeat
+        assert scheduler.solver_limits[-1] == "reused"
 
     def test_replan_keeps_discarded_candidates_and_resets_next_time(self, monkeypatch):
         reports = iter(
