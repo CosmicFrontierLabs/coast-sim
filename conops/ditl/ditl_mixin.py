@@ -1085,9 +1085,15 @@ class DITLMixin:
             start = max(start, slew.slewend + setup)
         elif mode == ACSMode.SLEWING:
             return utime, utime
-        return self.ppt.collection_interval_between(
+        begin, end = self.ppt.collection_interval_between(
             start, min(utime + self.step_size, self.uend)
         )
+        eclipse = (
+            self.ppt.eclipse_violation(begin, end)
+            if self.ppt.forbids_eclipse() is True
+            else None
+        )
+        return (begin, end if eclipse is None else max(begin, eclipse))
 
     def _add_activity_data(self, data_gb: float, entry: object | None = None) -> None:
         """Store an activity's fixed data now and report it on the next step."""

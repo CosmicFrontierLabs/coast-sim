@@ -39,6 +39,7 @@ from ..config import (
 )
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
+    AttitudeConstraintScope,
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
@@ -866,6 +867,26 @@ class PlanEntry(BaseModel):
             return ra, dec, float(roll)
         return telescope.target_body_attitude(ra, dec, float(roll))
 
+    def forbids_eclipse(self) -> bool:
+        """Whether this observation inherits or requests an eclipse prohibition."""
+        return (
+            self.config is not None
+            and self.config.science_in_eclipse_for(int(self.obsid)) is False
+        )
+
+    def eclipse_violation(self, begin: float, end: float) -> float | None:
+        if self.forbids_eclipse() and self.constraint is not None:
+            return self.constraint.first_eclipse_overlap(begin, end)
+        return None
+
+    def observing_windows(
+        self, windows: Sequence[Sequence[float]]
+    ) -> list[tuple[float, float]]:
+        """Geometric windows filtered by this request's eclipse policy."""
+        if self.forbids_eclipse() and self.constraint is not None:
+            return self.constraint.without_eclipses(windows)
+        return [(a, b) for a, b in windows]
+
     def attitude_constraint_names(
         self,
         scopes: Sequence[str | Enum],
@@ -877,7 +898,7 @@ class PlanEntry(BaseModel):
         if self.constraint is None:
             return []
         if self.uses_mounted_attitude():
-            return mounted_science_attitude_constraint_names(
+            names = mounted_science_attitude_constraint_names(
                 self.constraint,
                 scopes,
                 (self.ra, self.dec, self.roll),
@@ -885,15 +906,24 @@ class PlanEntry(BaseModel):
                 utime,
                 acs_mode,
             )
-        return attitude_constraint_names_for_scopes(
-            self.constraint,
-            scopes,
-            spacecraft_attitude[0],
-            spacecraft_attitude[1],
-            utime,
-            target_roll=spacecraft_attitude[2],
-            acs_mode=acs_mode,
-        )
+        else:
+            names = attitude_constraint_names_for_scopes(
+                self.constraint,
+                scopes,
+                spacecraft_attitude[0],
+                spacecraft_attitude[1],
+                utime,
+                target_roll=spacecraft_attitude[2],
+                acs_mode=acs_mode,
+            )
+        if (
+            acs_mode == ACSMode.SCIENCE
+            and AttitudeConstraintScope.IMAGING_QUALITY in scopes
+            and self.forbids_eclipse() is True
+            and self.constraint.in_eclipse(0, 0, utime)
+        ):
+            names.append("science_eclipse")
+        return names
 
     def givename(self, stem: str = "") -> None:
         self.name = givename(self.ra, self.dec, stem=stem)
@@ -978,6 +1008,7 @@ class PlanEntry(BaseModel):
                     float(self.ephem.end.timestamp()),
                 ]
             ]
+            self.windows = [list(w) for w in self.observing_windows(self.windows)]
             return 0
 
         if self.track:
@@ -998,6 +1029,7 @@ class PlanEntry(BaseModel):
                 [v.start_time.timestamp(), v.end_time.timestamp()]
                 for v in moving.visibility
             ]
+            self.windows = [list(w) for w in self.observing_windows(self.windows)]
             return 0
 
         in_constraint = combined_constraint.evaluate(
@@ -1013,6 +1045,7 @@ class PlanEntry(BaseModel):
             for v in in_constraint.visibility
         ]
 
+        self.windows = [list(w) for w in self.observing_windows(self.windows)]
         return 0
 
     def visible(self, begin: float, end: float) -> list[float] | Literal[False]:

@@ -91,6 +91,13 @@ Building and executing a plan
    ditl.calc()
    assert ditl.validate_plan_matches_execution() == []
 
+Set ``config.constraint.science_in_eclipse=False`` to restrict observations to
+sunlit windows, with an optional ``science_in_eclipse`` override per observation
+category. Dispatch, priority, local-search and CP-SAT plans share this policy,
+including rolling ToOs and whole sequence visits. Natural and injected eclipses
+both apply. A stored plan that conflicts with the current policy must be rebuilt
+before execution. See the science-in-eclipse policy in :doc:`configuration`.
+
 A target's ``earliest_start`` and ``deadline`` (Unix seconds, a datetime or an
 ISO-8601 string) limit when its science collection may begin.
 

@@ -724,6 +724,20 @@ class DITL(DITLMixin, DITLStats):
             (entry for entry in self.plan if float(entry.end) > self.ustart),
             key=lambda entry: float(entry.begin),
         )
+        for entry in self._entries_to_command:
+            if entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES:
+                continue
+            begin = max(self.ustart, float(entry.begin) + float(entry.slewtime))
+            end = min(self.uend, float(entry.end))
+            eclipse = (
+                entry.eclipse_violation(begin, end)
+                if entry.forbids_eclipse() is True
+                else None
+            )
+            if eclipse is not None:
+                raise ValueError(
+                    f"Plan entry {entry.obsid} violates its science-in-eclipse policy at {eclipse}"
+                )
         self._next_entry_index = 0
         self._active_entry: PlanEntry | None = None
         self._active_pass: Pass | None = None

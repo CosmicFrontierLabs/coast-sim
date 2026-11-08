@@ -40,7 +40,7 @@ from ..config.constraint import (
 )
 from ..config.data_storage import DataStorage, RecorderView
 from ..config.observation_timing import ObservationTiming
-from ..schedulers import DispatchPolicy
+from ..schedulers import DispatchPolicy, SchedulingContext
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
@@ -1839,6 +1839,52 @@ class QueueDITL(DITLMixin, DITLStats):
             return timing
         return self._timing_for(ppt)
 
+    def _sequence_fits_sunlit_window(self, slew: Slew) -> bool:
+        """Check the whole protected visit with grid-timed, physical step slews."""
+        run = self._sequence
+        ppt = self.ppt
+        if run is None or ppt is None or run.parent.forbids_eclipse() is not True:
+            return True
+        context = SchedulingContext(
+            self.config, self.begin, self.end, step_size=self.step_size
+        )
+        parent = run.parent
+        sequence = run.sequence
+        cursor = (
+            float(ppt.collection_begin or slew.slewend)
+            + sequence.steps[0].duration_seconds
+            + self._ppt_timing(ppt).post_collection_seconds
+        )
+        previous = (slew.endra, slew.enddec, slew.endroll)
+        optimum = self._power_optimal_roll(ppt, float(slew.slewstart))
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        for index, step in enumerate(sequence.steps[1:], start=1):
+            start = context.ceil_step(cursor)
+            if start >= context.uend:
+                return False
+            pointing = parent.step_pointing(index)
+            if sequence.pointing_of(
+                index, parent.ra, parent.dec
+            ) != sequence.pointing_of(index - 1, parent.ra, parent.dec):
+                optimum = self._power_optimal_roll(pointing, start)
+            roll = pointing.requested_roll(optimum, limit)
+            if roll is None:
+                return False
+            pose = pointing.target_body_attitude(float(roll), at=start)
+            following = context.slew(previous, pose, start, obsid=int(parent.obsid))
+            cursor = (
+                float(following.slewend)
+                + self._ppt_timing(pointing).total_seconds
+                + step.duration_seconds
+            )
+            if cursor > context.uend:
+                return False
+            previous = pose
+        return (
+            parent.eclipse_violation(float(slew.slewend), context.ceil_step(cursor))
+            is None
+        )
+
     def _begin_sequence(self, parent: Pointing, utime: float) -> Pointing:
         """Start a visit of ``parent``: its first step is the observation,
         admitted as any other; the visit's beginning is logged once it is."""
@@ -2190,6 +2236,13 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return the violated constraint name and scope label for one attitude."""
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
         science_target = target if target is not None else self.ppt
+        if (
+            mode == ACSMode.SCIENCE
+            and science_target is not None
+            and science_target.forbids_eclipse() is True
+            and self.constraint.in_eclipse(0, 0, utime)
+        ):
+            return "science_eclipse", "observing policy"
         mounted_science = (
             mode == ACSMode.SCIENCE
             and science_target is not None
@@ -3737,12 +3790,19 @@ class QueueDITL(DITLMixin, DITLStats):
             utime,
             ACSMode.SCIENCE,
         )
+        if (
+            violation is not None
+            and violation[0] == "science_eclipse"
+            and utime >= self.ppt.end
+        ):
+            violation = None
         if violation is not None:
             constraint_name, scope_label = violation
             constraint_text = f"{constraint_name} ({scope_label})"
             self._terminate_ppt(
                 utime,
                 reason=f"Target {constraint_text} constrained, ending observation",
+                interrupted=constraint_name == "science_eclipse",
             )
         elif utime >= self.ppt.end:
             if self._sequence is not None and self.ppt.step is not None:
@@ -3802,6 +3862,15 @@ class QueueDITL(DITLMixin, DITLStats):
         target: Pointing | None = None,
     ) -> tuple[float, str, str] | None:
         """Shared rest-hold geometry on the bracketing ephemeris grid."""
+        science_target = target if target is not None else self.ppt
+        if (
+            mode == ACSMode.SCIENCE
+            and science_target is not None
+            and science_target.forbids_eclipse() is True
+        ):
+            eclipse = science_target.eclipse_violation(start, end)
+            if eclipse is not None:
+                return eclipse, "science_eclipse", "observing policy"
         times = self._ephem_utimes()
         first = max(0, bisect_right(times, start) - 1)
         last = min(len(times), bisect_left(times, end) + 1)
@@ -3814,6 +3883,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             )
             if violation is not None:
+                if violation[0] == "science_eclipse" and not start <= time < end:
+                    continue
                 return time, *violation
         return None
 
@@ -5218,6 +5289,16 @@ class QueueDITL(DITLMixin, DITLStats):
                     return None
                 if not self._within_momentum(utime, ra, dec, slew):
                     return None
+            if not self._sequence_fits_sunlit_window(slew):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    obsid=self.ppt.obsid,
+                    description="Protected visit rejected: the whole visit does not fit a sunlit observing window",
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return None
             if self._sequence is not None:
                 self._sequence.optimum = self._power_optimal_roll(
                     self.ppt, request.start
