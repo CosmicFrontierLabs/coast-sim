@@ -3531,6 +3531,7 @@ class PriorityScheduler:
                 ss_max=step.duration_seconds,
                 step=step.name,
                 calibration=not step.science,
+                visit=request.visit if request.timed else None,
             )
             entry.exptime = step.duration_seconds
             steps.append(entry)
@@ -3565,6 +3566,7 @@ class PriorityScheduler:
             merit=request.merit.value,
             ss_min=request.minimum_snapshot,
             ss_max=target.ss_max,
+            visit=request.visit if request.timed else None,
         )
         visit_entry.exptime = sequence.science_seconds
         return _Visit(visit_entry, steps, slews, previous, float(steps[-1].end))
