@@ -184,8 +184,10 @@ def test_an_explicit_charge_is_preserved_even_when_not_needed(monkeypatch):
     assert reserved.entry.model_dump_json() == before
 
 
-def test_charge_trials_reconnect_an_idle_activity_without_mutating_its_hold(
+@pytest.mark.parametrize("desaturation", [False, True], ids=["idle", "desat"])
+def test_charge_trials_reconnect_an_activity_in_its_hold_mode(
     monkeypatch,
+    desaturation,
 ):
     from conops.targets import ScheduledActivity
 
@@ -200,7 +202,10 @@ def test_charge_trials_reconnect_an_idle_activity_without_mutating_its_hold(
         start_state=StartState(time=T0, attitude=(105, 10, 0)),
         activities=[
             ScheduledActivity(
-                name="Calibration", begin=T0 + 2 * HOUR, duration_seconds=30 * MIN
+                name="Calibration",
+                begin=T0 + 2 * HOUR,
+                duration_seconds=30 * MIN,
+                desaturation=desaturation,
             )
         ],
     )
@@ -213,12 +218,21 @@ def test_charge_trials_reconnect_an_idle_activity_without_mutating_its_hold(
         for i, block in enumerate(candidates[:-1])
         if block.is_charge and candidates[i + 1].is_activity
     )
+    hold_modes = []
+    original_hold_check = planner.ctx.first_hold_violation
+
+    def hold_check(attitude, begin, end, mode, *args, **kwargs):
+        hold_modes.append(mode)
+        return original_hold_check(attitude, begin, end, mode, *args, **kwargs)
+
+    monkeypatch.setattr(planner.ctx, "first_hold_violation", hold_check)
     # The later charge starts as the activity ends, leaving no time to turn
     # from a changed hold attitude. Removing the ingress charge must refuse
     # that complete chain; the isolated activity can safely inherit the origin.
     assert planner._replace_charge(candidates, index, None) is None
     trial = planner._replace_charge(candidates[: index + 2], index, None)
     assert trial is not None
+    assert hold_modes[-1] == (ACSMode.DESAT if desaturation else ACSMode.IDLE)
     reconnected = next(b for b in trial if b.is_activity)
     assert reconnected.ready == T0 + 2 * HOUR
     assert reconnected.end - reconnected.ready == 30 * MIN

@@ -3724,7 +3724,7 @@ class PriorityScheduler:
                     first.attitude_out,
                     first.ready,
                     self.ctx.ceil_step(first.end),
-                    ACSMode.IDLE,
+                    ACSMode.DESAT if first.entry.desaturation else ACSMode.IDLE,
                 )
                 is not None
             ):
