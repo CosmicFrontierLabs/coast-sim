@@ -40,7 +40,7 @@ from ..config.constraint import (
 )
 from ..config.data_storage import DataStorage, RecorderView
 from ..config.observation_timing import ObservationTiming
-from ..schedulers import DispatchPolicy
+from ..schedulers import ActivitySchedulingError, DispatchPolicy, SchedulingContext
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
@@ -273,6 +273,8 @@ class QueueDITL(DITLMixin, DITLStats):
         """The activities that have not begun, in time order."""
         self._activity_started: float = 0.0
         self._activity_hold_begin: float = 0.0
+        self._activity_slew: Slew | None = None
+        self._activity_context: SchedulingContext | None = None
         self._activity_end: float = 0.0
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._activity_waiting: ScheduledActivity | None = None
@@ -1197,9 +1199,21 @@ class QueueDITL(DITLMixin, DITLStats):
         if active is not None and utime >= self._activity_end:
             self._end_activity(utime)
             changed = True
+        elif (
+            active is not None
+            and active.desaturation
+            and active.attitude.fixed_pointing is not None
+            and utime >= self._activity_hold_begin
+        ):
+            self.acs.begin_desaturation()
         if self._active_activity is None:
             self._call_for_desaturation(utime)
-            due = next((a for a in self._activities_left if a.begin <= utime), None)
+            due = next(
+                (a for a in self._activities_left if a.begin <= utime),
+                None,
+            )
+            if due is None:
+                due = self._activity_needing_ingress(utime)
             if due is not None:
                 waits_for = self._activity_waits_for(due, utime)
                 if waits_for is not None:
@@ -1215,9 +1229,84 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                     return changed
+                if (
+                    due.attitude.fixed_pointing is not None
+                    and self._reserve_activity_cleanup(due, utime)
+                ):
+                    return changed
                 self._begin_activity(due, utime, (ra, dec, roll))
                 changed = True
         return changed
+
+    def _activity_model(self) -> SchedulingContext:
+        """Geometry shared with the planners, for explicit activity ingress."""
+        ctx = self._activity_context
+        if ctx is None or ctx.begin != self.begin or ctx.end != self.end:
+            ctx = self._activity_context = SchedulingContext(
+                self.config, self.begin, self.end, step_size=self.step_size
+            )
+        return ctx
+
+    def _activity_ingress(self, activity: ScheduledActivity, utime: float) -> Slew:
+        fixed = activity.attitude.fixed_pointing
+        assert fixed is not None
+        assert activity.obsid is not None
+        ctx = self._activity_model()
+        start = ctx.ceil_step(self.acs.handoff_ready_time(utime))
+        return ctx.slew(
+            self.acs.predicted_attitude(start),
+            fixed,
+            start,
+            obstype=ObsType.IDLE,
+            obsid=activity.obsid,
+        )
+
+    def _activity_needing_ingress(self, utime: float) -> ScheduledActivity | None:
+        """Prepare a future explicit hold before its latest start is missed."""
+        for activity in self._activities_left:
+            if activity.attitude.fixed_pointing is None or activity.begin <= utime:
+                continue
+            slew = self._activity_ingress(
+                activity, self._activity_release_time(utime, anticipate_collection=True)
+            )
+            if slew.slewend + self.step_size >= activity.latest_start:
+                return activity
+        return None
+
+    def _activity_release_time(
+        self, utime: float, *, anticipate_collection: bool = False
+    ) -> float:
+        """Earliest release after stopping future collection and paying teardown."""
+        ppt = self.ppt
+        if (
+            ppt is None
+            or ppt is self.charging_ppt
+            or ppt.collection_begin is None
+            or ppt.collection_end is None
+        ):
+            return utime
+        if utime <= ppt.collection_begin and not anticipate_collection:
+            return utime
+        post = self._ppt_timing(ppt).post_collection_seconds
+        return self._activity_model().ceil_step(
+            max(utime, min(ppt.end, max(utime, ppt.collection_begin) + post))
+        )
+
+    def _reserve_activity_cleanup(
+        self, activity: ScheduledActivity, utime: float
+    ) -> bool:
+        """Cut only future collection, then wait for its reserved teardown."""
+        release = self._activity_release_time(utime)
+        if release <= utime:
+            return False
+        self._reserve_cleanup(
+            utime,
+            decision_time=utime,
+            event_type="ACTIVITY",
+            before=f"scheduled activity {activity.name}",
+            waiting="the activity ingress",
+        )
+        return True
 
     def _activity_waits_for(
         self, activity: ScheduledActivity, utime: float
@@ -1227,12 +1316,25 @@ class QueueDITL(DITLMixin, DITLStats):
         window, the observation under way."""
         if not activity.fixed and self._slew_under_way(utime):
             return "the slew under way"
+        if (
+            activity.desaturation
+            and activity.attitude.fixed_pointing is not None
+            and self._sequence is not None
+        ):
+            return "the indivisible visit under way"
         ppt = self.ppt
         if (
             ppt is not None
             and ppt is not self.charging_ppt
             and utime < activity.latest_start
         ):
+            if activity.attitude.fixed_pointing is not None:
+                ingress = self._activity_ingress(
+                    activity,
+                    self._activity_release_time(utime, anticipate_collection=True),
+                )
+                if ingress.slewend + self.step_size >= activity.latest_start:
+                    return None
             return (
                 f"observation {ppt.obsid} under way, until "
                 f"{unixtime2date(activity.latest_start)} at the latest"
@@ -1305,6 +1407,7 @@ class QueueDITL(DITLMixin, DITLStats):
             duration_seconds=dump.duration_seconds,
             desaturation=True,
             obsid=DESATURATION_OBSID + self._desaturations,
+            attitude=dump.attitude,
         )
         self._desaturations += 1
         self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
@@ -1720,10 +1823,9 @@ class QueueDITL(DITLMixin, DITLStats):
                     interrupted=True,
                 )
         self.acs.end_science_observation(utime)
-        if activity.desaturation:
-            self.acs.begin_desaturation()
         self._activities_left = [a for a in self._activities_left if a is not activity]
         self._active_activity = activity
+        assert activity.obsid is not None
         self._activity_started = utime
         self._activity_attitude = attitude
         # Delayed by a slew, an observation or the activity that was under
@@ -1740,7 +1842,50 @@ class QueueDITL(DITLMixin, DITLStats):
             self._activity_hold_begin = utime
         else:
             self._activity_hold_begin = activity.begin
+        self._activity_slew = None
+        fixed = activity.attitude.fixed_pointing
+        if fixed is not None:
+            ctx = self._activity_model()
+            ingress = self._activity_ingress(activity, utime)
+            arrival = ctx.ceil_step(float(ingress.slewend))
+            hold_begin = max(self._activity_hold_begin, arrival)
+            if (
+                (activity.fixed and hold_begin > activity.begin)
+                or (activity.slides and hold_begin > activity.latest_start)
+                or (resumed and arrival > utime)
+            ):
+                raise ActivitySchedulingError(
+                    activity,
+                    "its requested attitude cannot be reached in its start window",
+                )
+            mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+            end = min(hold_begin + activity.duration_seconds, self.uend)
+            if (
+                ctx.first_slew_violation(ingress, ACSMode.SLEWING) is not None
+                or ctx.first_hold_violation(
+                    fixed, ingress.slewend, hold_begin, ACSMode.IDLE
+                )
+                is not None
+                or ctx.first_hold_violation(fixed, hold_begin, end, mode) is not None
+            ):
+                raise ActivitySchedulingError(
+                    activity, "its ingress or full hold violates attitude constraints"
+                )
+            if not resumed:
+                self._activity_hold_begin = hold_begin
+            self._activity_attitude = fixed
+            self._activity_slew = ingress
+            if ingress.slewtime > 0:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=float(ingress.slewstart),
+                        slew=ingress,
+                    )
+                )
         self._activity_end = self._activity_hold_begin + activity.duration_seconds
+        if activity.desaturation and utime >= self._activity_hold_begin:
+            self.acs.begin_desaturation()
         if not resumed:
             self._add_activity_data(float(activity.data_gb), activity)
         description = (
@@ -1765,6 +1910,13 @@ class QueueDITL(DITLMixin, DITLStats):
         entry.end = min(utime, self._activity_end)
         entry.activity_hold_begin = self._activity_hold_begin
         entry.activity_hold_end = self._activity_end
+        if self._activity_slew is not None:
+            self._apply_slew_metadata(entry, self._activity_slew)
+            entry.begin = self._activity_started
+            entry.slewtime = int(
+                ceil(float(self._activity_slew.slewend) - self._activity_started)
+            )
+            entry.activity_requires_stationary = True
         if self._activity_hold_begin < self._activity_started:
             entry.fixed_data_gb = 0.0
         # Recorded when it ends, after any contact that began inside it: the
@@ -1813,12 +1965,23 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline = getattr(ppt, "deadline", None)
         return float(deadline) if isinstance(deadline, (int, float)) else None
 
-    def _next_activity_begin(self, after: float) -> float | None:
+    def _next_activity_begin(
+        self, after: float, *, protected_visit: bool = False
+    ) -> float | None:
         """When the next scheduled activity begins after ``after``: its
         latest start where it may slide, since an observation may run until
         then."""
         return next(
-            (a.latest_start for a in self._activities_left if a.latest_start > after),
+            (
+                a.latest_start
+                for a in self._activities_left
+                if a.latest_start > after
+                and not (
+                    protected_visit
+                    and a.desaturation
+                    and a.attitude.fixed_pointing is not None
+                )
+            ),
             None,
         )
 
@@ -4181,11 +4344,15 @@ class QueueDITL(DITLMixin, DITLStats):
         # The next activity from now, not from the slew's end: a slew that
         # would cross the activity's start leaves no collection before it, so
         # the candidate is passed over rather than flown into the block.
-        activity_begin = self._next_activity_begin(current_time)
+        candidate = target or self.ppt
+        activity_begin = self._next_activity_begin(
+            current_time,
+            protected_visit=self._sequence is not None
+            or getattr(candidate, "sequence", None) is not None,
+        )
         if activity_begin is not None:
             deadlines.append((activity_begin, "scheduled activity"))
 
-        candidate = target or self.ppt
         if candidate is not None and deadline_inputs.request_openings:
             # The observation ends when a request ranked above it must start,
             # or one ranked below it that it can wait for; a sequence visit
