@@ -1120,6 +1120,12 @@ class QueueDITL(DITLMixin, DITLStats):
             changed = True
         elif (
             active is not None
+            and active.safe_hold
+            and utime >= self._activity_hold_begin
+        ):
+            self.acs.begin_safe_hold()
+        elif (
+            active is not None
             and active.desaturation
             and active.attitude.fixed_pointing is not None
             and utime >= self._activity_hold_begin
@@ -1152,9 +1158,8 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                     return changed
-                if (
-                    due.attitude.fixed_pointing is not None
-                    and self._reserve_activity_cleanup(due, utime)
+                if due.attitude.kind != "inherited" and self._reserve_activity_cleanup(
+                    due, utime
                 ):
                     return changed
                 self._begin_activity(due, utime, (ra, dec, roll))
@@ -1201,11 +1206,20 @@ class QueueDITL(DITLMixin, DITLStats):
         return ctx
 
     def _activity_ingress(self, activity: ScheduledActivity, utime: float) -> Slew:
-        fixed = activity.attitude.fixed_pointing
-        assert fixed is not None
         assert activity.obsid is not None
         ctx = self._activity_model()
         start = ctx.ceil_step(self.acs.handoff_ready_time(utime))
+        hold_begin = max(activity.begin, start)
+        # Include every possible shifted hold in the window. The pose remains
+        # valid when the real ingress chooses a later start within that window.
+        end = min(
+            max(activity.latest_start, hold_begin) + activity.duration_seconds,
+            self.uend,
+        )
+        try:
+            fixed = ctx.activity_attitude(activity, hold_begin, end)
+        except ValueError as exc:
+            raise ActivitySchedulingError(activity, str(exc)) from exc
         return ctx.slew(
             self.acs.predicted_attitude(start),
             fixed,
@@ -1226,7 +1240,7 @@ class QueueDITL(DITLMixin, DITLStats):
         pose = (float(ingress.endra), float(ingress.enddec), float(ingress.endroll))
         hold_begin = max(activity.begin, utime, ctx.ceil_step(float(ingress.slewend)))
         end = min(hold_begin + activity.duration_seconds, self.uend)
-        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        mode = activity.hold_mode
         return (
             ctx.first_slew_violation(ingress, ACSMode.SLEWING) is None
             and ctx.first_hold_violation(
@@ -1269,7 +1283,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 or a.begin + a.duration_seconds <= utime
             ):
                 continue
-            if a.attitude.fixed_pointing is not None or a.begin > kept:
+            if a.attitude.kind != "inherited" or a.begin > kept:
                 break
             kept += a.duration_seconds
         ctx = self._activity_model()
@@ -1358,7 +1372,7 @@ class QueueDITL(DITLMixin, DITLStats):
             return None
         for activity in self._activities_left:
             if (
-                activity.attitude.fixed_pointing is None
+                activity.attitude.kind == "inherited"
                 or activity.begin <= utime
                 or self._dump_held_back(activity, utime)
             ):
@@ -1415,7 +1429,7 @@ class QueueDITL(DITLMixin, DITLStats):
             return "the slew under way"
         if (
             activity.desaturation
-            and activity.attitude.fixed_pointing is not None
+            and activity.attitude.kind != "inherited"
             and self._sequence is not None
         ):
             return "the indivisible visit under way"
@@ -1425,7 +1439,7 @@ class QueueDITL(DITLMixin, DITLStats):
             and ppt is not self.charging_ppt
             and utime < activity.latest_start
         ):
-            if activity.attitude.fixed_pointing is not None:
+            if activity.attitude.kind != "inherited" and not self.acs.in_safe_mode:
                 ingress = self._activity_ingress(
                     activity,
                     self._activity_release_time(utime, anticipate_collection=True),
@@ -2071,13 +2085,12 @@ class QueueDITL(DITLMixin, DITLStats):
         self._activity_slew = None
         self._activity_safe_mode = utime if self.acs.in_safe_mode else None
         self._activity_left_pose = False
-        fixed = activity.attitude.fixed_pointing
-        if fixed is not None and self.acs.in_safe_mode:
+        explicit = activity.attitude.kind != "inherited"
+        if explicit and self.acs.in_safe_mode:
             # Safe mode keeps the attitude it has: the ACS refuses any turn
             # but its own. The activity is held there, as one that holds the
             # attitude it finds, and is not recorded as flown at an attitude
             # the spacecraft never took.
-            fixed = None
             self._activity_left_pose = True
             self.log.log_event(
                 utime=utime,
@@ -2090,9 +2103,14 @@ class QueueDITL(DITLMixin, DITLStats):
                 obsid=activity.obsid,
                 acs_mode=self.acs.acsmode,
             )
-        if fixed is not None:
+        elif explicit:
             ctx = self._activity_model()
             ingress = self._activity_ingress(activity, utime)
+            fixed = (
+                float(ingress.endra),
+                float(ingress.enddec),
+                float(ingress.endroll),
+            )
             arrival = ctx.ceil_step(float(ingress.slewend))
             hold_begin = max(self._activity_hold_begin, arrival)
             if (
@@ -2104,7 +2122,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     activity,
                     "its requested attitude cannot be reached in its start window",
                 )
-            mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+            mode = activity.hold_mode
             end = min(hold_begin + activity.duration_seconds, self.uend)
             if (
                 ctx.first_slew_violation(ingress, ACSMode.SLEWING) is not None
@@ -2130,6 +2148,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     )
                 )
         self._activity_end = self._activity_hold_begin + activity.duration_seconds
+        if activity.safe_hold and utime >= self._activity_hold_begin:
+            self.acs.begin_safe_hold()
         if activity.desaturation and utime >= self._activity_hold_begin:
             self.acs.begin_desaturation()
         if not resumed:
@@ -2198,6 +2218,8 @@ class QueueDITL(DITLMixin, DITLStats):
             acs_mode=self.acs.acsmode,
         )
         self._active_activity = None
+        if activity.safe_hold:
+            self.acs.end_safe_hold()
         if activity.desaturation:
             self.acs.end_desaturation()
             if entry.activity_finishes and not interrupted:

@@ -829,6 +829,13 @@ class DITL(DITLMixin, DITLStats):
             return False
         changed = False
         if (
+            self._active_entry is not None
+            and self._active_entry.safe_hold
+            and self._active_entry.activity_hold_begin is not None
+            and utime >= self._active_entry.activity_hold_begin
+        ):
+            self.acs.begin_safe_hold()
+        if (
             self._active_pass is not None
             and self.acs.current_pass is None
             and self._active_pass.in_pass(utime)
@@ -895,6 +902,8 @@ class DITL(DITLMixin, DITLStats):
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
+            if entry.safe_hold:
+                self.acs.end_safe_hold()
             if entry.desaturation:
                 self.acs.end_desaturation()
                 if entry.activity_finishes:
@@ -946,6 +955,8 @@ class DITL(DITLMixin, DITLStats):
             entry.activity_hold_begin = float(entry.begin) + entry.slewtime
         if entry.activity_hold_end is None:
             entry.activity_hold_end = float(entry.end)
+        if entry.safe_hold and utime >= entry.activity_hold_begin:
+            self.acs.begin_safe_hold()
         resumed = entry.activity_hold_begin < max(float(entry.begin), self.ustart)
         entry.begin = max(float(entry.begin), self.ustart)
         entry.end = min(float(entry.end), self.uend)
