@@ -246,7 +246,21 @@ How a plan is built
    when already underway. A maintenance window, a calibration that needs the
    spacecraft still or an engineering block is an activity; ``DITL`` commands the
    plan's activity entries, and the plan validator checks that no science, contact or
-   charge ran during one. Dispatch takes the same list: it ends the observation under
+   charge ran during one. Mandatory activities reserve their windows before optional
+   ground contacts; contacts are acquired later or omitted when they cannot fit.
+   An unsafe inherited pose triggers a search for a safe stationary attitude and
+   an ingress slew. The hold is checked through its complete reservation, including
+   the tail beyond an internal horizon, up to the physical run and ephemeris ends.
+   A sliding activity starts early enough to finish before the physical run ends
+   where its window permits. Its hold duration is retained separately from ingress.
+   Idle time before the first command is checked too: ingress must leave the
+   initial attitude before its first keep-out violation, with a safe wait at the
+   destination until the hold.
+   If no safe, reachable reservation exists, planning raises
+   :class:`~conops.schedulers.ActivitySchedulingError` with the activity and reason.
+   Planned holds carry ``activity_requires_stationary``; execution validation then
+   rejects slewing or unexpected safe mode during the hold. Legacy flexible holds
+   retain their idle-safety recovery semantics. Dispatch takes the same list: it ends the observation under
    way when an activity begins, marking it interrupted so it is revisited, holds the
    attitude it has in ``IDLE`` until the activity ends, and starts no observation
    whose slew or collection would run into the next activity. A slew under way when an

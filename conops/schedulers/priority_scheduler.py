@@ -59,6 +59,19 @@ _MAX_DUMPS = 50
 """How many thruster dumps a plan reserves at most."""
 
 
+class ActivitySchedulingError(ValueError):
+    """A mandatory activity has no safe, reachable reservation in this plan."""
+
+    def __init__(self, activity: ScheduledActivity, reason: str) -> None:
+        self.activity = activity
+        self.reason = reason
+        super().__init__(
+            f"Mandatory activity {activity.name} ({activity.obsid}) cannot be reserved "
+            f"from {unixtime2date(activity.begin)} to its latest start "
+            f"{unixtime2date(activity.latest_start)}: {reason}"
+        )
+
+
 class _Verdict(Enum):
     """Outcome of checking one slew into a timeline block."""
 
@@ -1067,16 +1080,18 @@ class PriorityScheduler:
         for entry in self.locked:
             if id(entry) not in kept:
                 self._place_locked(entry)
-        if self.include_passes:
-            for gspass in self.ctx.predict_passes():
-                if gspass.requires_tracking:
-                    self._place_pass(gspass)
+        # Mandatory holds reserve their windows before optional contacts;
+        # a contact can be acquired later or omitted when it cannot fit.
         for activity in sorted([*self.activities, *self.dumps], key=lambda a: a.begin):
             if (
                 activity.begin < self.ctx.uend
                 and activity.latest_start + activity.duration_seconds > self.ctx.ustart
             ):
                 self._place_activity(activity)
+        if self.include_passes:
+            for gspass in self.ctx.predict_passes():
+                if gspass.requires_tracking:
+                    self._place_pass(gspass)
         # After the passes and activities, as the science was placed: each
         # kept block keeps its slew and re-slews what now follows it.
         retained = []
@@ -1952,11 +1967,10 @@ class PriorityScheduler:
 
     def _idle_limit(self, pred: _Block | None, earliest: float, until: float) -> float:
         """Return the latest step a slew can start while ``pred``'s held attitude stays safe."""
-        if pred is None:
-            # Before its first command ACS keeps the initial attitude safe itself.
-            return until
+        # The first command also needs a known, safe origin. Autonomous idle
+        # recovery cannot be assumed to leave the pose used by this plan.
         violation = self.ctx.first_hold_violation(
-            pred.attitude_out, earliest, until, ACSMode.IDLE
+            self._start_attitude(pred, earliest), earliest, until, ACSMode.IDLE
         )
         return until if violation is None else violation
 
@@ -1975,14 +1989,28 @@ class PriorityScheduler:
         reached by a slew of no length to the attitude it is at, which it
         must then hold through its length; where that attitude cannot be
         held, through the block or on through the idle time to the block
-        after it, the block slews to the safe idle attitude of its start
-        instead, the one the simulation holds before its first command.
+        after it, the block searches safe hold attitudes with a validated
+        ingress instead.
         """
         slew = self._connect_to(pred, block, earliest, attitude_in)
         if slew is None and block.follows and attitude_in is None:
-            slew = self._connect_to(
-                pred, block, earliest, self.ctx.initial_attitude(block.ready)
-            )
+            mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+            for target in self.ctx.idle_hold_candidates(
+                self._start_attitude(pred, earliest), block.ready
+            ):
+                if (
+                    self.ctx.first_hold_violation(
+                        target,
+                        block.ready,
+                        self.ctx.ceil_step(self._required_hold_end(block)),
+                        mode,
+                    )
+                    is not None
+                ):
+                    continue
+                slew = self._connect_to(pred, block, earliest, target)
+                if slew is not None:
+                    break
         return slew
 
     def _connect_to(
@@ -2054,7 +2082,19 @@ class PriorityScheduler:
                 self.ctx.ceil_step(block.ready),
                 ACSMode.IDLE,
             )
-        elif block.is_charge or block.is_activity:
+        elif block.is_activity:
+            wait_violation = self.ctx.first_hold_violation(
+                target, slew.slewend, self.ctx.ceil_step(block.ready), ACSMode.IDLE
+            )
+            if wait_violation is None:
+                mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+                wait_violation = self.ctx.first_hold_violation(
+                    target,
+                    block.ready,
+                    self.ctx.ceil_step(self._required_hold_end(block)),
+                    mode,
+                )
+        elif block.is_charge:
             # A following block holds the attitude it is given through its
             # length too; a reserved one was checked when it was placed.
             until = block.end if block.follows else block.ready
@@ -2191,9 +2231,13 @@ class PriorityScheduler:
             entry.sun_vector_change_deg = float(slew.sun_vector_change_deg)
             entry.settle_seconds = float(slew.settle_seconds or 0.0)
         if block.activity is not None:
-            # A block that may begin late begins where it settled, not where
-            # a slew into it was timed: the settle owns its entry's times.
-            block.entry.begin = block.ready
+            # Keep real ingress before the hold; a zero-length connection
+            # follows the settled hold's start.
+            if slew.slewtime == 0:
+                block.entry.begin = block.ready
+                block.slew = slew.model_copy(
+                    update={"slewstart": block.ready, "slewend": block.ready}
+                )
             block.entry.end = block.end
         if block.step_slews:
             block.step_slews[0] = slew
@@ -2357,10 +2401,26 @@ class PriorityScheduler:
         has ended: at its start at the earliest and where it was reserved at
         the latest, for its length."""
         for index, block in enumerate(timeline):
-            if block.activity is None:
+            if not block.is_activity:
                 continue
             previous = timeline[index - 1] if index > 0 else None
             self._settle_block(block, previous.end if previous is not None else None)
+            mode = ACSMode.DESAT if block.entry.desaturation else ACSMode.IDLE
+            violation = self.ctx.first_hold_violation(
+                block.attitude_out,
+                block.ready,
+                self.ctx.ceil_step(self._required_hold_end(block)),
+                mode,
+            )
+            if block.arrival > block.ready or violation is not None:
+                activity = block.activity or next(
+                    a
+                    for a in [*self.activities, *self.dumps]
+                    if a.obsid == block.entry.obsid
+                )
+                raise ActivitySchedulingError(
+                    activity, "the settled hold is unsafe or its ingress arrives late"
+                )
 
     def _settle_block(self, block: _Block, previous_end: float | None) -> None:
         """Hold a block that may begin late from ``previous_end``, where
@@ -2371,17 +2431,37 @@ class PriorityScheduler:
         activity = block.activity
         if activity is None:
             return
-        begin = max(activity.begin, self.ctx.ustart)
+        begin = max(activity.begin, self.ctx.ceil_step(self.ctx.ustart))
         if previous_end is not None:
             begin = max(begin, self.ctx.ceil_step(previous_end))
+        if (
+            block.slew is not None
+            and block.slew.slewtime > 0
+            and (previous_end is None or float(block.slew.slewstart) >= previous_end)
+        ):
+            begin = max(begin, self.ctx.ceil_step(float(block.slew.slewend)))
         latest = block.latest_ready if block.latest_ready is not None else block.ready
         begin = min(begin, latest)
         block.ready = begin
         block.end = self._activity_end(activity, begin)
-        block.entry.begin = begin
+        if block.slew is not None and block.slew.slewtime == 0:
+            block.slew = block.slew.model_copy(
+                update={"slewstart": begin, "slewend": begin}
+            )
+        block.entry.begin = (
+            float(block.slew.slewstart)
+            if block.slew is not None and float(block.slew.slewend) <= begin
+            else begin
+        )
         block.entry.end = block.end
         block.entry.activity_hold_begin = begin
         block.entry.activity_hold_end = begin + activity.duration_seconds
+
+    def _required_hold_end(self, block: _Block) -> float:
+        """Validate the whole reservation, even when this horizon exports a fragment."""
+        held_end = block.entry.activity_hold_end
+        end = block.end if held_end is None else max(block.end, held_end)
+        return min(end, self.ctx.simulation_end.timestamp(), self.ctx.ephem_end)
 
     def _activity_end(self, activity: ScheduledActivity, begin: float) -> float:
         """Reserve the fragment inside this horizon, retaining the full hold
@@ -2399,11 +2479,13 @@ class PriorityScheduler:
         """When an activity is reserved from: its latest start, or after
         each activity already on the timeline that is under way then, as
         one due while another is under way begins when that one ends."""
-        ready = activity.latest_start
+        physical_end = min(self.ctx.simulation_end.timestamp(), self.ctx.ephem_end)
+        latest_in_run = max(activity.begin, physical_end - activity.duration_seconds)
+        ready = min(activity.latest_start, latest_in_run)
         if activity.begin < self.ctx.ustart <= activity.latest_start:
             # With no earlier execution state, an open slide window starts
             # a new whole hold at the partial run's beginning.
-            ready = self.ctx.ustart
+            ready = self.ctx.ceil_step(self.ctx.ustart)
         for block in self.timeline:
             if (
                 block.is_activity
@@ -2418,13 +2500,18 @@ class PriorityScheduler:
 
         It holds the attitude of whatever precedes it: as reserved, the
         block before it or the start attitude, and later the science placed
-        before it (see :attr:`_Block.follows`). An attitude IDLE cannot hold
-        for the activity's length is not used; the plan then leaves the
-        activity out and says so.
+        before it (see :attr:`_Block.follows`). Unsafe inherited attitudes
+        trigger a safe whole-hold search with validated ingress. Infeasible
+        mandatory reservations raise explicitly.
         """
-        hold_begin = activity.hold_start_for_run(self.ctx.simulation_start.timestamp())
-        resumed = hold_begin < self.ctx.ustart
-        ready = max(self._activity_ready(activity), self.ctx.ustart)
+        run_begin = self.ctx.simulation_start.timestamp()
+        hold_begin = activity.hold_start_for_run(run_begin)
+        resumed = hold_begin < run_begin
+        if activity.latest_start < self.ctx.ustart and not resumed:
+            raise ActivitySchedulingError(
+                activity, "its start window closed before the committed plan ends"
+            )
+        ready = max(self._activity_ready(activity), self.ctx.ceil_step(self.ctx.ustart))
         if ready >= self.ctx.uend:
             # Its reservation would have no length inside the horizon: the
             # block is left out, as one that cannot be reached is, and the
@@ -2459,21 +2546,8 @@ class PriorityScheduler:
             )
         )
         mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
-        violation = self.ctx.first_hold_violation(
-            attitude,
-            max(activity.begin, self.ctx.ustart),
-            self.ctx.ceil_step(end),
-            mode,
-        )
-        if violation is not None:
-            self._log(
-                activity.begin,
-                f"Activity {activity.name} cannot hold its attitude in {mode.name} at "
-                f"{unixtime2date(violation)}; leaving it out",
-                activity.obsid,
-            )
-            return
         entry = activity.plan_entry(self.config, attitude)
+        entry.activity_requires_stationary = True
         if resumed:
             entry.begin = ready
             entry.fixed_data_gb = 0.0
@@ -2497,11 +2571,13 @@ class PriorityScheduler:
             latest_ready=ready if late else None,
         )
         if not self._insert_fixed(block):
-            self._log(
-                activity.begin,
-                f"Activity {activity.name} cannot be reached; leaving it out",
-                activity.obsid,
+            error = ActivitySchedulingError(
+                activity,
+                f"no path-validated {mode.name} attitude holds for its full duration "
+                "and connects to the surrounding reservations",
             )
+            self._log(activity.begin, str(error), activity.obsid)
+            raise error
 
     def _place_pass(self, gspass: Pass) -> None:
         """Reserve a ground pass at its earliest reachable acquisition step.

@@ -7,7 +7,7 @@ ACS mode, which ground passes are available) using the same models
 therefore execute as planned, step for step.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 
 import numpy as np
@@ -26,7 +26,7 @@ from ..simulation.acs import ACS
 from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
 from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
-from ..simulation.roll import optimum_roll
+from ..simulation.roll import optimum_body_roll, optimum_roll
 from ..simulation.slew import Slew
 from ..simulation.target_tracking import target_tracking
 from ..targets import MovingPointing, PlanEntry, Pointing
@@ -111,6 +111,7 @@ class SchedulingContext:
         self._own_timings: dict[int, ObservationTiming] = {}
         """Targets' own budgets, by obsid, in place of their categories'."""
         self._initial_pose: Attitude | None = None
+        self._idle_roll_cache: dict[tuple[float, float, float], float] = {}
         # A quaternion slew's path does not depend on when it starts, so one
         # slew per attitude pair is predicted and retimed for each start: its
         # settle follows the Sun where a thermal settling table is configured.
@@ -180,6 +181,38 @@ class SchedulingContext:
             acs = ACS(config=self.config, log=DITLLog())
             self._initial_pose = acs._advance_attitude(self.origin).state.attitude
         return self._initial_pose
+
+    def idle_hold_candidates(self, near: Attitude, utime: float) -> Iterator[Attitude]:
+        """Deterministic alternative attitudes for a whole safe hold.
+
+        Share dispatch's candidate directions and rolls. The caller checks
+        the entire hold and the actual ingress path, not just this epoch.
+        """
+        yield self.initial_attitude(utime)
+        acs = ACS(config=self.config, log=DITLLog())
+        acs.ephem = self.ephem
+        acs.ra, acs.dec, acs.roll = near
+        for ra, dec in acs._idle_safe_attitude_candidates(utime):
+            key = (ra, dec, utime)
+            preferred = self._idle_roll_cache.get(key)
+            if preferred is None:
+                preferred = optimum_body_roll(
+                    ra,
+                    dec,
+                    utime,
+                    self.ephem,
+                    self.config.solar_panel,
+                    self.config.constraint,
+                    science_attitude=False,
+                )
+                self._idle_roll_cache[key] = preferred
+            rolls = (
+                [preferred]
+                if self.config.constraint.ignore_roll
+                else acs._idle_safe_roll_candidates(preferred)
+            )
+            for roll in rolls:
+                yield (ra, dec, roll)
 
     def science_rest(self, entry: PlanEntry) -> tuple[float, Attitude]:
         """The actual resting handoff after a fixed or tracked observation."""
