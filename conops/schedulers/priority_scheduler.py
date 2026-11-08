@@ -1079,7 +1079,20 @@ class PriorityScheduler:
                 self._place_activity(activity)
         # After the passes and activities, as the science was placed: each
         # kept block keeps its slew and re-slews what now follows it.
-        self._kept = [block for block in self._kept if self._insert_kept(block)]
+        retained = []
+        for block in self._kept:
+            if self._insert_kept(block):
+                retained.append(block)
+            else:
+                # A rejected retained block must be eligible for placement again,
+                # including the time before the previous momentum resume point.
+                self._resume_from = min(
+                    block.slew_start,
+                    self._resume_from
+                    if self._resume_from is not None
+                    else block.slew_start,
+                )
+        self._kept = retained
         kept = {id(block.entry) for block in self._kept}
         self._kept_visits = {}
         self._kept_visit_windows = {}
@@ -2091,7 +2104,20 @@ class PriorityScheduler:
         placing it did. False, and the block is left out to be placed
         again, where what follows it cannot be reached from it."""
         assert block.slew is not None
-        index = self._insertion_index(block.ready)
+        # A previously inserted entry may have settled a sliding activity
+        # earlier. The retained slew must precede it even when arrival is
+        # after its current hold start; reconnecting settles the hold again.
+        index = self._insertion_index(block.slew_start)
+        if index > 0:
+            previous = self.timeline[index - 1]
+            if previous.is_activity and previous.ready == block.slew_start:
+                # A preceding retained observation can settle a sliding hold to
+                # exactly this start. Put this retained slew before the hold and
+                # reconnect it; placing it after would overlap the whole hold.
+                index -= 1
+        pred = self._pred_at(index)
+        if pred is not None and self.ctx.ceil_step(pred.end) > block.slew_start:
+            return False
         succ = self.timeline[index] if index < len(self.timeline) else None
         succ_slew = None
         if succ is not None:
