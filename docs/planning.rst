@@ -146,6 +146,17 @@ While it is observed the attitude follows the track at its rate, as a ground
 contact's profile is followed, and comes to rest when the observation ends; the ACS
 reports ``SCIENCE`` throughout, the plan validator expects the track's position at
 each sample, and the planners' battery ledger counts the attitude along the track.
+``Pointing.visibility(begin=..., end=...)`` evaluates only the selected interval
+on the original ephemeris grid, with adjacent samples to preserve boundary
+semantics. Bounds accept UTC datetimes, ISO strings or Unix seconds. Bounded
+queries accumulate known windows on the request; contained queries reuse those
+results, and wider or disjoint queries evaluate only the missing intervals,
+with a grid-sample halo around each interval. Changes to pointing,
+track, roll, ephemeris or configuration invalidate bounded results. Unknown
+intervals are not assumed visible. Calling ``visibility()`` without bounds
+restores the whole-ephemeris behavior, which queue intake and planners retain.
+Live body lookup follows the backend's whole-ephemeris ``get_body`` API;
+these bounds limit constraint evaluation. Saved tracks require no live lookup.
 Plan entries record the position at the slew's end and the track itself, which a
 plan replay without the track observes as a fixed pointing.
 
