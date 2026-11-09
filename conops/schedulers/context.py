@@ -27,8 +27,9 @@ from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
 from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_body_roll, optimum_roll
+from ..simulation.safe_hold import power_positive_attitudes
 from ..simulation.slew import Slew
-from ..targets import MovingPointing, PlanEntry, Pointing
+from ..targets import MovingPointing, PlanEntry, Pointing, ScheduledActivity
 from ..targets.track import TrackPoint, positions_along
 
 Attitude = tuple[float, float, float]
@@ -111,6 +112,7 @@ class SchedulingContext:
         """Targets' own budgets, by obsid, in place of their categories'."""
         self._initial_pose: Attitude | None = None
         self._idle_roll_cache: dict[tuple[float, float, float], float] = {}
+        self._activity_attitudes: dict[tuple[str, float, float], Attitude] = {}
         # A quaternion slew's path does not depend on when it starts, so one
         # slew per attitude pair is predicted and retimed for each start: its
         # settle follows the Sun where a thermal settling table is configured.
@@ -145,6 +147,33 @@ class SchedulingContext:
         held before it."""
 
     # ── Step grid ─────────────────────────────────────────────────────────
+
+    def activity_attitudes(
+        self, activity: ScheduledActivity, begin: float, end: float
+    ) -> Iterator[Attitude]:
+        """Resolve explicit requests over the entire physical hold."""
+        fixed = activity.attitude.fixed_pointing
+        if fixed is not None:
+            yield fixed
+        elif activity.attitude.kind == "power_positive":
+            yield from power_positive_attitudes(
+                self.config,
+                activity.attitude,
+                begin,
+                end,
+                activity.hold_mode,
+                activity.instrument_modes,
+            )
+
+    def activity_attitude(
+        self, activity: ScheduledActivity, begin: float, end: float
+    ) -> Attitude:
+        key = (activity.model_dump_json(), begin, end)
+        if key not in self._activity_attitudes:
+            self._activity_attitudes[key] = next(
+                self.activity_attitudes(activity, begin, end)
+            )
+        return self._activity_attitudes[key]
 
     def ceil_step(self, utime: float) -> float:
         """Return the first grid step at or after ``utime``."""

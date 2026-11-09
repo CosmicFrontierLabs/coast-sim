@@ -146,6 +146,7 @@ class ACS:
         self.obstype = ObsType.PPT
         self.acsmode = ACSMode.IDLE
         self.science_observation_active = False
+        self.scheduled_safe_hold = False
         self.desaturation_active = False
         """Whether the held attitude is a thruster momentum dump's."""
         self.in_eclipse = False  # Initialize eclipse state
@@ -643,6 +644,53 @@ class ACS:
             f"{unixtime2date(utime)}: Command queue cleared - no further commands will be executed",
         )
 
+        policy = self.config.spacecraft_bus.attitude_control.safe_mode_attitude
+        if policy is not None:
+            # Imported locally: the planning geometry depends on ACS too.
+            from ..schedulers.context import SchedulingContext
+            from .safe_hold import SafeHoldUnavailableError, power_positive_attitudes
+
+            ctx = SchedulingContext(
+                self.config, dtutcfromtimestamp(utime), self.ephem.timestamp[-1]
+            )
+            start = ctx.ceil_step(self.handoff_ready_time(utime))
+            poses = (
+                [policy.fixed_pointing]
+                if policy.kind == "fixed"
+                else power_positive_attitudes(
+                    self.config, policy, start, ctx.uend, ACSMode.SAFE
+                )
+            )
+            for pose in poses:
+                assert pose is not None
+                slew = ctx.slew(
+                    self.predicted_attitude(start),
+                    pose,
+                    start,
+                    obstype=ObsType.SAFE,
+                    obsid=-999,
+                )
+                if (
+                    slew.slewend >= ctx.uend
+                    or ctx.first_slew_violation(slew, ACSMode.SLEWING) is not None
+                    or ctx.first_hold_violation(
+                        pose, slew.slewend, ctx.uend, ACSMode.SAFE
+                    )
+                    is not None
+                ):
+                    continue
+                self.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=start,
+                        slew=slew,
+                    )
+                )
+                return
+            raise SafeHoldUnavailableError(
+                "no SAFE pose has a safe ingress and whole hold"
+            )
+
         # Initiate slew to Sun pointing for safe mode
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
@@ -824,6 +872,13 @@ class ACS:
         if executor.next_rest_time(utime) > utime:
             executor.request_stop(utime, self.config.spacecraft_bus.attitude_control)
         self._tracked_slew = None
+
+    def begin_safe_hold(self) -> None:
+        """Enter a recoverable planned SAFE hold without latching a fault."""
+        self.scheduled_safe_hold = True
+
+    def end_safe_hold(self) -> None:
+        self.scheduled_safe_hold = False
 
     def begin_desaturation(self) -> None:
         """A thruster momentum dump begins: the attitude held is its, and the
@@ -1181,6 +1236,9 @@ class ACS:
         if any(abs(rate) > REST_RATE_DEG_S for rate in self.angular_velocity_body):
             return ACSMode.SLEWING
 
+        if self.scheduled_safe_hold:
+            return ACSMode.SAFE
+
         # Holding for a thruster momentum dump
         if self.desaturation_active:
             return ACSMode.DESAT
@@ -1212,6 +1270,13 @@ class ACS:
         if not (self.in_safe_mode or self._is_in_charging_mode(utime)):
             return
         if self._attitude_guidance_disabled:
+            return
+        if (
+            self.in_safe_mode
+            and self.config.spacecraft_bus.attitude_control.safe_mode_attitude
+            is not None
+        ):
+            # This pose was checked for the entire remaining hold.
             return
         if self._is_actively_slewing(utime) or any(
             command.command_type != ACSCommandType.END_BATTERY_CHARGE

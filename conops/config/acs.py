@@ -8,6 +8,7 @@ from ..common.enums import SlewAlgorithm
 from ..common.motion import RestToRestMotion
 from ..common.numerics import ROUNDOFF
 from ._base import ConfigModel
+from .activity_attitude import ActivityAttitude
 from .constants import DTOR
 from .momentum import StoredMomentumConfig
 
@@ -63,6 +64,20 @@ class AttitudeControlSystem(ConfigModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    safe_mode_attitude: ActivityAttitude | None = Field(
+        default=None,
+        description="Optional fixed or power-positive fault SAFE guidance; None keeps legacy guidance",
+    )
+
+    @field_validator("safe_mode_attitude")
+    @classmethod
+    def _safe_mode_request(
+        cls, value: ActivityAttitude | None
+    ) -> ActivityAttitude | None:
+        if value is not None and value.kind == "inherited":
+            raise ValueError("fault safe mode needs a fixed or power-positive attitude")
+        return value
 
     slew_acceleration: float = Field(
         default=0.5, description="Maximum angular acceleration in degrees/second²"

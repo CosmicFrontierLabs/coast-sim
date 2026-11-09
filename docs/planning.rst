@@ -294,6 +294,38 @@ How a plan is built
    together; it cancels a pending exposure or cuts only future collection while
    preserving science already taken. ``periodic_activities`` accepts the same ``attitude`` argument;
    ``Program`` JSON preserves it.
+   A recoverable engineering safe hold sets ``safe_hold=True``. Its stationary
+   part uses ACS ``SAFE`` power, constraint scopes and instrument modes; it
+   returns to scheduling at its end without latching fault safe mode.
+   ``periodic_activities`` accepts ``safe_hold`` too. To select a power-positive
+   hold, use::
+
+      attitude = ActivityAttitude(
+          kind="power_positive", minimum_margin_w=100,
+          prefer_ecliptic_poles=True,
+      )
+      hold = ScheduledActivity(
+          name="Engineering safe hold", begin=start, duration_seconds=36000,
+          safe_hold=True, attitude=attitude,
+      )
+
+   The selector tries the mean J2000 ecliptic poles for the declared spacecraft
+   boresight, with one-degree rolls, followed by a deterministic coarse sky/roll
+   grid. Candidates must clear the hold mode's constraints at every ephemeris
+   sample, including eclipse, and generate more than the bus plus payload load
+   and ``minimum_margin_w`` at every sunlit sample. Eclipse still drains the
+   battery. An entirely shadowed hold cannot establish a sunlit power margin.
+   This is a sampled candidate search, not a proof that no continuous solution
+   exists. It currently supports fixed body-mounted arrays; finite panel drives
+   are explicitly rejected because their ingress drive-state forecast is not
+   yet included. The planners also check ingress and surrounding reservations;
+   dispatch checks one pose over the union of possible holds in a sliding
+   window, conservatively rejecting a window that needs different poses.
+   Infeasibility raises ``ActivitySchedulingError`` rather than silently changing
+   the requested policy or omitting the hold. Thruster firing poses remain
+   inherited or fixed; the power-positive policy does not define thruster
+   geometry.
+
    A thruster momentum dump is an activity
    dispatch calls for itself, when the stored momentum reaches the planning level of
    the wheels' capacity (see the stored momentum under :doc:`configuration`), and

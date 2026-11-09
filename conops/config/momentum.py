@@ -12,6 +12,13 @@ class ThrusterDumpConfig(ConfigModel):
 
     attitude: ActivityAttitude = Field(default_factory=ActivityAttitude)
 
+    @field_validator("attitude")
+    @classmethod
+    def _firing_attitude(cls, value: ActivityAttitude) -> ActivityAttitude:
+        if value.kind == "power_positive":
+            raise ValueError("a firing attitude must be inherited or fixed")
+        return value
+
     duration_seconds: float = Field(
         default=120.0,
         gt=0.0,
