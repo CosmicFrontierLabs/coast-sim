@@ -2050,7 +2050,9 @@ class QueueDITL(DITLMixin, DITLStats):
             if cursor > context.uend:
                 return False
             previous = pose
-        activity_begin = self._next_activity_begin(float(slew.slewstart))
+        activity_begin = self._next_activity_begin(
+            float(slew.slewstart), protected_visit=True
+        )
         if activity_begin is not None and context.ceil_step(cursor) > activity_begin:
             return False
         return True
