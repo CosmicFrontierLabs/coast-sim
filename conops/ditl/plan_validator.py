@@ -543,10 +543,13 @@ class PlanExecutionValidator:
         """Check that no science, contact or charge ran during an activity.
 
         From the end of its slew to its end the spacecraft holds in ``IDLE``
-        mode, or in ``SAA`` mode where it crosses the SAA; a slew away under
-        idle safety is allowed.
+        mode, or in ``SAA`` mode where it crosses the SAA. Reserved stationary
+        holds reject slewing and unexpected SAFE; flexible legacy holds retain
+        idle-safety recovery.
         """
         start = float(entry.begin) + max(0.0, float(entry.slewtime))
+        if entry.activity_hold_begin is not None:
+            start = max(start, entry.activity_hold_begin)
         end = float(entry.end)
         mismatches: list[PlanExecutionMismatch] = []
         if end <= start:
@@ -555,6 +558,8 @@ class PlanExecutionValidator:
         expected = ACSMode.DESAT if entry.desaturation else ACSMode.IDLE
         wrong = {ACSMode.SCIENCE, ACSMode.PASS, ACSMode.CHARGING}
         wrong.add(ACSMode.IDLE if entry.desaturation else ACSMode.DESAT)
+        if entry.activity_requires_stationary:
+            wrong.update((ACSMode.SLEWING, ACSMode.SAFE))
         for i in self._window_indices(start, end):
             mode = self._mode_at_index(i)
             if mode in wrong:

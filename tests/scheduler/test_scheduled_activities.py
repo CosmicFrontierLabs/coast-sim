@@ -280,9 +280,9 @@ class TestPlanning:
 
     def test_a_sliding_activity_due_at_the_horizon_end_is_left_out(self) -> None:
         """A sliding block is reserved from its latest start; at or past the
-        horizon's end that reservation would have no length, and the plan
-        leaves the block out rather than holding a block of no length."""
-        config = _config(HOURS)
+        internal horizon's end that reservation would have no length. The
+        physical run and ephemeris continue, so a later plan can reserve it."""
+        config = _config(HOURS + 4)
         at_the_end = ScheduledActivity(
             name="Late calibration",
             begin=T0 + (HOURS - 2) * HOUR,
@@ -296,6 +296,7 @@ class TestPlanning:
             END,
             step_size=STEP,
             activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
         )
         plan = scheduler.schedule()
         assert _activities(plan) == []
@@ -320,7 +321,7 @@ class TestPlanning:
         pytest.importorskip("ortools")
         from conops.schedulers import CpSatScheduler
 
-        config = _config(HOURS)
+        config = _config(HOURS + 4)
         at_the_end = ScheduledActivity(
             name="Late calibration",
             begin=T0 + (HOURS - 2) * HOUR,
@@ -334,6 +335,7 @@ class TestPlanning:
             END,
             step_size=STEP,
             activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
             time_limit=5.0,
         )
         plan = scheduler.schedule()

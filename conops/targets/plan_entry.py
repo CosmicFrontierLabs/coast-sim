@@ -251,6 +251,14 @@ class PlanEntry(BaseModel):
         exclude_if=lambda v: v is None,
         description="Full activity hold end, including any part after this run",
     )
+    activity_requires_stationary: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether this activity reserves a stationary hold after ingress; "
+            "slewing or an unexpected hold mode violates the plan"
+        ),
+    )
     own_timing: ObservationTiming | None = Field(
         default=None,
         exclude_if=lambda v: v is None,

@@ -224,7 +224,7 @@ class TestModel:
 
 
 class TestDispatch:
-    def test_a_later_step_cannot_substitute_for_an_inadmissible_absolute_roll(
+    def test_a_visit_with_an_inadmissible_later_roll_is_not_started(
         self,
     ) -> None:
         config = _config(1)
@@ -250,9 +250,8 @@ class TestDispatch:
         ditl = create_ditl(config, [target], BEGIN, end)
         ditl.step_size = STEP
         assert ditl.calc()
-        assert any(e.step == "first" for e in ditl.plan)
-        assert not any(e.step == "offset" for e in ditl.plan)
-        assert any("beyond the ACS limit" in e.description for e in ditl.log.events)
+        assert not any(e.step in ("first", "offset") for e in ditl.plan)
+        assert any("Protected visit rejected" in e.description for e in ditl.log.events)
 
     def _run(self, visits: int = 1, **kwargs) -> QueueDITL:
         config = _config(HOURS)
