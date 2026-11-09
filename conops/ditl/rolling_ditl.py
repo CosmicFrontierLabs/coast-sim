@@ -1025,7 +1025,7 @@ class RollingHorizonDITL(DITL):
         )
         ahead = np.asarray(momentum, dtype=np.float64)
         cursor = utime
-        for at in [*unloads, start]:
+        for at in unloads:
             if at > cursor:
                 after = self._forecast_momentum(
                     cursor, at, attitude_at, start_eci_n_m_s=ahead
@@ -1033,9 +1033,14 @@ class RollingHorizonDITL(DITL):
                 if after is not None:
                     ahead = after
                 cursor = at
-            if at < start or at in unloads:
-                if dump is not None and at in unloads:
-                    ahead = ahead * dump.residual_fraction
+            if dump is not None:
+                ahead = ahead * dump.residual_fraction
+        if start > cursor:
+            after = self._forecast_momentum(
+                cursor, start, attitude_at, start_eci_n_m_s=ahead
+            ).end_eci_n_m_s
+            if after is not None:
+                ahead = after
         return (float(ahead[0]), float(ahead[1]), float(ahead[2]))
 
     def _committed_slew(

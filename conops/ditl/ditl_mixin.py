@@ -1,5 +1,5 @@
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any, NamedTuple, cast
 
@@ -681,7 +681,7 @@ class DITLMixin:
         attitude_at: Callable[[float], tuple[float, float, float]],
         *,
         start_eci_n_m_s: npt.ArrayLike | None,
-        slew: Slew | None = None,
+        slew: Slew | Sequence[Slew] | None = None,
     ) -> MomentumProfile:
         """Forecast the stored momentum from ``begin`` to ``end`` at the
         attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
@@ -699,21 +699,31 @@ class DITLMixin:
         if start_eci_n_m_s is not None:
             forecast.start_from_eci(start_eci_n_m_s)
         else:
-            forecast.reset()
+            forecast.start_from_eci((0.0, 0.0, 0.0))
         samples = np.arange(begin, end, self.step_size)
         if len(samples) == 0 or samples[-1] < end:
             samples = np.append(samples, end)
         slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
-        rate_at: Callable[[float], npt.NDArray[np.float64]] | None = None
-        if slew is not None and slew.slewtime > 0.0 and slew_sample > 0.0:
+        slews = [slew] if isinstance(slew, Slew) else list(slew or ())
+        rates: list[tuple[Slew, Callable[[float], npt.NDArray[np.float64]]]] = []
+        for motion in slews:
+            if motion.slewtime <= 0.0 or slew_sample <= 0.0:
+                continue
             along = np.arange(
-                max(begin, float(slew.slewstart)),
-                min(end, float(slew.slewend)),
+                max(begin, float(motion.slewstart)),
+                min(end, float(motion.slewend)),
                 slew_sample,
             )
             samples = np.unique(np.concatenate([samples, along]))
             if self._slew_momentum_enabled():
-                rate_at = slew_angular_velocity(slew)
+                rates.append((motion, slew_angular_velocity(motion)))
+
+        def rate_at(at: float) -> npt.NDArray[np.float64]:
+            for motion, rate in rates:
+                if motion.slewstart <= at < motion.slewend:
+                    return rate(at)
+            return np.zeros(3, dtype=np.float64)
+
         utimes = self._momentum_ephem_utimes()
         positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
         suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
@@ -756,9 +766,7 @@ class DITLMixin:
                 position_ecef_km=(
                     interpolate(ecefs, float(at)) if ecefs is not None else None
                 ),
-                angular_velocity_body_rad_s=(
-                    rate_at(float(at)) if rate_at is not None else None
-                ),
+                angular_velocity_body_rad_s=(rate_at(float(at)) if rates else None),
             )
             norms.append(sample.stored_momentum_norm_n_m_s)
             demands.append(

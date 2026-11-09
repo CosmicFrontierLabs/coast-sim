@@ -25,7 +25,7 @@ from conops.config import (
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.schedulers.momentum import MomentumForecast
-from conops.targets import Plan, Pointing, ScheduledActivity
+from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity
 from conops.targets.sequence import ObservationSequence, SequenceStep
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -432,3 +432,40 @@ class TestDumpsAroundBlocks:
         ditl.step_size = 60
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
+
+
+@pytest.mark.parametrize("offset", [0.0, 1.0])
+def test_dump_at_replan_boundary_unloads_once(offset: float) -> None:
+    config = _config(
+        capacity_n_m_s=10.0,
+        initial_momentum_body_n_m_s=(6.0, 0.0, 0.0),
+        thruster_dump=ThrusterDumpConfig(duration_seconds=120, residual_fraction=0.5),
+    )
+    config.spacecraft_bus.attitude_control.stored_momentum.gravity_gradient_enabled = (
+        False
+    )
+    config.spacecraft_bus.attitude_control.stored_momentum.slew_momentum_enabled = True
+    ditl = RollingHorizonDITL(
+        config,
+        _targets(config),
+        begin=BEGIN,
+        end=END,
+        horizon=timedelta(hours=3),
+        replan_interval=timedelta(hours=2),
+    )
+    ditl._reset_stored_momentum_tracker()
+    tracker = ditl._stored_momentum_tracker
+    assert tracker is not None
+    tracker.start_from_eci((6.0, 0.0, 0.0))
+    dump = PlanEntry(
+        config=config,
+        begin=T0,
+        end=T0 + 120,
+        obstype=ObsType.ACTIVITY,
+        desaturation=True,
+        spacecraft_attitude=(0.0, 0.0, 0.0),
+    )
+    assert ditl._momentum_start(T0, T0 + 120 + offset, [dump]) == pytest.approx(
+        (3.0, 0.0, 0.0)
+    )
+    assert tracker.momentum_eci_n_m_s == pytest.approx((6.0, 0.0, 0.0))

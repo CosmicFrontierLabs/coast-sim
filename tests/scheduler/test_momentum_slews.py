@@ -29,6 +29,7 @@ from conops.config import (
     ThrusterDumpConfig,
 )
 from conops.schedulers import PriorityScheduler
+from conops.schedulers.context import SchedulingContext
 from conops.targets import Pointing
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
@@ -228,7 +229,10 @@ class TestPriorityScheduler:
             "no thrusters to dump it" in e.description for e in scheduler.log.events
         )
 
-    def test_a_dump_goes_before_the_slew_where_it_fits_from_empty(self) -> None:
+    @pytest.mark.parametrize("configured_initial", [False, True])
+    def test_a_dump_goes_before_the_slew_where_it_fits_from_empty(
+        self, configured_initial: bool
+    ) -> None:
         """With thrusters, the same overload has the wheels emptied before
         the observation: a dump is reserved before it, and the slew at the
         slowest rate then fits."""
@@ -237,13 +241,25 @@ class TestPriorityScheduler:
             thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
             planning_level=0.999,
         )
+        initial = _preloaded(config, 6.0)
+        if configured_initial:
+            rotation = quaternion_to_rotation_matrix(
+                attitude_to_quat(
+                    *SchedulingContext(
+                        config, BEGIN, END, step_size=60
+                    ).initial_attitude(BEGIN.timestamp())
+                )
+            )
+            config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s = tuple(
+                rotation @ initial
+            )
         scheduler = PriorityScheduler(
             config,
             _targets(config),
             BEGIN,
             END,
             step_size=60,
-            start_momentum_eci_n_m_s=_preloaded(config, 0.9 * CAPACITY),
+            start_momentum_eci_n_m_s=None if configured_initial else initial,
         )
         plan = scheduler.schedule()
         science = _science(list(plan))

@@ -24,7 +24,8 @@ from conops.config import (
     ThrusterDumpConfig,
 )
 from conops.ditl.ditl_mixin import DITLMixin, MomentumProfile
-from conops.targets import Plan, Pointing
+from conops.simulation.slew import Slew
+from conops.targets import ObservationSequence, Plan, Pointing, SequenceStep
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
 HOURS = 2
@@ -230,3 +231,103 @@ class TestDispatch:
             for e in events
         )
         assert any(e.startswith("Thruster dump unloads") for e in events)
+
+
+@pytest.mark.parametrize("roll_only", [False, True])
+def test_every_visit_step_is_flown_at_the_admitted_rate(roll_only: bool) -> None:
+    config = _config()
+    target = _target(config)
+    sequence = ObservationSequence(
+        steps=[
+            SequenceStep(name="first", duration_seconds=600),
+            SequenceStep(
+                name="second",
+                duration_seconds=600,
+                ra=80.0 if roll_only else 110.0,
+                dec=-20.0 if roll_only else 10.0,
+                roll_offset_deg=90.0 if roll_only else None,
+            ),
+        ]
+    )
+    target = Pointing(
+        config=config,
+        obsid=1,
+        name="Visit",
+        ra=target.ra,
+        dec=target.dec,
+        merit=100,
+        sequence=sequence,
+        visits=1,
+    )
+    ditl = create_ditl(config, [target], BEGIN, END)
+    assert ditl.calc()
+    science = _science(ditl)
+    assert [e.step for e in science] == ["first", "second"]
+    assert all(e.slew_rate_fraction == 0.5 for e in science)
+    assert all(e.exposure >= 600 - STEP for e in science)
+    demand = np.array(
+        ditl.telemetry.housekeeping.actuator_momentum_norm_n_m_s, dtype=float
+    )
+    assert 0.4 * TRANSIENT < demand.max() < CAPACITY
+    replay = DITL(
+        config=config,
+        ephem=config.constraint.ephem,
+        plan=Plan.model_validate_json(ditl.plan.model_dump_json()),
+        begin=BEGIN,
+        end=END,
+    )
+    replay.step_size = STEP
+    assert replay.calc()
+    assert replay.validate_plan_matches_execution() == []
+    assert max(replay.telemetry.housekeeping.actuator_momentum_norm_n_m_s) < CAPACITY
+
+
+def test_empty_forecast_ignores_configured_initial_load() -> None:
+    config = _config(initial_momentum_body_n_m_s=(6.0, 0.0, 0.0))
+    ditl = create_ditl(config, [_target(config)], BEGIN, END)
+    ditl._reset_stored_momentum_tracker()
+    start = BEGIN.timestamp()
+    empty = ditl._forecast_momentum(
+        start, start + 60, lambda at: (0.0, 0.0, 0.0), start_eci_n_m_s=None
+    )
+    assert empty.norms == pytest.approx(0.0)
+    actual = ditl._momentum_forecast_state((0.0, 0.0, 0.0))
+    assert np.linalg.norm(actual) == pytest.approx(6.0)
+    loaded = ditl._forecast_momentum(
+        start, start + 60, lambda at: (0.0, 0.0, 0.0), start_eci_n_m_s=actual
+    )
+    assert loaded.norms == pytest.approx(6.0)
+
+
+def test_an_impossible_internal_slew_rejects_the_visit_before_it_starts() -> None:
+    config = _config(slew_rate_fractions=(1.0,))
+    target = Pointing(
+        config=config,
+        obsid=1,
+        ra=80,
+        dec=-20,
+        merit=100,
+        sequence=ObservationSequence(
+            steps=[
+                SequenceStep(name="first", duration_seconds=600),
+                SequenceStep(name="second", duration_seconds=600, ra=110, dec=10),
+            ]
+        ),
+    )
+    ditl = create_ditl(config, [target], BEGIN, END)
+    ditl._reset_stored_momentum_tracker()
+    start = BEGIN.timestamp()
+    ditl.ustart, ditl.uend = start, END.timestamp()
+    ditl.ppt = ditl._begin_sequence(target, start)
+    # Already at the first step: only the internal slew can overload the wheels.
+    slew = Slew(
+        config=config, slewstart=start, startra=80, startdec=-20, endra=80, enddec=-20
+    )
+    slew.calc_slewtime()
+    assert not ditl._cap_slew_momentum(start, 80, -20, slew)
+    assert target.done
+    assert ditl._sequence is None and ditl.ppt is None
+    assert any(
+        "exceeds the 6.5 N m s capacity from empty wheels" in e
+        for e in _momentum_events(ditl)
+    )

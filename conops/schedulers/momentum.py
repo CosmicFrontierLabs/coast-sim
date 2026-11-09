@@ -283,7 +283,7 @@ class MomentumForecast:
             for span in self._spans([block])
             if span.begin >= begin and span.end <= float(block.end)
         ]
-        tracker.reset()
+        tracker.start_from_eci((0.0, 0.0, 0.0))
         _, _, demands = self._integrate(tracker, spans)
         return float(demands.max()) if len(demands) else 0.0
 

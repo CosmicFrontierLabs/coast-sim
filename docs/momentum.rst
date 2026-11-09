@@ -272,10 +272,11 @@ not what a dump removes, so the planning level and the dumps it calls for are on
 the stored momentum alone; the capacity, in fault management and in the forecast's
 checks, is on what the wheels hold.
 
-A visit's later steps are slewed to at full rate in the forecast at selection, which
-holds the attitude through those slews; only the slew into the first step carries
-the body's momentum there. The planners forecast every slew along a plan, step slews
-included.
+Dispatch forecasts every slew in a visit, including pointing changes and roll-only
+transitions between steps. It admits a rate fraction that fits the entire visit,
+uses that fraction for the later steps and their timing, and checks the remaining
+visit again against the actual wheel state before each step. The planners also
+forecast every slew along a plan, step slews included.
 
 Telemetry and reporting
 -----------------------

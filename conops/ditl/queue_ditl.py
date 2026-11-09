@@ -25,7 +25,11 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType, SlewAlgorithm
 from ..common.ephemeris import position_vectors
-from ..common.vector import attitude_to_quat, quaternion_attitude_delta
+from ..common.vector import (
+    attitude_to_quat,
+    quaternion_attitude_delta,
+    quaternion_to_rotation_matrix,
+)
 from ..config import (
     DAY_SECONDS,
     AttitudeConstraintScope,
@@ -65,7 +69,7 @@ from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
 from ..targets.sequence import ObservationSequence
 from .ditl_log import DITLLog
-from .ditl_mixin import AttitudeRateContinuityError, DITLMixin
+from .ditl_mixin import AttitudeRateContinuityError, DITLMixin, MomentumProfile
 from .ditl_stats import DITLStats
 from .plan_validator import (
     PlanExecutionMismatch,
@@ -201,6 +205,8 @@ class _SequenceRun:
     advancing: bool = False
     """Whether the step's observation is ending because the step is over,
     rather than being cut short."""
+    rate_fraction: float = 1.0
+    """The slew rate admitted for this visit, including its internal slews."""
     optimum: float | None = None
     """The power-optimal instrument roll found at the visit's last change
     of pointing, held through the steps at that pointing."""
@@ -1121,6 +1127,7 @@ class QueueDITL(DITLMixin, DITLStats):
             # Create housekeeping snapshot from current timestep state
             hk = self._create_housekeeping_record(utime, ra, dec, roll, mode)
             self.telemetry.housekeeping.append(hk)
+            self._momentum_at_capacity(utime, obsid if self.ppt is not None else None)
 
             # Fault management checks (e.g., battery level thresholds)
             self._handle_fault_management(utime, hk)
@@ -1337,10 +1344,11 @@ class QueueDITL(DITLMixin, DITLStats):
         if self._sequence is not None:
             # The observation is the visit's first step: the forecast runs
             # over the whole visit, which is taken whole or not at all.
-            end, attitude_at = self._visit_forecast(ppt, slew)
+            end, attitude_at, motions = self._visit_forecast(ppt, slew)
         else:
             end = float(ppt.end)
             attitude_at = self._observation_attitude(slew, [])
+            motions = [slew]
 
         # The tracker holds the momentum at its last sample, a step ago.
         begin = self._momentum_forecast_begin(utime)
@@ -1348,8 +1356,8 @@ class QueueDITL(DITLMixin, DITLStats):
             begin,
             end,
             attitude_at,
-            start_eci_n_m_s=tracker.momentum_eci_n_m_s,
-            slew=slew,
+            start_eci_n_m_s=self._momentum_forecast_state(attitude_at(begin)),
+            slew=motions,
         )
         if len(norms) == 0 or norms.max() < level:
             return True
@@ -1414,7 +1422,7 @@ class QueueDITL(DITLMixin, DITLStats):
             ppt.end = was_end
             ppt.set_collection_window(timing)
             from_empty = self._forecast_momentum(
-                begin, cut, attitude_at, start_eci_n_m_s=None, slew=slew
+                begin, cut, attitude_at, start_eci_n_m_s=None, slew=motions
             ).norms
             if cut > was_end or (len(from_empty) and from_empty.max() >= capacity):
                 self.log.log_event(
@@ -1438,7 +1446,7 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         else:
             from_empty = self._forecast_momentum(
-                begin, end, attitude_at, start_eci_n_m_s=None, slew=slew
+                begin, end, attitude_at, start_eci_n_m_s=None, slew=motions
             ).norms
             if len(from_empty) and from_empty.max() >= capacity:
                 assert self._sequence is not None
@@ -1481,6 +1489,19 @@ class QueueDITL(DITLMixin, DITLStats):
         previous = getattr(self, "_momentum_previous", None)
         return min(utime, previous.utime) if previous is not None else utime
 
+    def _momentum_forecast_state(
+        self, attitude: tuple[float, float, float]
+    ) -> npt.NDArray[np.float64]:
+        """The live momentum, including the configured load before its first sample."""
+        tracker = self._stored_momentum_tracker
+        assert tracker is not None
+        current = tracker.momentum_eci_n_m_s
+        if current is not None:
+            return current
+        initial = self.config.spacecraft_bus.attitude_control.stored_momentum.initial_momentum_body_n_m_s
+        rotation = quaternion_to_rotation_matrix(attitude_to_quat(*attitude))
+        return rotation.T @ np.asarray(initial, dtype=np.float64)
+
     def _cap_slew_momentum(
         self, utime: float, ra: float, dec: float, slew: Slew
     ) -> bool:
@@ -1493,7 +1514,9 @@ class QueueDITL(DITLMixin, DITLStats):
         observation does not begin now: the wheels are emptied first where
         the slowest fits from empty, and the observation is held out and
         marked done where it does not, since a slew's momentum does not
-        vary with the orbit."""
+        vary with the orbit. For a visit, admission includes every remaining
+        step's slew and hold at the trial fraction; execution retains that
+        fraction for later steps and checks them again from the live state."""
         tracker = self._stored_momentum_tracker
         momentum_config = self.config.spacecraft_bus.attitude_control.stored_momentum
         capacity = momentum_config.capacity_n_m_s
@@ -1506,7 +1529,19 @@ class QueueDITL(DITLMixin, DITLStats):
         ppt = self.ppt
         assert ppt is not None
         begin = self._momentum_forecast_begin(utime)
-        attitude_at = self._observation_attitude(slew, [])
+
+        def forecast(start: npt.ArrayLike | None) -> MomentumProfile:
+            if self._sequence is not None:
+                end, attitude_at, motions = self._visit_forecast(ppt, slew)
+                motion: Slew | Sequence[Slew] = motions
+            else:
+                end = float(slew.slewend)
+                attitude_at = self._observation_attitude(slew, [])
+                motion = slew
+            return self._forecast_momentum(
+                begin, end, attitude_at, start_eci_n_m_s=start, slew=motion
+            )
+
         fractions = momentum_config.slew_rate_fractions
         first = (
             fractions.index(slew.rate_fraction)
@@ -1516,12 +1551,10 @@ class QueueDITL(DITLMixin, DITLStats):
         for fraction in fractions[first:]:
             slew.rate_fraction = fraction
             slew.calc_slewtime()
-            demands = self._forecast_momentum(
-                begin,
-                float(slew.slewend),
-                attitude_at,
-                start_eci_n_m_s=tracker.momentum_eci_n_m_s,
-                slew=slew,
+            demands = forecast(
+                self._momentum_forecast_state(
+                    (slew.startra, slew.startdec, slew.startroll)
+                )
             ).demands
             if len(demands) == 0 or demands.max() < capacity:
                 if fraction != fractions[first]:
@@ -1537,15 +1570,15 @@ class QueueDITL(DITLMixin, DITLStats):
                         obsid=ppt.obsid,
                         acs_mode=self.acs.acsmode,
                     )
+                if self._sequence is not None:
+                    self._sequence.rate_fraction = fraction
                 return True
         name = (
             f"the visit of {self._sequence.parent.obsid}"
             if self._sequence is not None
             else f"observation {ppt.obsid}"
         )
-        from_empty = self._forecast_momentum(
-            begin, float(slew.slewend), attitude_at, start_eci_n_m_s=None, slew=slew
-        ).demands
+        from_empty = forecast(None).demands
         if len(from_empty) and from_empty.max() >= capacity:
             self.log.log_event(
                 utime=utime,
@@ -1624,43 +1657,61 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _visit_forecast(
         self, ppt: Pointing, slew: Slew
-    ) -> tuple[float, Callable[[float], tuple[float, float, float]]]:
-        """The visit the observation just selected begins, for the momentum
-        forecast at selection: when it ends and the attitude through it.
-        Each step is held at its own pointing from when it begins, after the
-        steps before it and the slews between them, with the attitude held
-        through those slews; a step's roll is the roll the first step's slew
-        ends at with the step's own offset, since a step elsewhere finds its
-        power-optimal roll only when it is reached. The visit ends with the
-        last step's cleanup."""
+    ) -> tuple[float, Callable[[float], tuple[float, float, float]], list[Slew]]:
+        """Forecast the remaining visit with actual slew paths and body rates.
+
+        All internal slews use the fraction being tried for admission. Their
+        roll and tick-aligned starts are calculated as in step execution.
+        """
         run = self._sequence
         assert run is not None
-        parent = run.parent
         sequence = run.sequence
-        base_ra, base_dec = parent.visit_base_pointing
-        timing = self._timing_for(parent)
-        acs = self.config.spacecraft_bus.attitude_control
-        starts = sequence.step_starts(acs, timing, base_ra, base_dec)
-        collects = (
-            float(ppt.collection_begin)
-            if ppt.collection_begin is not None
-            else float(slew.slewstart) + float(slew.slewtime)
+        timing = self._timing_for(run.parent)
+        motions = [slew]
+        collects = max(
+            float(ppt.collection_begin or 0.0),
+            float(slew.slewend) + sequence.step_timing(timing, run.index).setup_seconds,
         )
-        first_offset = sequence.steps[0].roll_offset_deg or 0.0
-        held: list[tuple[float, tuple[float, float, float]]] = []
-        for index, (start, step) in enumerate(zip(starts, sequence.steps, strict=True)):
-            step_ra, step_dec = sequence.pointing_of(index, base_ra, base_dec)
-            roll = (
-                float(slew.endroll) + (step.roll_offset_deg or 0.0) - first_offset
-            ) % 360.0
-            held.append((collects + start, (step_ra, step_dec, roll)))
-        end = (
-            collects
-            + starts[-1]
-            + sequence.steps[-1].duration_seconds
-            + timing.post_collection_seconds
-        )
-        return end, self._observation_attitude(slew, held)
+        end = collects + sequence.steps[run.index].duration_seconds
+        end += sequence.step_timing(timing, run.index).post_collection_seconds
+        optimum = self._power_optimal_roll(ppt, float(slew.slewstart))
+        for index in range(run.index + 1, len(sequence.steps)):
+            execution_time = (
+                self.ustart
+                + ceil((end - self.ustart) / self.step_size) * self.step_size
+            )
+            target = run.parent.step_pointing(index)
+            previous = motions[-1]
+            if sequence.pointing_of(
+                index, run.parent.ra, run.parent.dec
+            ) != sequence.pointing_of(index - 1, run.parent.ra, run.parent.dec):
+                optimum = self._power_optimal_roll(target, execution_time)
+            motion = self._new_ppt_slew(target, execution_time)
+            motion.slewstart = execution_time
+            motion.startra, motion.startdec, motion.startroll = (
+                previous.endra,
+                previous.enddec,
+                previous.endroll,
+            )
+            motion.endra, motion.enddec, motion.endroll = self._target_body_attitude(
+                target, self._ppt_optimum_roll(target, execution_time, optimum)
+            )
+            motion.rate_fraction = slew.rate_fraction
+            motion.calc_slewtime()
+            motions.append(motion)
+            end = float(motion.slewend) + sequence.steps[index].duration_seconds
+            end += sequence.step_timing(timing, index).total_seconds
+
+        def attitude_at(at: float) -> tuple[float, float, float]:
+            for motion in reversed(motions):
+                if at >= motion.slewstart:
+                    if at < motion.slewend:
+                        ra, dec, roll = motion.attitude(at)
+                        return float(ra), float(dec), float(roll)
+                    return motion.endra, motion.enddec, motion.endroll
+            return slew.startra, slew.startdec, slew.startroll
+
+        return end, attitude_at, motions
 
     def _dump_begin(self, utime: float) -> float:
         """When a dump called for at ``utime`` begins: now, unless the
@@ -1888,10 +1939,14 @@ class QueueDITL(DITLMixin, DITLStats):
         if run.optimum is None or not same_pointing:
             run.optimum = self._power_optimal_roll(ppt, execution_time)
         self._complete_ppt_slew(slew, ppt, utime, execution_time, optimum=run.optimum)
-        slew_end = execution_time + slew.slewtime
-        end = slew_end + timing.total_seconds + step.duration_seconds
         # The checks below read the observation under way.
         self.ppt = ppt
+        slew.rate_fraction = run.rate_fraction
+        slew.calc_slewtime()
+        if not self._cap_slew_momentum(utime, self.acs.ra, self.acs.dec, slew):
+            return
+        slew_end = execution_time + slew.slewtime
+        end = slew_end + timing.total_seconds + step.duration_seconds
         reason: str | None = None
         if end > self.uend:
             reason = "the run ends first"
