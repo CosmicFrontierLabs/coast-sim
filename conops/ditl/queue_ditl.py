@@ -1658,12 +1658,15 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _visit_forecast(
         self, ppt: Pointing, slew: Slew
-    ) -> tuple[float, Callable[[float], tuple[float, float, float]], list[Slew]]:
-        """Forecast the remaining visit with actual slew paths and body rates.
-
-        All internal slews use the fraction being tried for admission. Their
-        roll and tick-aligned starts are calculated as in step execution.
-        """
+    ) -> tuple[float, Callable[[float], tuple[float, float, float]]]:
+        """The visit the observation just selected begins, for the momentum
+        forecast at selection: when it ends and the attitude through it.
+        Each step is held at its own pointing from when it begins, after the
+        steps before it and the slews between them, with the attitude held
+        through those slews; a step's instrument roll is the first step's
+        commanded roll with its own offset, since a step elsewhere finds its
+        power-optimal roll only when it is reached. The visit ends with the
+        last step's cleanup."""
         run = self._sequence
         assert run is not None
         sequence = run.sequence
@@ -1673,46 +1676,37 @@ class QueueDITL(DITLMixin, DITLStats):
             float(ppt.collection_begin or 0.0),
             float(slew.slewend) + sequence.step_timing(timing, run.index).setup_seconds,
         )
-        end = collects + sequence.steps[run.index].duration_seconds
-        end += sequence.step_timing(timing, run.index).post_collection_seconds
-        optimum = self._power_optimal_roll(ppt, float(slew.slewstart))
-        for index in range(run.index + 1, len(sequence.steps)):
-            execution_time = (
-                self.ustart
-                + ceil((end - self.ustart) / self.step_size) * self.step_size
+        first_offset = sequence.steps[0].roll_offset_deg or 0.0
+        first_roll = (
+            float(slew.instrument_roll)
+            if slew.instrument_roll is not None
+            else float(slew.endroll)
+        )
+        held: list[tuple[float, tuple[float, float, float]]] = []
+        for index, (start, step) in enumerate(zip(starts, sequence.steps, strict=True)):
+            step_ra, step_dec = sequence.pointing_of(index, base_ra, base_dec)
+            roll = (first_roll + (step.roll_offset_deg or 0.0) - first_offset) % 360.0
+            # Sequence coordinates and rolls belong to the step's instrument.
+            # Forecast torques in the physical body frame, as execution does.
+            pointing = parent.model_copy(
+                update={
+                    "ra": step_ra,
+                    "dec": step_dec,
+                    "instrument_name": (
+                        step.instrument_name
+                        if step.instrument_name is not None
+                        else parent.instrument_name
+                    ),
+                }
             )
-            target = run.parent.step_pointing(index)
-            previous = motions[-1]
-            if sequence.pointing_of(
-                index, run.parent.ra, run.parent.dec
-            ) != sequence.pointing_of(index - 1, run.parent.ra, run.parent.dec):
-                optimum = self._power_optimal_roll(target, execution_time)
-            motion = self._new_ppt_slew(target, execution_time)
-            motion.slewstart = execution_time
-            motion.startra, motion.startdec, motion.startroll = (
-                previous.endra,
-                previous.enddec,
-                previous.endroll,
-            )
-            motion.endra, motion.enddec, motion.endroll = self._target_body_attitude(
-                target, self._ppt_optimum_roll(target, execution_time, optimum)
-            )
-            motion.rate_fraction = slew.rate_fraction
-            motion.calc_slewtime()
-            motions.append(motion)
-            end = float(motion.slewend) + sequence.steps[index].duration_seconds
-            end += sequence.step_timing(timing, index).total_seconds
-
-        def attitude_at(at: float) -> tuple[float, float, float]:
-            for motion in reversed(motions):
-                if at >= motion.slewstart:
-                    if at < motion.slewend:
-                        ra, dec, roll = motion.attitude(at)
-                        return float(ra), float(dec), float(roll)
-                    return motion.endra, motion.enddec, motion.endroll
-            return slew.startra, slew.startdec, slew.startroll
-
-        return end, attitude_at, motions
+            held.append((collects + start, self._target_body_attitude(pointing, roll)))
+        end = (
+            collects
+            + starts[-1]
+            + sequence.steps[-1].duration_seconds
+            + timing.post_collection_seconds
+        )
+        return end, self._observation_attitude(slew, held)
 
     def _dump_begin(self, utime: float) -> float:
         """When a dump called for at ``utime`` begins: now, unless the
