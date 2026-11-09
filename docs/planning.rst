@@ -292,7 +292,10 @@ How a plan is built
    retain the validated pose and hold, and the next observation departs directly
    from it. Dispatch budgets the collection cutoff, cleanup/handoff and ingress
    together; it cancels a pending exposure or cuts only future collection while
-   preserving science already taken. ``periodic_activities`` accepts the same ``attitude`` argument;
+   preserving science already taken. Inherited-attitude activities also wait for
+   outstanding cleanup and handoff, including when collection has already ended;
+   starting a hold never relabels those collected seconds as teardown.
+   ``periodic_activities`` accepts the same ``attitude`` argument;
    ``Program`` JSON preserves it.
    A recoverable engineering safe hold sets ``safe_hold=True``. Its stationary
    part uses ACS ``SAFE`` power, constraint scopes and instrument modes; it

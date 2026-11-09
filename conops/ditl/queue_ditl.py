@@ -1284,9 +1284,7 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                     return changed
-                if due.attitude.kind != "inherited" and self._reserve_activity_cleanup(
-                    due, utime
-                ):
+                if self._reserve_activity_cleanup(due, utime):
                     return changed
                 if self._should_initiate_charging(utime):
                     # Before starting a block, decide whether its whole hold
