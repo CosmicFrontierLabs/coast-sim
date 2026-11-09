@@ -439,6 +439,29 @@ program's share (``reserved_seconds``) and their collection end as the target's 
 visit (``reserved_visits``), so a new plan does not revisit a target straight after a
 committed visit.
 
+For requests with visit windows, the last still-committed window index also
+travels with the boundary (``reserved_visit_windows``). Planners combine it
+with completed visit history, so a later commanded visit is not placed a
+second time merely because an earlier visit has already completed. Recorded
+indices preserve the identity of a sequence whose calibration or slews run
+past the next window's opening; subtracting science duration from its finish
+cannot identify that window reliably. Standalone callers providing only
+``reserved_visits`` retain the time-based fallback.
+Only whole committed visits reserve a window: a pending attempt cut short
+can still be followed by a whole retry. Passing an explicit empty window map
+expresses that none of the committed attempts will complete a window.
+
+When a ToO cuts a windowed visit, planning reopens that window for a whole
+retry while it is still available. The partial science keeps its credit;
+cleanup and handoff still finish before the replacement. A later replan made
+before the cut flies keeps that pending retry. A proposed cut that is rejected
+leaves the request history unchanged.
+
+Accepted cuts appear in the request's and cut entry's ``interruptions`` only
+when executed. Their timestamp is the science cutoff, which can precede the
+end of cleanup. Planning a future interruption uses a separate request history
+so the spacecraft's actual collected science and completion state stay accurate.
+
 Without these weights, plans are built exactly as before.
 
 Planning within the recorder

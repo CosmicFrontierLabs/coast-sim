@@ -438,6 +438,13 @@ class PriorityScheduler:
         reserved_visits: When observations scheduled outside this plan and not
             yet collected will finish collecting, by obsid; a cadence target's
             next visit waits for its cadence after them.
+        reserved_visit_windows: Last committed window index, by obsid, for
+            windowed visits still to collect outside this plan. Merged with
+            completed history so the same window cannot be placed again.
+            Preferred to inferring a window from ``reserved_visits`` when
+            calibration or inter-step slews extend a sequence. None uses
+            that time-based fallback; an empty mapping reserves no whole
+            window, allowing a pending cut attempt to be retried whole.
         held: Obsids of targets this plan does not place, though their
             science, collected and reserved, counts towards their programs'
             shares as every target's does.
@@ -486,6 +493,7 @@ class PriorityScheduler:
         start_state: StartState | None = None,
         reserved_seconds: Mapping[int, float] | None = None,
         reserved_visits: Mapping[int, float] | None = None,
+        reserved_visit_windows: Mapping[int, int] | None = None,
         held: Iterable[int] = (),
         successor_retries: int | None = 3,
         start_volume_gb: float | Mapping[str, float] | None = None,
@@ -558,6 +566,9 @@ class PriorityScheduler:
         self.start_state = start_state
         self.reserved_seconds = dict(reserved_seconds or {})
         self.reserved_visits = dict(reserved_visits or {})
+        self.reserved_visit_windows = (
+            None if reserved_visit_windows is None else dict(reserved_visit_windows)
+        )
         if successor_retries is not None and successor_retries < 0:
             raise ValueError("successor_retries must not be negative")
         self.successor_retries = successor_retries
@@ -1683,6 +1694,31 @@ class PriorityScheduler:
         """When each cadence target was last observed, collected or planned."""
         for target in self.targets:
             obsid = int(target.obsid)
+            if target.visit_windows and self.reserved_visit_windows is not None:
+                # An explicit empty history must stay empty in decoders too;
+                # elapsed time alone cannot complete a delayed cut attempt.
+                self._last_visit_window.setdefault(obsid, -1)
+            reserved_window = (
+                self.reserved_visit_windows.get(obsid)
+                if self.reserved_visit_windows is not None
+                else None
+            )
+            reserved_end = self.reserved_visits.get(obsid)
+            if (
+                reserved_window is None
+                and self.reserved_visit_windows is None
+                and reserved_end is not None
+                and target.visit_windows
+            ):
+                # Legacy callers give only an end time. A recorded window is
+                # authoritative: calibration and slews may cross later openings.
+                reserved_window = target.visit_index_at(
+                    reserved_end - target.per_visit_seconds
+                )
+            if reserved_window is not None:
+                self._last_visit_window[obsid] = max(
+                    self._last_visit_window.get(obsid, -1), reserved_window
+                )
             if target.visits_done:
                 self._last_visit_window[obsid] = max(
                     self._last_visit_window.get(obsid, -1), *target.visits_done
@@ -1739,7 +1775,11 @@ class PriorityScheduler:
                 last = self._last_visit.get(int(target.obsid))
                 visited = set(target.visits_done)
                 index = self._last_visit_window.get(int(target.obsid))
-                if index is None and last is not None:
+                if (
+                    index is None
+                    and last is not None
+                    and self.reserved_visit_windows is None
+                ):
                     index = target.visit_index_at(last - target.per_visit_seconds)
                 if index is not None:
                     visited.update(range(index + 1))
