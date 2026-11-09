@@ -66,6 +66,10 @@ class ObservationCategory(ConfigModel):
             "for no cap"
         ),
     )
+    science_in_eclipse: bool | None = Field(
+        default=None,
+        description="Override eclipse observing policy; None inherits Constraint.science_in_eclipse",
+    )
     interruptible: bool = Field(
         default=True,
         description=(
