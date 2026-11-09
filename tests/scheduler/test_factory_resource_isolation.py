@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from conops import create_ditl
+from conops.benchmark.reproducibility import execution_record
 from conops.config import DataStorage, DataStore, HousekeepingData, OnboardRecorder
 from conops.config.scheduler import SchedulerKind, SchedulerMode
 
@@ -82,14 +83,7 @@ def test_reusing_configuration_repeats_the_actual_dispatch_execution() -> None:
         assert run.calc()
         assert run.recorder.current_volume_gb > 12.0
         assert run.battery.battery_level < 0.8
-        records.append(
-            {
-                "entries": [e.model_dump(mode="json") for e in run.plan],
-                "housekeeping": [
-                    h.model_dump(mode="json") for h in run.telemetry.housekeeping
-                ],
-            }
-        )
+        records.append(execution_record(run, completed=True))
     assert records[0] == records[1]
     assert config.battery.battery_level == pytest.approx(0.8)
     assert config.recorder.current_volume_gb == 12.0
