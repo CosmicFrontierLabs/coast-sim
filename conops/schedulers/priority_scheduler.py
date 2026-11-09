@@ -688,13 +688,11 @@ class PriorityScheduler:
                             )
                             return plan
                         kept = [d for d in self.dumps if d.end <= begin]
-                        reserved = ScheduledActivity(
-                            name="Desaturation",
-                            begin=begin,
-                            duration_seconds=dump.duration_seconds,
-                            desaturation=True,
-                            obsid=DESATURATION_OBSID + len(kept),
+                        reserved = self._dump_activity(
+                            begin, DESATURATION_OBSID + len(kept)
                         )
+                        if reserved.end > self.ctx.uend:
+                            return plan
                         self.dumps = [*kept, reserved]
                         self._log(
                             begin,
@@ -743,13 +741,9 @@ class PriorityScheduler:
                     )
                     break
                 kept = [d for d in self.dumps if d.end <= begin]
-                reserved = ScheduledActivity(
-                    name="Desaturation",
-                    begin=begin,
-                    duration_seconds=dump.duration_seconds,
-                    desaturation=True,
-                    obsid=DESATURATION_OBSID + len(kept),
-                )
+                reserved = self._dump_activity(begin, DESATURATION_OBSID + len(kept))
+                if reserved.end > self.ctx.uend:
+                    break
                 self.dumps = [*kept, reserved]
                 self._log(
                     begin,
@@ -773,6 +767,31 @@ class PriorityScheduler:
             f"{_MAX_DUMPS} thruster dumps reserved; the plan may still fill the wheels",
         )
         return plan
+
+    def _dump_activity(self, begin: float, obsid: int) -> ScheduledActivity:
+        """Reserve a dump's firing after any configured ingress from ``begin``."""
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
+        fixed = dump.attitude.fixed_pointing
+        if fixed is not None:
+            before = [b for b in self.timeline if b.end <= begin]
+            pred = before[-1] if before else self._origin
+            slew = self.ctx.slew(
+                self._start_attitude(pred, begin),
+                fixed,
+                begin,
+                obstype=ObsType.IDLE,
+                obsid=obsid,
+            )
+            begin = self.ctx.ceil_step(float(slew.slewend))
+        return ScheduledActivity(
+            name="Desaturation",
+            begin=begin,
+            duration_seconds=dump.duration_seconds,
+            desaturation=True,
+            obsid=obsid,
+            attitude=dump.attitude,
+        )
 
     def _block_of(self, obsid: int) -> _Block | None:
         """The science block of ``obsid`` on the timeline, if placed."""
@@ -2546,6 +2565,9 @@ class PriorityScheduler:
             )
         )
         mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        fixed_attitude = activity.attitude.fixed_pointing
+        if fixed_attitude is not None:
+            attitude = fixed_attitude
         entry = activity.plan_entry(self.config, attitude)
         entry.activity_requires_stationary = True
         if resumed:
@@ -2566,11 +2588,29 @@ class PriorityScheduler:
             attitude_out=attitude,
             ready=ready,
             end=end,
-            follows=True,
-            activity=activity if late else None,
+            follows=fixed_attitude is None,
+            activity=activity if late and fixed_attitude is None else None,
             latest_ready=ready if late else None,
         )
-        if not self._insert_fixed(block):
+        if fixed_attitude is not None and activity.slides and not resumed:
+            # A required pose cannot be replaced by another attitude. Search
+            # its start window, then keep that validated reservation fixed.
+            earliest = self.ctx.ceil_step(max(activity.begin, self.ctx.ustart))
+            trial = self.ctx.floor_step(ready)
+            while trial >= earliest:
+                block.ready = trial
+                block.end = self._activity_end(activity, trial)
+                block.latest_ready = trial
+                block.entry.activity_hold_begin = trial
+                block.entry.activity_hold_end = trial + activity.duration_seconds
+                block.entry.end = block.end
+                if self._insert_fixed(block):
+                    return
+                trial -= self.ctx.step_size
+            placed = False
+        else:
+            placed = self._insert_fixed(block)
+        if not placed:
             error = ActivitySchedulingError(
                 activity,
                 f"no path-validated {mode.name} attitude holds for its full duration "

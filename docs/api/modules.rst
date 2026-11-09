@@ -11,6 +11,7 @@ Core Modules
 
    conops.config
    conops.config.acs
+   conops.config.activity_attitude
    conops.config.communications
    conops.config.data_generator
    conops.config.fault_management

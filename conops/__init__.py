@@ -21,6 +21,7 @@ from .common import (
 from .config import (
     DAY_SECONDS,
     DTOR,
+    ActivityAttitude,
     AttitudeConstraintScope,
     AttitudeControlSystem,
     Battery,
@@ -127,6 +128,7 @@ __all__ = [
     "ACSCommandType",
     "ACSMode",
     "AttitudeConstraintScope",
+    "ActivityAttitude",
     "AttitudeControlSystem",
     "AttitudeRateContinuityError",
     "AttitudeSampleSchema",

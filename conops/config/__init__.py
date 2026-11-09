@@ -1,4 +1,5 @@
 from .acs import AttitudeControlSystem, SlewRequirement, ThermalSettlingStep
+from .activity_attitude import ActivityAttitude
 from .battery import Battery
 from .communications import (
     AntennaPointing,
@@ -79,6 +80,7 @@ from .thermal import Heater
 from .visualization import VisualizationConfig
 
 __all__ = [
+    "ActivityAttitude",
     "AntennaPointing",
     "AttitudeControlSystem",
     "SlewRequirement",

@@ -279,6 +279,21 @@ How a plan is built
    entered through fault management alone. :func:`~conops.targets.activity.periodic_activities`
    builds a list of activities at a fixed interval from a first start, a count of them
    or as many as begin by a time, each with the same modes, data, ``fixed`` and slide.
+   ``ScheduledActivity.attitude`` can request an explicit body pose with
+   :class:`~conops.config.activity_attitude.ActivityAttitude`. Its default
+   ``kind="inherited"`` keeps the existing inherited/safe-hold policy. A
+   ``kind="fixed"`` pose supplies ``ra_deg``, ``dec_deg`` and ``roll_deg`` in the
+   same GCRS physical body-attitude convention as plan entries. This fixes the
+   pose; the separate ``fixed`` activity flag fixes its start time.
+   Dispatch prepares the required ingress as its start window approaches. The
+   planners reserve that ingress before the full hold, searching a sliding
+   window for a feasible time at the requested pose. An unsafe required pose
+   is reported explicitly rather than replaced with another attitude. Replans
+   retain the validated pose and hold, and the next observation departs directly
+   from it. Dispatch budgets the collection cutoff, cleanup/handoff and ingress
+   together; it cancels a pending exposure or cuts only future collection while
+   preserving science already taken. ``periodic_activities`` accepts the same ``attitude`` argument;
+   ``Program`` JSON preserves it.
    A thruster momentum dump is an activity
    dispatch calls for itself, when the stored momentum reaches the planning level of
    the wheels' capacity (see the stored momentum under :doc:`configuration`), and
@@ -516,6 +531,10 @@ fixed desaturation activity holding the attitude of whatever precedes it, keeps 
 science placed before the dump as it is, and plans on from there with the dumps so
 far: the first slew start the pass lets go is where the next pass places from, since
 nothing before it has changed. The dump goes between observations.
+A configured fixed-attitude dump also waits between protected sequence visits.
+Dispatch checks whether a whole visit fits without treating that firing time as
+a mandatory visit cutoff. Fixed firing starts and bounded slide windows still
+limit admission, as do calibration and maintenance deadlines.
 Where the level is reached during an observation, the dump follows it, provided the
 wheels stay within the capacity through the dump's own length; where they would not,
 the dump goes before the observation, which then starts from empty wheels, provided
