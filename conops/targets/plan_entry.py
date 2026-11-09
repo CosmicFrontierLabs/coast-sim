@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
@@ -931,16 +932,43 @@ class PlanEntry(BaseModel):
             return combined
         return combined | telescope_constraint
 
-    def visibility(
+    def visibility(self) -> int:
+        """Calculate the visibility windows over the whole ephemeris range and
+        store them on :attr:`windows`."""
+        self.windows = self._visibility_windows()
+        return 0
+
+    def visibility_in(
         self,
-    ) -> int:
-        """Calculate the visibility windows for a target for a given day(s).
+        begin: float | int | str | datetime,
+        end: float | int | str | datetime,
+    ) -> list[list[float]]:
+        """Visibility windows within ``[begin, end]`` only, leaving
+        :attr:`windows` untouched.
 
-        Note: year, day, length, and hires parameters are kept for backwards
-        compatibility but are no longer used. The visibility is calculated over
-        the entire ephemeris time range.
+        Only the ephemeris samples inside the interval, plus one sample of halo
+        on each side, are evaluated, so the result equals the whole-ephemeris
+        windows clipped to the interval. Bounds are UTC datetimes, ISO strings
+        or Unix seconds.
         """
+        assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
+        first, last = unixtime_from(begin), unixtime_from(end)
+        if not (np.isfinite(first) and np.isfinite(last)) or first > last:
+            raise ValueError("Visibility bounds must be finite and begin <= end")
+        times = list(self.ephem.timestamp)
+        grid = [t.timestamp() for t in times]
+        left = max(0, bisect_left(grid, first) - 1)
+        right = min(len(grid), bisect_right(grid, last) + 1)
+        return [
+            [max(a, first), min(b, last)]
+            for a, b in self._visibility_windows(times[left:right])
+            if a <= last and b >= first
+        ]
 
+    def _visibility_windows(
+        self, times: list[datetime] | None = None
+    ) -> list[list[float]]:
+        """Windows over the whole ephemeris, or over the given grid samples."""
         assert self.config is not None, "Config must be set to calculate visibility"
         assert self.config.constraint is not None, (
             "Constraint must be set to calculate visibility"
@@ -980,18 +1008,18 @@ class PlanEntry(BaseModel):
             effective_roll = self.roll
 
         if combined_constraint is None:
-            self.windows = [
+            return [
                 [
-                    float(self.ephem.begin.timestamp()),
-                    float(self.ephem.end.timestamp()),
+                    float((times[0] if times else self.ephem.begin).timestamp()),
+                    float((times[-1] if times else self.ephem.end).timestamp()),
                 ]
             ]
-            return 0
 
         if self.track:
             # A moving target: the constraint along its track, resampled on
             # the ephemeris grid, which the moving-body evaluation wants.
-            times = list(self.ephem.timestamp)
+            if times is None:
+                times = list(self.ephem.timestamp)
             ras, decs = positions_along(
                 self.track, [float(t.timestamp()) for t in times]
             )
@@ -1002,26 +1030,22 @@ class PlanEntry(BaseModel):
                 times=times,
                 target_roll=effective_roll,
             )
-            self.windows = [
+            return [
                 [v.start_time.timestamp(), v.end_time.timestamp()]
                 for v in moving.visibility
             ]
-            return 0
 
         in_constraint = combined_constraint.evaluate(
             ephemeris=self.ephem,
             target_ra=self.ra,  # already in degrees
             target_dec=self.dec,
             target_roll=effective_roll,
+            times=times,
         )
-        # Construct the visibility windows
-
-        self.windows = [
+        return [
             [v.start_time.timestamp(), v.end_time.timestamp()]
             for v in in_constraint.visibility
         ]
-
-        return 0
 
     def visible(self, begin: float, end: float) -> list[float] | Literal[False]:
         """Is the target visible between these two times, if yes, return the visibility window"""
