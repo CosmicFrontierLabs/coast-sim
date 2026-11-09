@@ -526,6 +526,25 @@ class AttitudeExecutor:
     def state(self) -> AttitudeState:
         return self._state
 
+    @property
+    def flown_interval(self) -> tuple[float, float]:
+        """The closed time interval available for executed-trajectory exports."""
+        return self._flown_starts[0], self._state.utime
+
+    def flown_boundaries(self) -> list[float]:
+        """Executed handoffs and motion boundaries, excluding superseded futures."""
+        boundaries = set(self._flown_starts)
+        boundaries.add(self._state.utime)
+        for index, (start, motion) in enumerate(self._flown):
+            stop = (
+                self._flown_starts[index + 1]
+                if index + 1 < len(self._flown)
+                else self._state.utime
+            )
+            if isinstance(motion, AttitudeTrajectory):
+                boundaries.update(t for t in motion.boundaries if start <= t <= stop)
+        return sorted(boundaries)
+
     def _record(self, start: float, motion: AttitudeTrajectory | AttitudeState) -> None:
         self._flown.append((start, motion))
         self._flown_starts.append(start)

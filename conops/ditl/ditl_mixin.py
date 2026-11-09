@@ -19,6 +19,7 @@ from ..config import (
     MissionConfig,
     OnboardRecorder,
     SolarArrayDriveState,
+    SpacecraftFrame,
 )
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
@@ -36,7 +37,7 @@ from ..simulation.momentum import (
 from ..simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry
+from ..targets import AttitudeTimeseriesSchema, Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
@@ -932,6 +933,37 @@ class DITLMixin:
         self._attach_attitude_timeseries_to_plan()
         self._attach_orbit_state_timeseries_to_plan()
 
+    def sample_attitude(
+        self,
+        *,
+        begin: float | int | str | datetime | None = None,
+        end: float | int | str | datetime | None = None,
+        interval_seconds: float = 1.0,
+        include_transitions: bool = True,
+        origin_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> AttitudeTimeseriesSchema:
+        """Resample the flown trajectory while this simulation is retained.
+
+        The default endpoint is the last physically advanced executor time,
+        which may precede the requested run end by one simulation step. Export
+        before discarding the run; a saved coarse series cannot reconstruct it.
+        """
+        from ..targets.attitude_export import sample_executed_attitude
+
+        executor = self.acs._executor
+        if executor is None:
+            raise ValueError("Run the simulation before sampling executed attitude")
+        return sample_executed_attitude(
+            executor,
+            self.ephem,
+            self.config.spacecraft_bus.frame,
+            begin=begin,
+            end=end,
+            interval_seconds=interval_seconds,
+            include_transitions=include_transitions,
+            origin_offset_m=origin_offset_m,
+        )
+
     def _attach_attitude_timeseries_to_plan(self) -> None:
         """Attach the executed attitude timeline to the current plan for export."""
         from ..targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
@@ -958,7 +990,13 @@ class DITLMixin:
                 )
             )
 
-        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(samples=samples)
+        frame = getattr(self.config.spacecraft_bus, "frame", None)
+        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(
+            samples=samples,
+            spacecraft_frame=frame
+            if isinstance(frame, SpacecraftFrame)
+            else SpacecraftFrame(),
+        )
 
     def _attach_orbit_state_timeseries_to_plan(self) -> None:
         """Attach GCRS spacecraft position/velocity samples to the current plan."""
