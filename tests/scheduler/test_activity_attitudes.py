@@ -359,7 +359,8 @@ def test_dispatch_rejects_an_unsafe_required_pose():
 
 
 @pytest.mark.parametrize("scheduled", [False, True])
-def test_a_configured_dump_does_not_split_a_sequence_visit(scheduled):
+@pytest.mark.parametrize("available_hours", [1, 2])
+def test_a_configured_dump_does_not_split_a_sequence_visit(scheduled, available_hours):
     config = make_config(2)
     config.constraint.sun_constraint = None
     config.constraint.earth_constraint = None
@@ -405,7 +406,7 @@ def test_a_configured_dump_does_not_split_a_sequence_visit(scheduled):
     ditl = QueueDITL(
         config=config,
         begin=BEGIN,
-        end=BEGIN + timedelta(hours=2),
+        end=BEGIN + timedelta(hours=available_hours),
         activities=activities,
     )
     ditl.queue.add_request(visit)
@@ -414,6 +415,11 @@ def test_a_configured_dump_does_not_split_a_sequence_visit(scheduled):
     assert len(parts) == 2
     dumps = [e for e in ditl.plan if e.desaturation]
     assert dumps
+    if scheduled:
+        # Empty wheels have room for the whole visit. The scheduled dump waits
+        # between visits rather than delaying admission until its firing ends.
+        assert float(parts[0].begin) < activities[0].begin
+        assert float(dumps[0].begin) >= float(parts[-1].end)
     assert all(
         float(e.end) <= float(parts[0].begin) or float(e.begin) >= float(parts[-1].end)
         for e in dumps
