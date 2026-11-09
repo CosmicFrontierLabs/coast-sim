@@ -1,4 +1,4 @@
-"""Bounded visibility keeps whole-grid semantics without evaluating every row."""
+"""``visibility_in`` equals the whole-ephemeris windows clipped to the interval."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -65,147 +65,35 @@ def clipped(windows, begin, end):
     "bounds", [(0, 360), (61, 1799), (3601, 17039), (21599, 21600), (4800, 4800)]
 )
 def test_bounded_result_matches_clipping_whole_ephemeris(ephem, kind, bounds):
-    whole, bounded = target(ephem, kind), target(ephem, kind)
-    whole.visibility()
-    begin, end = (T0 + t for t in bounds)
-    assert bounded.visibility(begin=begin, end=end) == 0
-    np.testing.assert_allclose(
-        np.asarray(bounded.windows),
-        np.asarray(clipped(whole.windows, begin, end)),
-        atol=1e-6,
-    )
-
-
-def test_queries_accumulate_extend_and_reuse_coverage(ephem, monkeypatch):
-    t = target(ephem, "moving")
-    calls = []
-    original = type(t)._evaluate_visibility
-
-    def evaluate(self, times=None):
-        calls.append(times)
-        return original(self, times)
-
-    monkeypatch.setattr(type(t), "_evaluate_visibility", evaluate)
-    t.visibility(begin=T0 + HOUR, end=T0 + 2 * HOUR)
-    assert len(calls) == 1 and len(calls[0]) < len(ephem.timestamp) / 2
-    first = list(t.windows)
-    t.visibility(begin=T0 + HOUR + 120, end=T0 + 2 * HOUR - 120)
-    assert len(calls) == 1 and t.windows == first
-    t.visibility(begin=T0 + 4 * HOUR, end=T0 + 5 * HOUR)
-    assert len(calls) == 2
-    t.visibility(begin=T0, end=T0 + 6 * HOUR)
-    whole = target(ephem, "moving")
-    original(whole)
-    assert t.windows == whole.windows
-    assert len(calls) == 5  # Only the three gaps around the two known intervals.
-    t.visibility()  # The legacy default always restores whole-ephemeris visibility.
-    assert t.windows == whole.windows
-
-
-@pytest.mark.parametrize("kind", ["fixed", "moving", "roll", "empty"])
-def test_wider_query_evaluates_only_missing_intervals(ephem, kind, monkeypatch):
-    bounded, whole = target(ephem, kind), target(ephem, kind)
-    whole.visibility()
-    calls = []
-    original = type(bounded)._evaluate_visibility
-
-    def evaluate(self, times=None):
-        calls.append([t.timestamp() for t in times])
-        return original(self, times)
-
-    monkeypatch.setattr(type(bounded), "_evaluate_visibility", evaluate)
-    bounded.visibility(begin=T0 + HOUR, end=T0 + 2 * HOUR)
-    bounded.visibility(begin=T0, end=T0 + 3 * HOUR)
-    assert len(calls) == 3
-    assert max(calls[1]) == T0 + HOUR + 60
-    assert min(calls[2]) == T0 + 2 * HOUR - 60
-    np.testing.assert_allclose(
-        np.asarray(bounded.windows),
-        np.asarray(clipped(whole.windows, T0, T0 + 3 * HOUR)),
-        atol=1e-6,
-    )
-    bounded.visibility(begin=T0 + 30, end=T0 + 3 * HOUR - 30)
-    assert len(calls) == 3
-
-
-def test_query_bridging_known_intervals_evaluates_each_gap(ephem, monkeypatch):
-    bounded, whole = target(ephem, "moving"), target(ephem, "moving")
-    whole.visibility()
-    calls = []
-    original = type(bounded)._evaluate_visibility
-
-    def evaluate(self, times=None):
-        calls.append([t.timestamp() for t in times])
-        return original(self, times)
-
-    monkeypatch.setattr(type(bounded), "_evaluate_visibility", evaluate)
-    bounded.visibility(begin=T0 + HOUR, end=T0 + 2 * HOUR)
-    bounded.visibility(begin=T0 + 4 * HOUR, end=T0 + 5 * HOUR)
-    bounded.visibility(begin=T0, end=T0 + 6 * HOUR)
-    assert len(calls) == 5
-    assert (min(calls[2]), max(calls[2])) == (T0, T0 + HOUR + 60)
-    assert (min(calls[3]), max(calls[3])) == (
-        T0 + 2 * HOUR - 60,
-        T0 + 4 * HOUR + 60,
-    )
-    assert (min(calls[4]), max(calls[4])) == (
-        T0 + 5 * HOUR - 60,
-        T0 + 6 * HOUR,
-    )
-    assert bounded.windows == whole.windows
-
-
-@pytest.mark.parametrize(
-    "changed", ["roll", "track", "constraint", "ephemeris", "pointing"]
-)
-def test_changed_inputs_invalidate_bounded_cache(ephem, changed):
-    t = target(ephem, "moving" if changed == "track" else "fixed")
-    t.visibility(begin=T0, end=T0 + 6 * HOUR)
-    previous = t._visibility_key
-    if changed == "roll":
-        t.roll = 90
-    if changed == "track":
-        t.track = track_from_table([T0, T0 + 6 * HOUR], [30, 90], [0, 0])
-    if changed == "constraint":
-        t.config.constraint = Constraint(
-            sun_constraint=rust_ephem.SunConstraint(min_angle=80)
-        )
-        t.config.constraint.ephem = ephem
-        t.constraint = t.config.constraint
-    if changed == "ephemeris":
-        t.ephem = rust_ephem.TLEEphemeris(
-            tle="examples/example.tle",
-            begin=BEGIN,
-            end=BEGIN + timedelta(hours=6),
-            step_size=60,
-        )
-    if changed == "pointing":
-        t.ra = (t.ra + 150) % 360
-    t.visibility(begin=T0, end=T0 + 6 * HOUR)
-    assert t._visibility_key != previous
-    bounded = [list(w) for w in t.windows]
+    t = target(ephem, kind)
     t.visibility()
-    assert t.windows == bounded
+    whole = [list(w) for w in t.windows]
+    begin, end = (T0 + b for b in bounds)
+    np.testing.assert_allclose(
+        np.asarray(t.visibility_in(begin, end)),
+        np.asarray(clipped(whole, begin, end)),
+        atol=1e-6,
+    )
+    assert t.windows == whole  # A bounded query never replaces stored windows.
+
+
+def test_bounded_query_evaluates_only_the_interval(ephem, monkeypatch):
+    t = target(ephem, "fixed")
+    seen = []
+    original = type(t)._visibility_windows
+    monkeypatch.setattr(
+        type(t),
+        "_visibility_windows",
+        lambda self, times=None: (seen.append(times), original(self, times))[1],
+    )
+    t.visibility_in(T0 + HOUR, T0 + 2 * HOUR)
+    assert [s.timestamp() for s in (seen[0][0], seen[0][-1])] == [
+        T0 + HOUR - 60,
+        T0 + 2 * HOUR + 60,
+    ]
 
 
 @pytest.mark.parametrize("bounds", [(100, 0), (float("nan"), 100), (0, float("inf"))])
 def test_invalid_bounds_are_rejected(ephem, bounds):
-    t = target(ephem, "fixed")
     with pytest.raises(ValueError, match="Visibility bounds"):
-        t.visibility(begin=T0 + bounds[0], end=T0 + bounds[1])
-
-
-@pytest.mark.parametrize("replace", [False, True])
-def test_changed_constraint_components_rebuild_cached_backend_geometry(ephem, replace):
-    t = target(ephem, "fixed")
-    t.visibility()  # Populate the backend's own combined and Rust caches first.
-    t.visibility(begin=T0, end=T0 + HOUR)
-    if replace:
-        t.constraint.sun_constraint = rust_ephem.SunConstraint(min_angle=90)
-    else:
-        t.constraint.sun_constraint.min_angle = 90
-    t.visibility(begin=T0, end=T0 + HOUR)
-    fresh = target(ephem, "fixed")
-    fresh.constraint.sun_constraint = rust_ephem.SunConstraint(min_angle=90)
-    fresh.visibility()
-    assert t.windows == clipped(fresh.windows, T0, T0 + HOUR)
+        target(ephem, "fixed").visibility_in(T0 + bounds[0], T0 + bounds[1])

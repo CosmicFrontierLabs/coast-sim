@@ -1762,8 +1762,7 @@ class PriorityScheduler:
             target = self._target_of(entry) if roll_free else None
             if target is not None:
                 # The target's own windows, computed once and kept.
-                if not target.windows or target._visibility_key is not None:
-                    # Partial caller queries cannot stand in for full coverage.
+                if not target.windows:
                     target.visibility()
                 windows = [list(w) for w in target.windows]
             else:
