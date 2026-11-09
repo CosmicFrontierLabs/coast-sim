@@ -528,7 +528,8 @@ far: the first slew start the pass lets go is where the next pass places from, s
 nothing before it has changed. The dump goes between observations.
 A configured fixed-attitude dump also waits between protected sequence visits.
 Dispatch checks whether a whole visit fits without treating that firing time as
-a mandatory visit cutoff; calibration and maintenance deadlines still apply.
+a mandatory visit cutoff. Fixed firing starts and bounded slide windows still
+limit admission, as do calibration and maintenance deadlines.
 Where the level is reached during an observation, the dump follows it, provided the
 wheels stay within the capacity through the dump's own length; where they would not,
 the dump goes before the observation, which then starts from empty wheels, provided

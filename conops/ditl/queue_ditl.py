@@ -1980,6 +1980,8 @@ class QueueDITL(DITLMixin, DITLStats):
                     protected_visit
                     and a.desaturation
                     and a.attitude.fixed_pointing is not None
+                    and not a.fixed
+                    and not a.slides
                 )
             ),
             None,
