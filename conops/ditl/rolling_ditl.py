@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
@@ -312,6 +313,8 @@ class RollingHorizonDITL(DITL):
         # When each ToO counts as submitted: no earlier than the run it joined.
         self._too_submitted: dict[int, float] = {}
         self._first_collection: dict[int, float] = {}
+        self._pending_interruptions: dict[int, float] = {}
+        """Science cutoff of an accepted cut, recorded only once it is flown."""
         self._next_replan: float | None = None
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -403,6 +406,7 @@ class RollingHorizonDITL(DITL):
         self.plan = Plan(ground_contacts=self._booked_ground_contacts())
         self.replans = []
         self._next_replan = None
+        self._pending_interruptions.clear()
         # The passes belong to the interval: a later one predicts its own.
         self._run_passes = None
         return super().calc()
@@ -438,6 +442,20 @@ class RollingHorizonDITL(DITL):
         for too in self.too_register:
             if too.obsid == entry.obsid:
                 too.executed = True
+
+    def _finish_active_entry(self, utime: float) -> None:
+        entry = self._active_entry
+        assert entry is not None
+        interrupted = self._pending_interruptions.pop(id(entry), None)
+        super()._finish_active_entry(utime)
+        if interrupted is not None:
+            at = min(interrupted, utime)
+            target = self._target_for(int(entry.obsid))
+            if target is not None:
+                target.record_interruption(at)
+            if entry is not target:
+                # Record this entry without a Pointing's parent delegation.
+                PlanEntry.record_interruption(entry, at)
 
     # ── Replanning ───────────────────────────────────────────────────────
 
@@ -662,7 +680,7 @@ class RollingHorizonDITL(DITL):
                     obsid=too.obsid,
                 )
                 break
-            planned = self._plan_interrupt(too, utime, cutoff, attempt)
+            planned = self._plan_interrupt(too, utime, cutoff, attempt, cut_entry=entry)
             if planned is not None:
                 replacement = self._placed(planned[2], too.obsid)
                 assert replacement is not None
@@ -673,6 +691,11 @@ class RollingHorizonDITL(DITL):
                     planned = None
             if planned is not None:
                 trigger, interrupted = too, int(entry.obsid)
+                self._pending_interruptions[id(entry)] = float(
+                    entry.collection_end
+                    if entry.collection_end is not None
+                    else entry.end
+                )
                 self.log.add_events(attempt.events)
                 break
             # This ToO cannot be placed at a higher value after all, so the
@@ -725,7 +748,13 @@ class RollingHorizonDITL(DITL):
             self._next_replan = utime + self.replan_interval.total_seconds()
 
     def _plan_interrupt(
-        self, too: TOORequest, utime: float, cutoff: float, log: DITLLog
+        self,
+        too: TOORequest,
+        utime: float,
+        cutoff: float,
+        log: DITLLog,
+        *,
+        cut_entry: PlanEntry | None = None,
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int] | None:
         """Plan the horizon after an interrupt for ``too``, or None if the
         plan cannot collect it.
@@ -746,7 +775,9 @@ class RollingHorizonDITL(DITL):
             and not self._too_targets[id(request)].done
         ]
         first = DITLLog()
-        planned = self._plan_after(utime, cutoff, first, held=waiting)
+        planned = self._plan_after(
+            utime, cutoff, first, held=waiting, cut_entry=cut_entry
+        )
         placed = self._placed(planned[2], too.obsid)
         if placed is None:
             return None
@@ -757,7 +788,9 @@ class RollingHorizonDITL(DITL):
         held = [t for t in waiting if t.deadline is not None and t.deadline < follow]
         pinned = planned[2][: planned[2].index(placed) + 1]
         again = DITLLog()
-        replanned = self._plan_after(utime, cutoff, again, held=held, pinned=pinned)
+        replanned = self._plan_after(
+            utime, cutoff, again, held=held, pinned=pinned, cut_entry=cut_entry
+        )
         log.add_events(again.events)
         return replanned
 
@@ -806,6 +839,7 @@ class RollingHorizonDITL(DITL):
         *,
         held: Sequence[Pointing] = (),
         pinned: Sequence[PlanEntry] = (),
+        cut_entry: PlanEntry | None = None,
     ) -> tuple[list[PlanEntry], list[PlanEntry], list[PlanEntry], int]:
         """Plan the horizon after the committed activities.
 
@@ -820,6 +854,7 @@ class RollingHorizonDITL(DITL):
         """
         committed, dropped = self._committed_at(cutoff)
         leading = [*committed, *pinned]
+        targets = self._planning_targets(leading, cut_entry=cut_entry)
         start_state = self._start_state(leading, utime, cutoff)
         start = start_state.time if start_state is not None else cutoff
         horizon_end = min(utime + self.horizon.total_seconds(), self.uend)
@@ -853,7 +888,7 @@ class RollingHorizonDITL(DITL):
                 self.allocator.ctx.coverage = self.coverage
             # Allocated from the exposure that remains, so nothing is used.
             self.allocation = self.allocator.allocate(
-                self.targets,
+                targets,
                 start,
                 reserved,
                 unplanned={int(t.obsid) for t in self._too_targets.values()},
@@ -863,7 +898,7 @@ class RollingHorizonDITL(DITL):
             used = self._used_by_bin(self.allocation, leading)
         if self.allocation is not None:
             options["allocated"] = self.allocation.allocated(
-                [int(t.obsid) for t in self.targets if not t.done],
+                [int(t.obsid) for t in targets if not t.done],
                 start,
                 horizon_end,
                 used,
@@ -941,7 +976,7 @@ class RollingHorizonDITL(DITL):
             self.config,
             # Finished and held targets too: the scheduler does not place
             # them, but their science counts towards their programs' shares.
-            self.targets,
+            targets,
             _as_datetime(start),
             _as_datetime(horizon_end),
             step_size=self.step_size,
@@ -952,6 +987,7 @@ class RollingHorizonDITL(DITL):
             start_state=start_state,
             reserved_seconds=reserved,
             reserved_visits=self._reserved_visits(leading, utime),
+            reserved_visit_windows=self._reserved_visit_windows(leading, utime),
             held=[int(t.obsid) for t in held],
             start_volume_gb=self._recorder_volume_at(utime, start, leading),
             start_momentum_eci_n_m_s=self._momentum_start(utime, start, committed),
@@ -978,6 +1014,49 @@ class RollingHorizonDITL(DITL):
         self._replan_solver_search_limits.extend(self._last_plan.solver_search_limits)
         self._replan_solver_reused_chunks += self._last_plan.solver_reused_chunks
         return (committed, dropped, [*pinned, *entries], len(scheduler.unplaced))
+
+    def _planning_targets(
+        self, committed: Sequence[PlanEntry], *, cut_entry: PlanEntry | None = None
+    ) -> list[Pointing]:
+        """Project accepted or proposed cuts without changing flown history.
+
+        A window marked visited while collecting must reopen if this plan
+        stops its attempt short. The real request records that interruption
+        when its command finishes, after all science before the cut is credited.
+        """
+        cuts = {
+            int(entry.obsid): self._pending_interruptions[id(entry)]
+            for entry in committed
+            if id(entry) in self._pending_interruptions
+        }
+        if cut_entry is not None:
+            cuts[int(cut_entry.obsid)] = float(
+                cut_entry.collection_end
+                if cut_entry.collection_end is not None
+                else cut_entry.end
+            )
+        targets = []
+        for target in self.targets:
+            at = cuts.get(int(target.obsid))
+            if at is None:
+                targets.append(target)
+                continue
+            # These read-only runtime inputs can contain native objects that
+            # cannot be copied. Every mutable part of request history is copied.
+            memo: dict[int, object] = {}
+            for runtime in (
+                target.config,
+                target.constraint,
+                target.acs_config,
+                target.ephem,
+                target.saa,
+            ):
+                if runtime is not None:
+                    memo[id(runtime)] = runtime
+            projected = deepcopy(target, memo)
+            projected.record_interruption(at)
+            targets.append(projected)
+        return targets
 
     def _interrupt_for(
         self, too: TOORequest, utime: float, cutoff: float, log: DITLLog
@@ -1471,6 +1550,50 @@ class RollingHorizonDITL(DITL):
             obsid = int(entry.obsid)
             visits[obsid] = max(visits.get(obsid, 0.0), float(entry.collection_end))
         return visits
+
+    def _reserved_visit_windows(
+        self, committed: Sequence[PlanEntry], utime: float
+    ) -> dict[int, int]:
+        """Recorded windows of whole visits still committed to collect after now.
+
+        Preserve the window even when sequence overhead extends its science
+        into the next window's opening; elapsed time cannot identify it. A
+        pending cut attempt does not reserve its window against a whole retry.
+        """
+        targets = {int(t.obsid): t for t in self.targets if t.visit_windows}
+        windows: dict[int, int] = {}
+        sequence_seconds: dict[tuple[int, int], float] = {}
+        pending_sequences: set[tuple[int, int]] = set()
+        for entry in committed:
+            if (
+                entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES
+                or entry.calibration
+                or entry.visit is None
+                or entry.collection_end is None
+                or int(entry.obsid) not in targets
+            ):
+                continue
+            obsid = int(entry.obsid)
+            seconds = entry.collection_seconds_between(
+                float(entry.begin), float(entry.end)
+            )
+            if seconds <= 0:
+                continue
+            pending = float(entry.collection_end) > utime
+            if entry.step is not None:
+                key = (obsid, entry.visit)
+                sequence_seconds[key] = sequence_seconds.get(key, 0.0) + seconds
+                if pending:
+                    pending_sequences.add(key)
+            elif pending and seconds >= targets[obsid].per_visit_seconds - 1e-6:
+                windows[obsid] = max(windows.get(obsid, -1), entry.visit)
+        for obsid, visit in pending_sequences:
+            if (
+                sequence_seconds[obsid, visit]
+                >= targets[obsid].per_visit_seconds - 1e-6
+            ):
+                windows[obsid] = max(windows.get(obsid, -1), visit)
+        return windows
 
     def _splice(
         self,
