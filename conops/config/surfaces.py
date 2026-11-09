@@ -17,6 +17,7 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from ._base import ConfigModel
+from .geometry import PanelGeometry
 
 if TYPE_CHECKING:
     from .instrument import Payload
@@ -45,6 +46,10 @@ class Surface(ConfigModel):
     )
     normal: Vector3 = Field(description="The plate's outward unit normal")
     area_m2: float = Field(gt=0.0, description="The plate's area, in square metres")
+    geometry: PanelGeometry | None = Field(
+        default=None,
+        description="Optional rectangular outline for display, in the same body frame",
+    )
     specular_reflectivity: float = Field(
         default=0.2,
         ge=0.0,
@@ -75,6 +80,16 @@ class Surface(ConfigModel):
         normal = _unit(self.normal, "surface normal")
         if normal != self.normal:
             object.__setattr__(self, "normal", normal)
+        if self.geometry is not None:
+            geometry = self.geometry
+            if not np.allclose(geometry.center_m, self.center_m, rtol=0, atol=1e-9):
+                raise ValueError("surface geometry must use the surface center_m")
+            if not np.isclose(geometry.width_m * geometry.height_m, self.area_m2):
+                raise ValueError("surface geometry must have the surface area_m2")
+            if not np.isclose(abs(np.dot(np.cross(geometry.u, geometry.v), normal)), 1):
+                raise ValueError(
+                    "surface geometry must lie perpendicular to its normal"
+                )
         return self
 
 
@@ -120,6 +135,7 @@ def box_surfaces(
             center_m=center,
             normal=normal,
             area_m2=area,
+            geometry=None,
             **coefficients,
         )
         for face, center, normal, area in faces

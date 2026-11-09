@@ -6,11 +6,9 @@ Jupyter.
 
 Coordinate system (spacecraft body frame)
 ------------------------------------------
-  +X  boresight / telescope pointing direction
-  +Y  spacecraft "up"
-  +Z  completes the right-handed system
+All component vectors are written in the configured spacecraft body frame.
+The default frame has +X boresight and +Y Sun-facing side.
 
-Component placement rules
 Component placement rules
 --------------------------
   Telescope   – cylinder extending in the boresight direction from the bus surface.
@@ -416,7 +414,10 @@ def plot_spacecraft_3d(
         (default ``True``).
     bus_half_dims:
         ``(half_x, half_y, half_z)`` extents of the spacecraft bus box in
-        metres.  Defaults to ``(1.0, 0.55, 0.55)``.
+        metres. Defaults to ``(1.0, 0.55, 0.55)``. The box and synthetic
+        telescope are replaced by configured surfaces when present. Surfaces
+        without geometry are illustrated as squares preserving center, normal
+        and area; their actual outlines are unknown.
     title:
         Figure title.  Falls back to the spacecraft bus name from config.
 
@@ -449,7 +450,59 @@ def plot_spacecraft_3d(
     bus_name = getattr(
         getattr(config, "spacecraft_bus", None), "name", "Spacecraft Bus"
     )
-    traces.append(_box_mesh(hx, hy, hz, name=bus_name, color=_C_BUS))
+    surface_model = config.spacecraft_bus.surfaces
+    surfaces = surface_model.surfaces if surface_model is not None else []
+    panels = config.solar_panel.panels if config.solar_panel is not None else []
+    for surface in surfaces:
+        # Panel front/back plates already have explicit display geometry below.
+        if any(
+            panel.geometry is not None
+            and np.allclose(
+                panel.geometry.center_m, surface.center_m, rtol=0, atol=1e-9
+            )
+            and np.isclose(
+                panel.geometry.width_m * panel.geometry.height_m, surface.area_m2
+            )
+            and np.isclose(abs(np.dot(_unit(panel.normal), surface.normal)), 1)
+            for panel in panels
+        ):
+            continue
+        center = np.asarray(surface.center_m, dtype=float)
+        normal = np.asarray(surface.normal, dtype=float)
+        if surface.geometry is not None:
+            surface_geom = surface.geometry
+            u, v = np.asarray(surface_geom.u), np.asarray(surface_geom.v)
+            width, height = surface_geom.width_m, surface_geom.height_m
+        else:
+            u, v = _perp_pair(normal)
+            width = height = math.sqrt(surface.area_m2)
+        if np.dot(np.cross(u, v), normal) < 0:
+            v = -v
+        traces.append(
+            _flat_rect_mesh(
+                center,
+                u,
+                v,
+                width,
+                height,
+                _C_BUS,
+                surface.name,
+                legendgroup="surfaces",
+            )
+        )
+        if show_normals:
+            traces.extend(
+                _arrow_traces(
+                    center,
+                    normal,
+                    _NORMAL_LEN,
+                    _C_NORMAL,
+                    f"{surface.name} normal",
+                    legendgroup="surface_normals",
+                )
+            )
+    if not surfaces:
+        traces.append(_box_mesh(hx, hy, hz, name=bus_name, color=_C_BUS))
 
     # ------------------------------------------------------------------ #
     # 2. Telescope / payload instruments                                   #
@@ -458,7 +511,7 @@ def plot_spacecraft_3d(
     instruments = list(getattr(payload, "instruments", []) or [])
 
     scope_legend_shown = False
-    for inst in instruments:
+    for inst in [] if surfaces else instruments:
         inst_type = getattr(inst, "instrument_type", None)
         if inst_type != "Telescope":
             continue
@@ -798,10 +851,12 @@ def plot_spacecraft_3d(
     if show_axes:
         origin = np.zeros(3)
         for direction, color, label in [
-            (np.array([1.0, 0.0, 0.0]), _C_X, "+X (boresight)"),
-            (np.array([0.0, 1.0, 0.0]), _C_Y, "+Y (up)"),
+            (np.array([1.0, 0.0, 0.0]), _C_X, "+X"),
+            (np.array([0.0, 1.0, 0.0]), _C_Y, "+Y"),
             (np.array([0.0, 0.0, 1.0]), _C_Z, "+Z"),
         ]:
+            if np.allclose(direction, config.spacecraft_bus.frame.boresight):
+                label += " (boresight)"
             traces.extend(
                 _arrow_traces(
                     origin,
@@ -824,9 +879,17 @@ def plot_spacecraft_3d(
     fig = go.Figure(data=traces)
 
     # Compute a sensible axis range
-    scope_reach = hx + 2.5  # telescope extends in +X
-    panel_reach = max(hy + 2.5, hz + 1.5)
-    rng = max(scope_reach, panel_reach, _AXIS_LEN + 0.5)
+    extent = max(
+        (
+            abs(float(value))
+            for trace in traces
+            for axis in (trace.x, trace.y, trace.z)
+            if axis is not None
+            for value in axis
+        ),
+        default=_AXIS_LEN,
+    )
+    rng = max(extent * 1.1, _AXIS_LEN + 0.5)
 
     fig.update_layout(
         title=dict(
@@ -838,7 +901,7 @@ def plot_spacecraft_3d(
         font=dict(color="white"),
         scene=dict(
             xaxis=dict(
-                title="X (boresight)",
+                title="X",
                 range=[-rng, rng],
                 backgroundcolor=_BG,
                 gridcolor="rgba(80,80,120,0.4)",
@@ -846,7 +909,7 @@ def plot_spacecraft_3d(
                 color="rgba(200,200,220,0.8)",
             ),
             yaxis=dict(
-                title="Y (up)",
+                title="Y",
                 range=[-rng, rng],
                 backgroundcolor=_BG,
                 gridcolor="rgba(80,80,120,0.4)",
