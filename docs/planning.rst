@@ -498,6 +498,11 @@ rather than booked by segment (see `Planning within the wheels`_).
 Planning within the wheels
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Dispatch converts each sequence step's pointing and instrument roll through
+that step's mounting into a physical spacecraft body attitude before forecasting
+momentum. Predicted torques therefore use the attitude execution will command,
+including visits that change instruments or use a different declared body frame.
+
 Where the configuration tracks stored momentum (see the stored momentum under
 :doc:`configuration`), every plan is forecast for it.
 :class:`~conops.schedulers.momentum.MomentumForecast` integrates the configured
