@@ -2002,6 +2002,59 @@ class QueueDITL(DITLMixin, DITLStats):
             return timing
         return self._timing_for(ppt)
 
+    def _sequence_fits_window(self, slew: Slew) -> bool:
+        """Check the whole protected visit with grid-timed, physical step slews."""
+        run = self._sequence
+        ppt = self.ppt
+        if run is None or ppt is None:
+            return True
+        context = SchedulingContext(
+            self.config, self.begin, self.end, step_size=self.step_size
+        )
+        parent = run.parent
+        sequence = run.sequence
+        if (
+            ppt.collection_begin is None
+            or ppt.collection_end is None
+            or ppt.collection_end - ppt.collection_begin
+            < sequence.steps[0].duration_seconds - TIME_TOLERANCE_S
+        ):
+            return False
+        cursor = (
+            float(ppt.collection_begin or slew.slewend)
+            + sequence.steps[0].duration_seconds
+            + self._ppt_timing(ppt).post_collection_seconds
+        )
+        previous = (slew.endra, slew.enddec, slew.endroll)
+        optimum = self._power_optimal_roll(ppt, float(slew.slewstart))
+        limit = self.config.spacecraft_bus.attitude_control.max_roll_from_optimum_deg
+        for index, step in enumerate(sequence.steps[1:], start=1):
+            start = context.ceil_step(cursor)
+            if start >= context.uend:
+                return False
+            pointing = parent.step_pointing(index)
+            if sequence.pointing_of(
+                index, parent.ra, parent.dec
+            ) != sequence.pointing_of(index - 1, parent.ra, parent.dec):
+                optimum = self._power_optimal_roll(pointing, start)
+            roll = pointing.requested_roll(optimum, limit)
+            if roll is None:
+                return False
+            pose = pointing.target_body_attitude(float(roll), at=start)
+            following = context.slew(previous, pose, start, obsid=int(parent.obsid))
+            cursor = (
+                float(following.slewend)
+                + self._ppt_timing(pointing).total_seconds
+                + step.duration_seconds
+            )
+            if cursor > context.uend:
+                return False
+            previous = pose
+        activity_begin = self._next_activity_begin(float(slew.slewstart))
+        if activity_begin is not None and context.ceil_step(cursor) > activity_begin:
+            return False
+        return True
+
     def _begin_sequence(self, parent: Pointing, utime: float) -> Pointing:
         """Start a visit of ``parent``: its first step is the observation,
         admitted as any other; the visit's beginning is logged once it is."""
@@ -5385,6 +5438,16 @@ class QueueDITL(DITLMixin, DITLStats):
                     return None
                 if not self._within_momentum(utime, ra, dec, slew):
                     return None
+            if not self._sequence_fits_window(slew):
+                self.log.log_event(
+                    utime=utime,
+                    event_type="QUEUE",
+                    obsid=self.ppt.obsid,
+                    description="Protected visit rejected: the whole visit does not fit before a required activity or run boundary",
+                    acs_mode=self.acs.acsmode,
+                )
+                self._retry_fetch_without_current_ppt(utime, ra, dec)
+                return None
             if self._sequence is not None:
                 self._sequence.optimum = self._power_optimal_roll(
                     self.ppt, request.start
