@@ -655,6 +655,12 @@ commands any science entries. Each planned step carries the same ``visit_begin``
 time so rolling replans keep every remaining step once the visit is committed.
 An urgent ToO waits for that visit to finish before it can begin.
 
+Dispatch checks the complete visit again after its actual ingress is known.
+Every step's grid-aligned slew, setup, collection and final cleanup must fit
+before the next required activity and the run end. If a later step has an
+inadmissible roll, the visit is rejected before collecting its first step;
+an indivisible visit cannot be admitted as a partial chain.
+
 Dispatch (:class:`~conops.ditl.queue_ditl.QueueDITL`) keeps within the recorder
 too. When it selects the next target it works out how much the recorder can take
 now: the most that keeps the volume under the planning limit at every contact's
