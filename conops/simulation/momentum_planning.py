@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from ..targets import Pointing
 
 
+_IDLE_RECOVERY_ATTITUDE_TOLERANCE_DEG = 1e-8
+
+
 @dataclass(frozen=True)
 class MomentumObservation:
     slew: Slew
@@ -277,7 +280,7 @@ class MomentumObservationPlanner:
                 # momentum-limited escape remains possible at the next tick.
                 if (
                     quaternion_attitude_delta(*initial.attitude, ra, dec, roll)[0]
-                    <= 1e-8
+                    <= _IDLE_RECOVERY_ATTITUDE_TOLERANCE_DEG
                 ):
                     continue
                 result = self.recovery(initial, momentum, (ra, dec, roll))

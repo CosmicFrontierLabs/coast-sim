@@ -1,57 +1,67 @@
 """Shared sampled momentum prediction and execution guard.
 
 Tracks inertial total angular momentum; actuator demand is R H - I omega.
-Candidate forecasts are independent copies, never updates to the live state.
-Trajectory intervals bound the interior actuator demand using a shared sampled
-torque model. This is not CMG steering or certification of the true continuous external
-torque. No unloading or unknown disturbance torques are invented here.
+Candidate forecasts are independent copies, never updates to the live state;
+a committed forecast is written back to the live tracker, which the
+simulation shares for its dumps and telemetry. Trajectory intervals bound the
+interior actuator demand using a shared sampled torque model. This is not CMG
+steering or certification of the true continuous external torque. A thruster
+dump that empties the live tracker starts the forecast afresh from what it
+holds; no other unloading or unknown disturbance torque is invented here.
 """
 
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
 from math import floor
 
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
-from ..common.ephemeris import position_vectors
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
 from .attitude import AttitudeExecutionError, AttitudeState, AttitudeTrajectory
 from .momentum import (
-    EARTH_GRAVITATIONAL_PARAMETER_KM3_S2,
     MomentumSample,
+    OrbitTables,
     StoredMomentumTracker,
+    build_torque_sources,
 )
 from .slew import Slew
+
+_MIN_ORBIT_SAMPLES = 2
+_MAX_CERTIFICATION_DEPTH = 18
 
 
 class MomentumLimitError(AttitudeExecutionError):
     """No physically admitted continuation: the run must not report success."""
 
 
-@dataclass(frozen=True)
-class MomentumForecast:
+class MomentumForecast(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     tracker: StoredMomentumTracker
     sample: MomentumSample
     utime: float
     peak_n_m_s: float
     first_violation: float | None = None
     uncertified_interval: tuple[float, float] | None = None
-    path: "_MomentumPath | None" = field(default=None, compare=False, repr=False)
+    path: "_MomentumPath | None" = Field(default=None, repr=False, exclude=True)
 
 
-@dataclass
-class _MomentumPath:
+class _MomentumPath(BaseModel):
     """Integration knots owned by an immutable physical trajectory.
 
     Partial scheduler ticks read the same torque polynomial, without inserting
     a new integration knot or changing the forecast for subsequent ticks.
     """
 
-    trajectory: AttitudeTrajectory | None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Trajectories are validated by the executor and retained by identity.
+    # Their protocol-based internals are not another record-validation boundary.
+    trajectory: SkipValidation[AttitudeTrajectory | None]
     state_at: Callable[[float], AttitudeState]
     signature: tuple[float, float, bytes]
     nodes: list[MomentumForecast]
@@ -59,9 +69,22 @@ class _MomentumPath:
 
 
 class MomentumBudget:
+    """The capacity enforced on the executed motion.
+
+    ``tracker`` is the simulation's live tracker where it has one: the
+    budget integrates into it, so the dumps, the fault checks and the
+    telemetry read the momentum enforcement certified. Without one the
+    budget builds a tracker from the configuration's torque sources.
+    """
+
     def __init__(
-        self, config: MissionConfig, ephem: rust_ephem.Ephemeris, initial: AttitudeState
+        self,
+        config: MissionConfig,
+        ephem: rust_ephem.Ephemeris,
+        initial: AttitudeState,
+        tracker: StoredMomentumTracker | None = None,
     ):
+        self.config = config
         acs = config.spacecraft_bus.attitude_control
         settings = acs.stored_momentum
         assert settings.capacity_n_m_s is not None
@@ -78,10 +101,11 @@ class MomentumBudget:
         self.step = min(
             settings.max_sample_interval_s, settings.max_attitude_step_deg / fastest
         )
-        self.times = np.array([t.timestamp() for t in ephem.timestamp])
-        self.positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=float)
+        self.orbit = OrbitTables.from_ephem(ephem)
+        self.times = self.orbit.times
+        self.positions = self.orbit.positions_eci_km
         if (
-            len(self.times) < 2
+            len(self.times) < _MIN_ORBIT_SAMPLES
             or self.positions.shape != (len(self.times), 3)
             or not np.isfinite(self.times).all()
             or not np.isfinite(self.positions).all()
@@ -90,29 +114,41 @@ class MomentumBudget:
             raise ValueError(
                 "Momentum enforcement requires finite, ordered orbit samples"
             )
+        if tracker is None:
+            tracker = StoredMomentumTracker(
+                self.inertia,
+                settings.initial_momentum_body_n_m_s,
+                sources=build_torque_sources(config),
+            )
         # Do not pretend sub-sampling motion repairs an under-sampled orbit.
         if (
-            settings.gravity_gradient_enabled
+            tracker.sources
             and np.diff(self.times).max() > settings.max_sample_interval_s + 1e-6
         ):
             raise ValueError(
-                "Gravity-gradient enforcement requires finer ephemeris samples"
+                "Enforcement with environmental torques requires finer ephemeris samples"
             )
-        tracker = StoredMomentumTracker(
-            self.inertia,
-            settings.initial_momentum_body_n_m_s,
-            max_sample_interval_s=self.step,
-            gravity_gradient_enabled=settings.gravity_gradient_enabled,
+        tracker.max_sample_interval_s = self.step
+        self.live = tracker
+        """The tracker the simulation reads: every committed forecast is
+        written back to it."""
+        for source in tracker.sources:
+            if not callable(getattr(source, "torque_bound_n_m", None)):
+                raise ValueError(
+                    f"torque source {source.name} has no bound for capacity enforcement"
+                )
+        self.max_external_torque = float(
+            sum(source.torque_bound_n_m(self.orbit) for source in tracker.sources)
         )
-        sample = self._sample(tracker, initial)
+        sample = self._sample(self.live, initial)
         assert sample.actuator_momentum_norm_n_m_s is not None
         peak = sample.actuator_momentum_norm_n_m_s
         self.current = MomentumForecast(
-            tracker,
-            sample,
-            initial.utime,
-            peak,
-            initial.utime if peak > self.capacity else None,
+            tracker=self.live,
+            sample=sample,
+            utime=initial.utime,
+            peak_n_m_s=peak,
+            first_violation=initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
         slowest_fraction = settings.slew_rate_fractions[-1]
@@ -130,29 +166,51 @@ class MomentumBudget:
         self.idle_escape_momentum = float(np.linalg.norm(self.inertia, 2)) * np.deg2rad(
             fastest * slowest_fraction
         )
-        self.max_external_torque = 0.0
-        if settings.gravity_gradient_enabled:
-            # Positions are linearly interpolated. Include the minimum radius
-            # inside each segment, rather than just its endpoints.
-            first, delta = self.positions[:-1], np.diff(self.positions, axis=0)
-            length2 = np.sum(delta * delta, axis=1)
-            fraction = np.clip(
-                -np.sum(first * delta, axis=1) / np.where(length2 > 0, length2, 1), 0, 1
-            )
-            radius = float(
-                np.linalg.norm(first + fraction[:, None] * delta, axis=1).min()
-            )
-            moments = np.linalg.eigvalsh(self.inertia)
-            self.max_external_torque = (
-                float(
-                    1.5
-                    * EARTH_GRAVITATIONAL_PARAMETER_KM3_S2
-                    * (moments[-1] - moments[0])
-                    / radius**3
-                )
-                if radius > 0
-                else float("inf")
-            )
+
+    def adopt(self, tracker: StoredMomentumTracker, state: AttitudeState) -> None:
+        """Integrate into ``tracker`` from now on, as the simulation's live
+        tracker, starting the forecast from what it holds at ``state``."""
+        tracker.max_sample_interval_s = self.step
+        self.live = tracker
+        self.unloaded(state)
+
+    def unloaded(self, state: AttitudeState) -> MomentumForecast:
+        """The live tracker's momentum has changed outside the forecast, as
+        a thruster dump changes it: the forecast starts again from what it
+        holds at ``state``, and any certified path is dropped."""
+        tracker = self.live.copy()
+        sample = self._sample(tracker, state)
+        assert sample.actuator_momentum_norm_n_m_s is not None
+        norm = sample.actuator_momentum_norm_n_m_s
+        self.current = MomentumForecast(
+            tracker=tracker,
+            sample=sample,
+            utime=state.utime,
+            peak_n_m_s=norm,
+            first_violation=state.utime if norm > self.capacity else None,
+        )
+        self.live.assign(tracker)
+        return self.current
+
+    def _interpolate(self, table: np.ndarray, utime: float) -> np.ndarray:
+        return np.array(
+            [np.interp(utime, self.times, table[:, i]) for i in range(3)], dtype=float
+        )
+
+    def _sunlit(self, utime: float) -> bool:
+        """Whether the Sun shines on the spacecraft at the nearest ephemeris
+        sample; it does where the configuration cannot say."""
+        constraint = self.config.constraint
+        if getattr(constraint, "ephem", None) is None or not callable(
+            getattr(constraint, "in_eclipse", None)
+        ):
+            return True
+        index = int(np.clip(np.searchsorted(self.times, utime), 0, len(self.times) - 1))
+        if index > 0 and abs(self.times[index - 1] - utime) < abs(
+            self.times[index] - utime
+        ):
+            index -= 1
+        return not bool(constraint.in_eclipse(0.0, 0.0, float(self.times[index])))
 
     def _sample(
         self,
@@ -162,13 +220,28 @@ class MomentumBudget:
     ) -> MomentumSample:
         if not self.times[0] <= state.utime <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        position = np.array(
-            [np.interp(state.utime, self.times, self.positions[:, i]) for i in range(3)]
-        )
+        position = self._interpolate(self.positions, state.utime)
+        orbit = self.orbit
         return tracker.update(
             utime=state.utime,
             position_eci_km=position,
             attitude_quaternion_eci_to_body=state.quaternion,
+            sun_eci_km=(
+                self._interpolate(orbit.sun_positions_eci_km, state.utime) - position
+                if orbit.sun_positions_eci_km is not None
+                else None
+            ),
+            sunlit=self._sunlit(state.utime),
+            velocity_eci_km_s=(
+                self._interpolate(orbit.velocities_eci_km_s, state.utime)
+                if orbit.velocities_eci_km_s is not None
+                else None
+            ),
+            position_ecef_km=(
+                self._interpolate(orbit.positions_ecef_km, state.utime)
+                if orbit.positions_ecef_km is not None
+                else None
+            ),
             angular_velocity_body_rad_s=np.deg2rad(state.angular_velocity_body),
             torque_eci_n_m=torque,
         )
@@ -179,7 +252,7 @@ class MomentumBudget:
     ) -> npt.NDArray[np.float64]:
         return np.asarray(
             quaternion_to_rotation_matrix(state.quaternion).T
-            @ np.asarray(sample.gravity_gradient_torque_body_n_m)
+            @ np.asarray(sample.torque_body_n_m)
         )
 
     def _fixed_axis_within_limit(
@@ -231,7 +304,7 @@ class MomentumBudget:
             ) * duration / 2 <= self.capacity * (1 + 1e-10):
                 return True
             return (
-                depth < 18
+                depth < _MAX_CERTIFICATION_DEPTH
                 and certify(left, middle, depth + 1)
                 and certify(middle, right, depth + 1)
             )
@@ -283,7 +356,14 @@ class MomentumBudget:
                 )
             if not safe:
                 violation, uncertified = base.utime, (base.utime, end)
-        return MomentumForecast(tracker, sample, end, peak, violation, uncertified)
+        return MomentumForecast(
+            tracker=tracker,
+            sample=sample,
+            utime=end,
+            peak_n_m_s=peak,
+            first_violation=violation,
+            uncertified_interval=uncertified,
+        )
 
     def forecast(
         self,
@@ -324,15 +404,21 @@ class MomentumBudget:
             ):
                 violation = base.utime
             origin = MomentumForecast(
-                tracker,
-                sample,
-                base.utime,
-                peak,
-                violation,
-                base.uncertified_interval if initial is not None else None,
+                tracker=tracker,
+                sample=sample,
+                utime=base.utime,
+                peak_n_m_s=peak,
+                first_violation=violation,
+                uncertified_interval=base.uncertified_interval
+                if initial is not None
+                else None,
             )
             path = _MomentumPath(
-                trajectory, frozen_state_at, signature, [origin], [base.utime]
+                trajectory=trajectory,
+                state_at=frozen_state_at,
+                signature=signature,
+                nodes=[origin],
+                times=[base.utime],
             )
         boundaries = trajectory.boundaries if trajectory is not None else ()
         origin_time = path.times[0]
@@ -360,7 +446,7 @@ class MomentumBudget:
             result = self._interval(
                 path, before, end, torque=first + fraction * (last_torque - first)
             )
-        return replace(result, path=path)
+        return result.model_copy(update={"path": path})
 
     def require(self, forecast: MomentumForecast) -> None:
         if forecast.uncertified_interval is not None:
@@ -378,3 +464,5 @@ class MomentumBudget:
     def commit(self, forecast: MomentumForecast) -> None:
         self.require(forecast)
         self.current = forecast
+        if forecast.tracker is not self.live:
+            self.live.assign(forecast.tracker)

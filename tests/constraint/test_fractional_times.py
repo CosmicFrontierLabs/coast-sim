@@ -69,7 +69,9 @@ def test_momentum_slew_checks_fractional_samples_with_real_ephemeris(tmp_path, p
                 max_slew_rate=2,
                 slew_acceleration=1,
                 settle_time=3,
-                stored_momentum=StoredMomentumConfig(capacity_n_m_s=100),
+                stored_momentum=StoredMomentumConfig(
+                    capacity_n_m_s=100, enforce_capacity=True
+                ),
             ),
             star_trackers=StarTrackerConfiguration(
                 star_trackers=[], min_functional_trackers=0, modes_require_lock=[]

@@ -45,6 +45,9 @@ from .config import (
     SolarPanelSet,
     SpacecraftBus,
     StoredMomentumConfig,
+    Surface,
+    SurfaceModel,
+    ThrusterDumpConfig,
 )
 from .ditl import (
     DITL,
@@ -184,6 +187,9 @@ __all__ = [
     "SolarPanelSet",
     "SpacecraftBus",
     "StoredMomentumConfig",
+    "Surface",
+    "SurfaceModel",
+    "ThrusterDumpConfig",
     "StoredMomentumTracker",
     "TOORequest",
     "create_ditl",

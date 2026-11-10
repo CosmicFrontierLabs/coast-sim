@@ -25,6 +25,9 @@ from ..targets import PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
 from .consumable import ConsumableLedger, Removal
 
+_FLOW_ZERO_TOLERANCE_GB = 1e-12
+_AMOUNT_EQUAL_TOLERANCE_GB = 1e-9
+
 
 class DataFlow(NamedTuple):
     """Gb produced uniformly over an interval, or at an instantaneous boundary."""
@@ -59,16 +62,18 @@ def combine_amounts(
             key = (flow.begin, flow.end)
             flows[key] = flows.get(key, 0.0) + factor * flow.volume
     return tuple(
-        DataFlow(lo, hi, v) for (lo, hi), v in sorted(flows.items()) if abs(v) > 1e-12
+        DataFlow(lo, hi, v)
+        for (lo, hi), v in sorted(flows.items())
+        if abs(v) > _FLOW_ZERO_TOLERANCE_GB
     )
 
 
 def amounts_equal(a: RecorderAmount, b: RecorderAmount) -> bool:
     d = combine_amounts(a, b, -1.0)
     return (
-        abs(d) <= 1e-9
+        abs(d) <= _AMOUNT_EQUAL_TOLERANCE_GB
         if isinstance(d, (int, float))
-        else all(abs(f.volume) <= 1e-9 for f in d)
+        else all(abs(f.volume) <= _AMOUNT_EQUAL_TOLERANCE_GB for f in d)
     )
 
 
