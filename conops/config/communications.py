@@ -263,6 +263,16 @@ class CommunicationsSystem(ConfigModel):
         le=180.0,
     )
 
+    contact_policy: Literal["continuous", "scheduled"] = Field(
+        default="continuous",
+        description=(
+            "For omni and gimballed antennas: continuous retains available "
+            "station windows, tracks one station until it sets and hands over "
+            "to the best usable station. Scheduled books whole non-overlapping "
+            "passes. Fixed antennas always use spacecraft-tracking passes."
+        ),
+    )
+
     # Antenna polarization
     polarization: Polarization = Field(
         default=Polarization.CIRCULAR_RIGHT,

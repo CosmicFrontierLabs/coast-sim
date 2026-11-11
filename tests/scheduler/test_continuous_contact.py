@@ -498,8 +498,9 @@ class TestPlanning:
     @pytest.mark.parametrize(
         "scheduler_class", [PriorityScheduler, LocalSearchScheduler, CpSatScheduler]
     )
+    @pytest.mark.parametrize("contact_policy", ["continuous", "scheduled"])
     def test_science_during_a_contact_cannot_spend_future_downlink(
-        self, scheduler_class
+        self, scheduler_class, contact_policy
     ):
         options = {}
         if scheduler_class is CpSatScheduler:
@@ -513,11 +514,16 @@ class TestPlanning:
         elif scheduler_class is LocalSearchScheduler:
             options = {"max_iterations": 3, "seed": 1}
         config = _recorder_config()
+        config.spacecraft_bus.communications.contact_policy = contact_policy
         config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0.0)
         config.recorder.current_volume_gb = 17.0
         coverage = StationCoverage.for_config(config)
         assert coverage is not None
-        first = coverage.spans(T0, T0 + HOURS * HOUR)[0]
+        first = next(
+            s
+            for s in coverage.spans(T0, T0 + HOURS * HOUR)
+            if s.end - s.begin >= 8 * MIN
+        )
         begin = datetime.fromtimestamp(first.begin, timezone.utc)
         end = datetime.fromtimestamp(first.end + 5 * MIN, timezone.utc)
         target = _data_target(config, 1, 105.0, 10.0, 0.08, minutes=1, snapshot=1)

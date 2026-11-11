@@ -144,7 +144,9 @@ class TestSpans:
     ) -> None:
         _, coverage = omni
         lengths = [span.end - span.begin for span in coverage.spans(T0, END)]
-        assert 8 * MIN <= min(lengths) and max(lengths) <= 15 * MIN
+        # Continuous coverage also retains short views clipped by the
+        # ephemeris boundary and tails after a network handover.
+        assert 0 < min(lengths) and max(lengths) <= 15 * MIN
 
     def test_a_window_clips_the_span_at_its_edges(
         self, omni: tuple[MissionConfig, StationCoverage]
@@ -196,6 +198,7 @@ class TestPassBookings:
     def test_passtimes_carries_every_antenna_type(self, antenna_type) -> None:
         config = _config(HOURS, stations=True)
         config.spacecraft_bus.communications = _comms(antenna_type)
+        config.spacecraft_bus.communications.contact_policy = "scheduled"
         passes = PassTimes(config)
         passes.get(2025, 305)
 
@@ -233,6 +236,7 @@ class TestPassBookings:
         for station in config.ground_stations.stations:
             station.schedule_probability = 0.5
         config.spacecraft_bus.communications = _comms(AntennaType.OMNI)
+        config.spacecraft_bus.communications.contact_policy = "scheduled"
         coverage = StationCoverage(config)
 
         # Compare bookings before spacecraft attitude constraints are applied.
@@ -463,7 +467,10 @@ class TestScheduling:
         coverage = StationCoverage.for_config(config)
         assert coverage is not None
         assert int((coverage.visible.sum(axis=0) > 1).sum()) > 0
-        assert coverage.dropped_overlapping_passes
+        assert not coverage.dropped_overlapping_passes
+        np.testing.assert_array_equal(
+            coverage.scheduled.any(axis=0), coverage.visible.any(axis=0)
+        )
         for earlier, later in zip(
             coverage.scheduled_passes, coverage.scheduled_passes[1:]
         ):

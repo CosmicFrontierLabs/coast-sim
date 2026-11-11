@@ -1329,12 +1329,20 @@ class PassTimes(ContactScheduler):
 
         self._predict_range(timestamp_unix, startindex, endindex, apply_scheduling)
 
-    def predict(self) -> list[Pass]:
-        """Book passes over the entire ephemeris before execution starts."""
+    def predict(self, *, resolve_overlaps: bool = True) -> list[Pass]:
+        """Book passes over the entire ephemeris before execution starts.
+
+        With ``resolve_overlaps=False``, retain every accepted station window
+        for a network contact policy to select and trim, instead of dropping
+        whole overlapping windows. Probability is still drawn once per window.
+        """
         self.passes = []
+        self.dropped_overlapping_passes = []
         self.dropped_constraint_passes = []
         times = self.times
-        self._predict_range(times, 0, len(times), True)
+        self._predict_range(
+            times, 0, len(times), True, resolve_overlaps=resolve_overlaps
+        )
         return self.passes
 
     def restore_bookings(self, bookings: Sequence[tuple[float, float, str]]) -> None:
@@ -1373,6 +1381,8 @@ class PassTimes(ContactScheduler):
         startindex: int,
         endindex: int,
         apply_scheduling: bool,
+        *,
+        resolve_overlaps: bool = True,
     ) -> None:
         if startindex >= endindex:
             return
@@ -1421,5 +1431,5 @@ class PassTimes(ContactScheduler):
 
         # Order the passes by time
         self.passes.sort(key=lambda x: x.begin, reverse=False)
-        if apply_scheduling:
+        if apply_scheduling and resolve_overlaps:
             self._deconflict_overlapping_passes()

@@ -1,13 +1,10 @@
-"""Usable link coverage during scheduled ground-station passes.
+"""Usable network links without spacecraft-tracking activities.
 
-:class:`~conops.simulation.passes.PassTimes` predicts and books the passes.
-:class:`StationCoverage` models link rates, acquisitions and repoints for
-passes that require no spacecraft tracking, allowing downlink during science.
-Physical visibility alone does not provide a contact. One station is
-booked at a time. Every contact starts with the communications
-system's acquisition latency, and a handover adds its own, during which
-nothing is downlinked. Stations with a compatible downlink may be booked even
-when they are excluded from spacecraft-tracking activities.
+:class:`~conops.simulation.passes.PassTimes` predicts available station windows.
+Continuous coverage retains overlapping opportunities and hands over when the
+selected station sets. Whole-pass booking is an explicit alternative. Both
+policies preserve availability probabilities, acquisitions and antenna repoints,
+and allow downlink during science. Saved contact timelines replay unchanged.
 """
 
 from __future__ import annotations
@@ -111,12 +108,17 @@ class StationCoverage:
             Reconstruct them without a new scheduling decision; an empty
             sequence reserves no station time.
 
-    At each step of the ephemeris a station is in view when its elevation is
-    above its mask. :class:`~conops.simulation.passes.PassTimes` accepts windows at least
-    eight minutes long, draws each station's scheduling probability once
-    per window, and selects whole non-overlapping passes by downlink volume,
-    duration and earlier start. The configured random seed reproduces the
-    bookings over the same ephemeris. Every contact begins
+    At each step a station is in view above its elevation mask. The default
+    ``continuous`` contact policy draws availability once per visibility
+    window, retains overlapping windows of any length and tracks the selected
+    station until it sets or its link rate becomes zero. At acquisition or
+    handover it chooses the highest instantaneous effective downlink rate,
+    then highest elevation, then station code for a deterministic tie.
+    ``scheduled`` instead selects whole non-overlapping passes of at least
+    eight minutes by downlink volume, duration and earlier start. A supplied
+    contact timeline bypasses either selection policy and all probability
+    draws. The configured random seed reproduces availability over the same
+    ephemeris. Every contact begins
     the communications system's ``acquisition_seconds`` after its station's
     booked pass begins, and a switch straight from one station to another
     adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
@@ -276,13 +278,24 @@ class StationCoverage:
     def _schedule_passes(
         self, scheduled_passes: Sequence[tuple[float, float, str]] | None
     ) -> None:
-        """Consume the bookings predicted or restored by PassTimes.
+        """Select a network timeline, book whole passes, or restore a timeline.
 
         These reservations require station time, but no spacecraft tracking
         activity. Keep physical visibility separate from booked availability.
         """
         if scheduled_passes is None:
-            self.pass_times.predict()
+            communications = self.config.spacecraft_bus.communications
+            if (
+                communications is not None
+                and communications.contact_policy == "continuous"
+            ):
+                # The eight-minute minimum belongs to whole-pass booking,
+                # not physical network availability or a trimmed handover.
+                self.pass_times.minlen = 0
+                self.pass_times.predict(resolve_overlaps=False)
+                self.pass_times.restore_bookings(self._network_bookings())
+            else:
+                self.pass_times.predict()
         else:
             self.pass_times.restore_bookings(scheduled_passes)
         self.scheduled_passes = [
@@ -299,6 +312,54 @@ class StationCoverage:
             end = int(np.searchsorted(self.times, span.end))
             self.scheduled[k, start:end] = True
         self.scheduled &= self.visible
+
+    def _network_bookings(self) -> list[tuple[float, float, str]]:
+        """Follow available stations without discarding their overlapping tails.
+
+        Selection uses the rate at the switch, not a window's total volume.
+        A faster station rising does not interrupt the existing link.
+        """
+        available = np.zeros_like(self.visible)
+        for window in self.pass_times.passes:
+            station = self._station_index(window.station)
+            start = self.index(window.begin)
+            stop = int(np.searchsorted(self.times, window.end))
+            available[station, start:stop] = True
+        available &= self.visible & (self.rate_steps > 0.0)
+        bookings: list[tuple[float, float, str]] = []
+        current = -1
+        begin = 0.0
+        for step, timestamp in enumerate(self.times):
+            if current >= 0 and available[current, step]:
+                continue
+            candidates = np.flatnonzero(available[:, step])
+            chosen = (
+                min(
+                    (int(k) for k in candidates),
+                    key=lambda k: (
+                        -float(self.rate_steps[k, step]),
+                        -float(self.elevation_deg[k, step]),
+                        self.stations[k].code,
+                    ),
+                )
+                if len(candidates)
+                else -1
+            )
+            if chosen != current:
+                if current >= 0:
+                    bookings.append(
+                        (begin, float(timestamp), self.stations[current].code)
+                    )
+                current, begin = chosen, float(timestamp)
+        if current >= 0:
+            bookings.append(
+                (
+                    begin,
+                    float(self.times[-1]) + self.step_size,
+                    self.stations[current].code,
+                )
+            )
+        return bookings
 
     def _schedule_contacts(self) -> None:
         """Apply acquisitions, handovers and repoints to the booked passes."""
