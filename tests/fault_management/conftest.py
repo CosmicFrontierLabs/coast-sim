@@ -194,6 +194,7 @@ rust_ephem.Ephemeris.register(DummyEphemeris)
 def base_config() -> MissionConfig:
     # Minimal mocks for required subsystems
     spacecraft_bus = Mock(spec=SpacecraftBus)
+    spacecraft_bus.communications = None
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))

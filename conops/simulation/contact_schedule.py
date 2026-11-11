@@ -6,6 +6,7 @@ from typing import Protocol, TypeVar
 
 import numpy as np
 
+from ..common.enums import AntennaType
 from ..config import GroundStation, MissionConfig
 
 
@@ -49,7 +50,7 @@ def deconflict_contacts(
 
 
 class ContactScheduler:
-    """Accept station passes before antenna-specific execution is considered.
+    """Configure station booking before antenna-specific execution is considered.
 
     Probability is drawn once per eligible station visibility window, in
     station/time order. A configured seed reproduces the bookings when the
@@ -64,7 +65,15 @@ class ContactScheduler:
             else None
         )
         self.rng = rng if rng is not None else np.random.default_rng(valid_seed)
-        self.minlen = 8 * 60
+        communications = config.spacecraft_bus.communications
+        self.continuous_contacts = (
+            communications is not None
+            and communications.antenna_pointing.antenna_type != AntennaType.FIXED
+            and communications.contact_policy == "continuous"
+        )
+        # Short visibility windows and trimmed handovers are valid network
+        # contacts; the minimum belongs only to whole-pass booking.
+        self.minlen = 0 if self.continuous_contacts else 8 * 60
         self.schedule_chance = 1.0
 
     def _random(self) -> float:

@@ -17,8 +17,10 @@ from conops.targets import Plan
 from tests.scheduler.planning_scenario import T0, make_config
 
 
-def network(monkeypatch, antenna_type=AntennaType.OMNI, *, windows=None, rates=None):
-    config = make_config(2)
+def network(
+    monkeypatch, antenna_type=AntennaType.OMNI, *, windows=None, rates=None, hours=2
+):
+    config = make_config(hours)
     config.random_seed = 2029
     config.spacecraft_bus.communications = CommunicationsSystem(
         band_capabilities=[BandCapability(band="S", downlink_rate_mbps=1000)],
@@ -80,6 +82,77 @@ def test_continuous_chain_keeps_every_visible_step(monkeypatch, antenna_type):
     assert coverage.dropped_overlapping_passes == []
     # A faster station rising does not cause a premature handover.
     assert coverage.contact_at(T0 + 30 * 60).station == "S0"
+
+
+@pytest.mark.parametrize("entrypoint", ["predict", "get"])
+@pytest.mark.parametrize("antenna_type", [AntennaType.OMNI, AntennaType.GIMBALED])
+def test_pass_scheduler_books_continuous_handovers(
+    monkeypatch, entrypoint, antenna_type
+):
+    config, steps = network(monkeypatch, antenna_type)
+    scheduler = PassTimes(config)
+    if entrypoint == "predict":
+        scheduler.predict()
+    else:
+        scheduler.get(2025, 305)
+    assert [(p.begin, p.end, p.station) for p in scheduler.passes] == [
+        (T0, T0 + 35 * 60, "S0"),
+        (T0 + 35 * 60, T0 + 70 * 60, "S1"),
+        (T0 + 70 * 60, T0 + 110 * 60, "S2"),
+        (T0 + 110 * 60, T0 + steps * 60, "S3"),
+    ]
+    assert all(not p.requires_tracking for p in scheduler.passes)
+    assert scheduler.current_pass(T0 + 34 * 60).station == "S0"
+    assert scheduler.current_pass(T0 + 35 * 60).station == "S1"
+    assert scheduler.next_pass(T0).station == "S1"
+    assert not scheduler.dropped_overlapping_passes
+    # Coverage consumes the scheduler's bookings; it makes no selection of its own.
+    coverage = StationCoverage(config)
+    assert [(s.begin, s.end, s.station) for s in coverage.scheduled_passes] == [
+        (p.begin, p.end, p.station) for p in scheduler.passes
+    ]
+
+
+@pytest.mark.parametrize("entrypoint", ["predict", "get"])
+def test_pass_scheduler_keeps_short_network_windows(monkeypatch, entrypoint):
+    config, steps = network(monkeypatch, windows=[(0, 2), (2, 121)], rates=[10, 10])
+    scheduler = PassTimes(config)
+    if entrypoint == "predict":
+        scheduler.predict()
+    else:
+        scheduler.get(2025, 305)
+    assert [(p.begin, p.end, p.station) for p in scheduler.passes] == [
+        (T0, T0 + 120, "S0"),
+        (T0 + 120, T0 + steps * 60, "S1"),
+    ]
+
+
+def test_pass_scheduler_can_return_unscheduled_physical_windows(monkeypatch):
+    config, _ = network(monkeypatch)
+    for station in config.ground_stations.stations:
+        station.schedule_probability = 0
+    scheduler = PassTimes(config)
+    scheduler.get(2025, 305, apply_scheduling=False)
+    assert [p.station for p in scheduler.passes] == ["S0", "S1", "S2", "S3"]
+    assert scheduler.passes[0].end > scheduler.passes[1].begin
+
+
+def test_day_by_day_scheduling_keeps_the_link_across_midnight(monkeypatch):
+    config, steps = network(
+        monkeypatch, windows=[(0, 1500), (1400, 2881)], rates=[10, 20], hours=48
+    )
+    scheduler = PassTimes(config)
+    scheduler.get(2025, 305)
+    scheduler.get(2025, 306)
+    whole = PassTimes(config)
+    whole.predict()
+    # Two requested days exclude the ephemeris's final endpoint sample.
+    expected = [(T0, T0 + 1500 * 60, "S0"), (T0 + 1500 * 60, T0 + 2880 * 60, "S1")]
+    assert [(p.begin, p.end, p.station) for p in scheduler.passes] == expected
+    assert [(p.begin, p.end, p.station) for p in whole.passes] == [
+        expected[0],
+        (expected[1][0], T0 + steps * 60, "S1"),
+    ]
 
 
 def test_handover_selects_best_current_rate_and_ties_are_stable(monkeypatch):

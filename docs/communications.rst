@@ -90,7 +90,7 @@ The three repoint fields apply to a ``GIMBALED`` antenna only: an omni antenna h
 direction to re-point and a body-fixed one moves with the spacecraft.
 
 For omni and gimballed antennas, ``contact_policy="continuous"`` is the
-communications default. :class:`~conops.simulation.StationCoverage` retains
+communications default. :class:`~conops.simulation.PassTimes` retains
 all available visibility windows, including their overlapping tails and
 windows shorter than eight minutes. It selects the station with the highest
 instantaneous effective downlink rate, then highest elevation and station
@@ -99,6 +99,13 @@ becomes zero, then hands over to the best usable station. A faster station
 rising does not interrupt the current link. A chain of overlapping windows
 therefore supplies continuous network coverage instead of being reduced to
 whole, mutually exclusive passes.
+
+Both ``PassTimes.predict()`` (the whole ephemeris) and ``PassTimes.get()``
+(the requested days) produce the selected station reservations under this policy.
+The pass scheduler owns availability draws, station selection and trimming;
+:class:`~conops.simulation.StationCoverage` consumes its reservations and applies
+link rates and acquisition, handover and repoint outages. Calling the scheduler
+directly therefore produces the same handovers used by planning and execution.
 
 Station access is still distinct from visibility: ``schedule_probability``
 is drawn once per station visibility window and ``random_seed`` reproduces
