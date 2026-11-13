@@ -1015,7 +1015,7 @@ class PriorityScheduler:
             return addition
         addition = self._battery.addition(
             block.entry,
-            rest=block.end if block.is_pass else None,
+            rest=block.end if block.is_pass or block.entry.moves else None,
             path=slew.attitude if slew is not None else None,
             path_start=(
                 (float(slew.startra), float(slew.startdec), float(slew.startroll))
@@ -2765,10 +2765,10 @@ class PriorityScheduler:
             # Each step's hold was checked when the visit was built.
             return block
         violation = self.ctx.first_science_violation(
-            entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(block.end)
+            entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(float(entry.end))
         )
         if violation is None:
-            return block
+            return self._science_departure(block, slew)
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
         collection_end = violation - self.ctx.post_collection_for(int(entry.obsid))
@@ -2777,6 +2777,14 @@ class PriorityScheduler:
         entry.collection_end = collection_end
         entry.end = violation
         block.end = violation
+        return self._science_departure(block, slew)
+
+    def _science_departure(self, block: _Block, slew: Slew) -> _Block | None:
+        """Finish a science block at the tracked departure state, after braking."""
+        rest = self.ctx.science_rest(block.entry, slew)
+        if rest is None:
+            return None
+        block.end, block.attitude_out = rest
         return block
 
     def _visit(
@@ -2842,6 +2850,14 @@ class PriorityScheduler:
                 step_slew = self.ctx.slew(
                     previous, step_attitude, slew_begin, obsid=target.obsid
                 )
+                if pointing.moves:
+                    for _ in range(2):
+                        step_attitude = pointing.target_body_attitude(
+                            step_roll, at=float(step_slew.slewend)
+                        )
+                        step_slew = self.ctx.slew(
+                            previous, step_attitude, slew_begin, obsid=target.obsid
+                        )
                 if float(step_slew.slewend) > self.ctx.uend:
                     return None
                 if self.ctx.first_slew_violation(step_slew, ACSMode.SLEWING):
@@ -2867,6 +2883,8 @@ class PriorityScheduler:
                 is not None
             ):
                 return None
+            assert step_slew is not None
+            ra, dec = pointing.position_at(float(step_slew.slewend))
             entry = PlanEntry(
                 config=self.config,
                 name=pointing.name,
@@ -2874,9 +2892,9 @@ class PriorityScheduler:
                 instrument_modes=dict(pointing.instrument_modes),
                 science_data=pointing.science_data,
                 own_timing=target.own_timing,
-                track=list(target.track),
-                ra=pointing.ra,
-                dec=pointing.dec,
+                track=list(pointing.track),
+                ra=ra,
+                dec=dec,
                 roll=step_roll,
                 spacecraft_attitude=(
                     step_attitude if pointing.uses_mounted_attitude() else None
@@ -2898,9 +2916,12 @@ class PriorityScheduler:
             entry.exptime = step.duration_seconds
             steps.append(entry)
             slews.append(step_slew)
-            previous = step_attitude
+            rest = self.ctx.science_rest(entry, step_slew)
+            if rest is None:
+                return None
+            rest_time, previous = rest
             previous_roll = step_roll
-            cursor = step_end
+            cursor = max(step_end, rest_time)
         first = steps[0]
         visit_entry = PlanEntry(
             config=self.config,
@@ -2909,7 +2930,7 @@ class PriorityScheduler:
             instrument_modes=dict(target.instrument_modes),
             science_data=target.science_data,
             own_timing=target.own_timing,
-            track=list(target.track),
+            track=list(first.track),
             ra=first.ra,
             dec=first.dec,
             roll=first.roll,
@@ -2927,7 +2948,7 @@ class PriorityScheduler:
             ss_max=target.ss_max,
         )
         visit_entry.exptime = sequence.science_seconds
-        return _Visit(visit_entry, steps, slews, previous, float(steps[-1].end))
+        return _Visit(visit_entry, steps, slews, previous, cursor)
 
     def _science_entry(
         self,

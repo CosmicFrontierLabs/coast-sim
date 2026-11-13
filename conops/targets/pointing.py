@@ -432,6 +432,10 @@ class Pointing(PlanEntry):
             visit=self.visit,
             roll_deg=roll_deg,
             roll_offset_deg=roll_offset,
+            # Only an implicit target step follows its track. Explicit
+            # coordinates describe a fixed reference, even if they happen
+            # to coincide with the target at one instant.
+            track=list(self.track) if step.ra is None and step.dec is None else [],
         )
         pointing.exptime = step.duration_seconds
         pointing.merit_breakdown = self.merit_breakdown

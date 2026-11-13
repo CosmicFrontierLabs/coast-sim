@@ -22,7 +22,7 @@ from ..config import AttitudeConstraintScope, MissionConfig
 from ..ditl.ditl_log import DITLLog
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
-from ..targets import Plan, PlanEntry
+from ..targets import MovingPointing, Plan, PlanEntry
 
 Attitude = tuple[float, float, float]
 
@@ -159,6 +159,15 @@ class SequentialScheduler:
         return ephem
 
     def _check_supported(self) -> None:
+        if any(
+            isinstance(target, MovingPointing)
+            or (_is_plan_entry(target) and target.moves)
+            for target in self.targets
+        ):
+            raise NotImplementedError(
+                f"{type(self).__name__} cannot plan moving targets; "
+                "use PriorityScheduler or QueueDITL"
+            )
         if any(
             panel.single_axis_drive is not None
             and bool(panel.drive_control.sun_tracking_modes)

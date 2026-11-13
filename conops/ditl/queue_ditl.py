@@ -4224,6 +4224,10 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.startra, slew.startdec, slew.startroll = (
             self._expected_slew_start_attitude(utime, execution_time)
         )
+        if getattr(target, "moves", False) is True:
+            target.point_at(execution_time)
+        if instrument_roll is None:
+            instrument_roll = self._ppt_optimum_roll(target, execution_time, optimum)
         self._point_moving_target(
             target,
             execution_time,
@@ -4231,8 +4235,6 @@ class QueueDITL(DITLMixin, DITLStats):
             limits=slew.motion_limits,
             instrument_roll=instrument_roll,
         )
-        if instrument_roll is None:
-            instrument_roll = self._ppt_optimum_roll(target, execution_time, optimum)
         slew.endra, slew.enddec, slew.endroll = self._target_body_attitude(
             target, instrument_roll
         )
@@ -4336,10 +4338,15 @@ class QueueDITL(DITLMixin, DITLStats):
         startra, startdec, startroll = self._expected_slew_start_attitude(
             utime, execution_time
         )
-        self._point_moving_target(
-            target, execution_time, (startra, startdec, startroll)
-        )
+        if getattr(target, "moves", False) is True:
+            target.point_at(execution_time)
         endroll = self._ppt_optimum_roll(target, execution_time)
+        self._point_moving_target(
+            target,
+            execution_time,
+            (startra, startdec, startroll),
+            instrument_roll=endroll,
+        )
         endra, enddec, body_roll = self._target_body_attitude(target, endroll)
         slewdist, rotation_axis_body = quaternion_attitude_delta(
             startra,

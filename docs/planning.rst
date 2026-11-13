@@ -119,6 +119,12 @@ each sample, and the planners' battery ledger counts the attitude along the trac
 Plan entries record the position at the slew's end and the track itself, which a
 plan replay without the track observes as a fixed pointing.
 
+The priority planner reserves the tracking endpoint and braking time before
+planning the next slew. Sequence steps without coordinates follow the target's
+track; steps with explicit coordinates observe a fixed reference.
+``SequentialScheduler`` (and its ``DumbScheduler`` alias) rejects moving targets;
+use ``PriorityScheduler`` or ``QueueDITL`` for these observations.
+
 The planner's visibility prefilter evaluates positions along the track, rather
 than treating the request's initial coordinates as a fixed target. Body tracks
 are loaded before this check; an existing supplied track is reused.

@@ -44,6 +44,7 @@ from .momentum import StoredMomentumTracker
 from .momentum_budget import MomentumBudget
 from .passes import Pass
 from .slew import Slew
+from .target_tracking import TRACK_SAMPLE_SECONDS, target_tracking
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -685,7 +686,7 @@ class ACS:
             self.science_observation_active = False
         return slew
 
-    TRACK_SAMPLE_SECONDS = 60.0
+    TRACK_SAMPLE_SECONDS = TRACK_SAMPLE_SECONDS
     """How often a moving target's track is sampled for the executor."""
 
     def _tracking_after(
@@ -705,21 +706,15 @@ class ACS:
         assert target is not None
         end = float(getattr(target, "end", 0.0) or 0.0)
         begin = float(slew.slewend)
-        if end <= begin + self.TRACK_SAMPLE_SECONDS:
+        if end <= begin:
             return None
         instrument_roll = (
             slew.instrument_roll if slew.instrument_roll is not None else slew.endroll
         )
         arrival = trajectory.state(begin)
-        samples: list[tuple[float, Attitude]] = [(begin, arrival.attitude)]
-        time = begin + self.TRACK_SAMPLE_SECONDS
-        while time < end:
-            samples.append(
-                (time, target.target_body_attitude(instrument_roll, at=time))
-            )
-            time += self.TRACK_SAMPLE_SECONDS
-        samples.append((end, target.target_body_attitude(instrument_roll, at=end)))
-        tracking = AttitudeTrajectory.tracking(samples, limits, initial_state=arrival)
+        tracking = target_tracking(
+            target, arrival, instrument_roll, limits, self.TRACK_SAMPLE_SECONDS
+        )
         self._log_or_print(
             begin,
             "SLEW",

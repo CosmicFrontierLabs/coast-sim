@@ -5,12 +5,20 @@ from datetime import timedelta
 
 import pytest
 
-from conops import create_ditl
+from conops import DITL, create_ditl
 from conops.common import ACSMode
 from conops.config import MissionConfig
 from conops.ditl.queue_ditl import QueueDITL
-from conops.schedulers import PriorityScheduler
-from conops.targets import MovingPointing, Pointing, track_from_table
+from conops.schedulers import PriorityScheduler, SequentialScheduler
+from conops.targets import (
+    MovingPointing,
+    ObservationSequence,
+    Plan,
+    PlanEntry,
+    Pointing,
+    SequenceStep,
+    track_from_table,
+)
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
 from .planning_scenario import make_config as _config
@@ -113,6 +121,97 @@ class TestDispatch:
 
 
 class TestPlanner:
+    @pytest.mark.parametrize("rate", [0.0, 30.0])
+    def test_next_slew_leaves_the_tracking_endpoint(self, rate: float) -> None:
+        config = _config(2)
+        end = BEGIN + timedelta(hours=2)
+        mover = _mover(config, minutes=30)
+        mover.track = track_from_table(
+            [T0, T0 + 2 * HOUR], [105.0, 105.0 + 2 * rate], [10.0, 10.0]
+        )
+        fixed = _target(config, 701, 105.0, 10.0, merit=40.0, minutes=20)
+        scheduler = PriorityScheduler(config, [mover, fixed], BEGIN, end, step_size=2)
+        plan = scheduler.schedule()
+        assert [e.obsid for e in plan] == [700, 701]
+        moving, successor = scheduler.timeline
+        finish_ra = mover.position_at(float(moving.entry.end))[0]
+        assert moving.attitude_out[0] == pytest.approx(finish_ra, abs=0.001)
+        assert moving.end >= float(moving.entry.end)
+        if rate:
+            assert moving.end > float(moving.entry.end)
+            assert moving.attitude_out[0] > moving.attitude_in[0] + 14.9
+        assert successor.slew is not None
+        assert successor.slew.startra == pytest.approx(moving.attitude_out[0])
+        assert float(successor.entry.begin) >= scheduler.ctx.ceil_step(moving.end)
+        replay = DITL(config=config, plan=plan, begin=BEGIN, end=end)
+        replay.step_size = 2
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
+
+    @pytest.mark.parametrize("duration", [0.5, 40.0, 60.0, 61.0])
+    def test_short_observation_tracks(self, duration: float) -> None:
+        config = _config(1)
+        end = BEGIN + timedelta(hours=1)
+        mover = _mover(config)
+        mover.exptime = mover.ss_min = mover.ss_max = duration
+        mover.track = track_from_table([T0, T0 + HOUR], [105.0, 135.0], [10.0, 10.0])
+        plan = PriorityScheduler(config, [mover], BEGIN, end, step_size=2).schedule()
+        assert len(plan) == 1
+        replay = DITL(config=config, plan=plan, begin=BEGIN, end=end)
+        replay.step_size = 2
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
+        assert any(
+            "Tracking moving target 700" in e.description for e in replay.log.events
+        )
+
+    @pytest.mark.parametrize("reference_first", [True, False])
+    @pytest.mark.parametrize("backend", ["priority", "queue"])
+    def test_sequence_tracks_only_implicit_target_steps(
+        self, reference_first: bool, backend: str
+    ) -> None:
+        config = _config(1)
+        end = BEGIN + timedelta(hours=1)
+        reference = SequenceStep(name="reference", duration_seconds=120, ra=110, dec=10)
+        science = SequenceStep(name="target", duration_seconds=120)
+        steps = [reference, science] if reference_first else [science, reference]
+        mover = MovingPointing(
+            config=config,
+            obsid=700,
+            name="sequence",
+            track=track_from_table([T0, T0 + HOUR], [105, 135], [10, 10]),
+            sequence=ObservationSequence(steps=steps),
+        )
+        # Dispatch and offline planning derive exactly the same step requests.
+        assert [mover.step_pointing(i).moves for i in range(2)] == [
+            step.name == "target" for step in steps
+        ]
+        if backend == "priority":
+            plan = PriorityScheduler(
+                config, [mover], BEGIN, end, step_size=2
+            ).schedule()
+        else:
+            dispatch = create_ditl(config, [mover], BEGIN, end)
+            dispatch.step_size = 2
+            assert dispatch.calc()
+            assert dispatch.validate_plan_matches_execution() == []
+            plan = dispatch.plan
+        assert len(plan) == 2
+        assert [entry.moves for entry in plan] == [
+            step.name == "target" for step in steps
+        ]
+        ref = next(entry for entry in plan if entry.step == "reference")
+        assert (ref.ra, ref.dec) == (110, 10)
+        replay = DITL(
+            config=config,
+            plan=Plan.model_validate_json(plan.model_dump_json()),
+            begin=BEGIN,
+            end=end,
+        )
+        replay.step_size = 2
+        assert replay.calc()
+        assert replay.validate_plan_matches_execution() == []
+
     def test_pointed_where_the_slew_ends_and_executes_exactly(self) -> None:
         """A planned entry of a moving target carries the target's position
         where its slew ends, as dispatch points it, not where the target
@@ -141,3 +240,21 @@ class TestPlanner:
         ditl.step_size = STEP
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
+
+
+@pytest.mark.parametrize("kind", ["moving", "body", "entry"])
+def test_sequential_rejects_moving_requests_before_modifying_them(kind: str) -> None:
+    config = _config(1)
+    target = (
+        MovingPointing(config=config, obsid=700, body="Jupiter", exptime=120)
+        if kind == "body"
+        else _mover(config)
+    )
+    if kind == "entry":
+        target = PlanEntry.model_validate(target.model_dump())
+    before = target.model_dump()
+    scheduler = SequentialScheduler(config, [target], BEGIN, BEGIN + timedelta(hours=1))
+    with pytest.raises(NotImplementedError, match="cannot plan moving targets"):
+        scheduler.schedule()
+    assert target.model_dump() == before
+    assert not scheduler.plan

@@ -27,6 +27,7 @@ from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
+from ..simulation.target_tracking import target_tracking
 from ..targets import MovingPointing, PlanEntry, Pointing
 from ..targets.track import positions_along
 
@@ -256,6 +257,8 @@ class SchedulingContext:
         Mounted instruments are checked with science and body constraints in
         their own frames, as DITL records them.
         """
+        if entry.moves:
+            attitude = entry.target_body_attitude(entry.roll, at=utime)
         if entry.uses_mounted_attitude():
             names = entry.attitude_constraint_names(
                 self.config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE),
@@ -274,6 +277,39 @@ class SchedulingContext:
             if self.attitude_violation(attitude, float(utime), mode) is not None:
                 return float(utime)
         return None
+
+    def science_rest(
+        self, entry: PlanEntry, slew: Slew
+    ) -> tuple[float, Attitude] | None:
+        """The departure state after science tracking and its physical brake.
+
+        Use the executor's guidance and motion limits so the next planned
+        slew starts from the same attitude, at rest. None means the track or
+        its brake cannot be flown safely within this planning horizon.
+        """
+        attitude = (float(slew.endra), float(slew.enddec), float(slew.endroll))
+        if not entry.moves:
+            return float(entry.end), attitude
+        arrival = AttitudeTrajectory.from_slew(slew, slew.motion_limits).state(
+            float(slew.slewend)
+        )
+        try:
+            tracking = target_tracking(entry, arrival, entry.roll, slew.motion_limits)
+        except AttitudeExecutionError:
+            return None
+        if tracking is None:
+            return float(entry.end), attitude
+        if tracking.end > self.uend:
+            return None
+        for utime in self.steps(float(entry.end), tracking.end):
+            if (
+                self.attitude_violation(
+                    tracking.state(float(utime)).attitude, float(utime), ACSMode.SLEWING
+                )
+                is not None
+            ):
+                return None
+        return tracking.end, tracking.state(tracking.end).attitude
 
     def first_science_violation(
         self, entry: PlanEntry, attitude: Attitude, begin: float, end: float
