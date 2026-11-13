@@ -767,10 +767,11 @@ class PlanEntry(BaseModel):
         if self.constraint is None:
             return []
         if self.uses_mounted_attitude():
+            science_ra, science_dec = self.position_at(utime)
             return mounted_science_attitude_constraint_names(
                 self.constraint,
                 scopes,
-                (self.ra, self.dec, self.roll),
+                (science_ra, science_dec, self.roll),
                 spacecraft_attitude,
                 utime,
                 acs_mode,

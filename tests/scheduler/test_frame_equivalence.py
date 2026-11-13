@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 from rust_ephem import SunConstraint
 
-from conops import QueueDITL
+from conops import DITL, QueueDITL
+from conops.common import ACSMode
 from conops.common.enums import SlewAlgorithm
 from conops.common.vector import (
     attitude_to_quat,
@@ -21,10 +22,91 @@ from conops.config import (
     SpacecraftFrame,
     Telescope,
 )
+from conops.schedulers import PriorityScheduler
 from conops.simulation.slew import Slew
-from conops.targets import MovingPointing, Pointing, track_from_table
+from conops.targets import MovingPointing, Plan, Pointing, track_from_table
 
 from .planning_scenario import BEGIN, HOUR, T0, make_config
+
+
+def _moving_limb_config(frame):
+    config = make_config(2)
+    config.constraint.sun_constraint = None
+    config.spacecraft_bus.frame = frame
+    return config
+
+
+def _moving_limb_plan(config):
+    target = MovingPointing(
+        config=config,
+        obsid=700,
+        exptime=1800,
+        ss_min=60,
+        ss_max=1800,
+        track=track_from_table([T0, T0 + 2 * HOUR], [150, 90], [10, 10]),
+    )
+    return PriorityScheduler(
+        config, [target], BEGIN, BEGIN + timedelta(minutes=30), step_size=10
+    ).schedule()
+
+
+def test_moving_earth_limb_plan_is_frame_invariant():
+    plans = [
+        _moving_limb_plan(_moving_limb_config(frame))
+        for frame in [
+            SpacecraftFrame(),
+            SpacecraftFrame(boresight=(0, 0, 1), sun_side=(1, 0, 0)),
+        ]
+    ]
+    assert len(plans[0]) == len(plans[1]) == 1
+    canonical, rotated = plans[0][0], plans[1][0]
+    assert canonical.exposure == 1474
+    assert canonical.end == T0 + 1560
+    assert (rotated.begin, rotated.end, rotated.exposure) == (
+        canonical.begin,
+        canonical.end,
+        canonical.exposure,
+    )
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [SpacecraftFrame(), SpacecraftFrame(boresight=(0, 0, 1), sun_side=(1, 0, 0))],
+)
+def test_moving_earth_limb_replay_uses_current_science_position(frame):
+    config = _moving_limb_config(frame)
+    reference = _moving_limb_plan(config)
+    # Replay the full valid interval even if planning incorrectly shortened it.
+    reference[0].end = reference[0].collection_end = T0 + 1560
+    plan = Plan.model_validate_json(reference.model_dump_json())
+    [entry] = plan
+    arrival = (entry.ra, entry.dec, entry.roll)
+    replay = DITL(
+        config=config,
+        plan=plan,
+        begin=BEGIN,
+        end=BEGIN + timedelta(minutes=30),
+    )
+    replay.step_size = 10
+    assert replay.calc()
+    assert replay.validate_plan_matches_execution() == []
+    science = [
+        sample
+        for sample in replay.telemetry.housekeeping
+        if sample.acs_mode == ACSMode.SCIENCE
+    ]
+    assert science
+    # These eight samples were falsely flagged against the arrival coordinates.
+    assert (
+        sum(
+            T0 + 1480 <= sample.timestamp.timestamp() <= T0 + 1550 for sample in science
+        )
+        == 8
+    )
+    assert all(sample.in_constraint is None for sample in science)
+    assert all(sample.attitude_constraint is None for sample in science)
+    assert not any("CONSTRAINT:" in event.description for event in replay.log.events)
+    assert (entry.ra, entry.dec, entry.roll) == arrival
 
 
 @pytest.mark.parametrize("instrument_name", ["Camera", "Scope", None])
