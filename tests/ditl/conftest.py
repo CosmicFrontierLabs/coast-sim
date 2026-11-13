@@ -95,6 +95,7 @@ def create_statistics_test_config(ephem: DummyEphemeris | None = None) -> Missio
         ephem = DummyEphemeris()
 
     spacecraft_bus = Mock(spec=SpacecraftBus)
+    spacecraft_bus.communications = None
     spacecraft_bus.attitude_control = Mock()
     spacecraft_bus.attitude_control.__class__ = AttitudeControlSystem
     spacecraft_bus.attitude_control.predict_slew = Mock(return_value=(45.0, []))

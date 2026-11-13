@@ -330,8 +330,10 @@ peak:
   step its link ends in generates after the link stays on the recorder, as the
   simulation stores it after the downlink.
 
-All ground-station passes are booked by :class:`~conops.simulation.PassTimes`
-(see :doc:`communications`). A pass that requires no spacecraft tracking does
+Body-fixed tracking passes are booked by :class:`~conops.simulation.PassTimes`.
+Omni and gimballed antennas instead use continuous network selection by default,
+with whole-pass booking available through ``contact_policy="scheduled"``
+(see :doc:`communications`). A contact requiring no spacecraft tracking does
 not block science: its usable link spans downlink at the station's rate while
 housekeeping stays at the nominal rate. A snapshot that does not fit before
 such a pass is tried after it within the same timeline gap.

@@ -89,48 +89,55 @@ Defines how the antenna is mounted and pointed.
 The three repoint fields apply to a ``GIMBALED`` antenna only: an omni antenna has no
 direction to re-point and a body-fixed one moves with the spacecraft.
 
-:class:`~conops.simulation.PassTimes` predicts and books ground-station passes
-using station elevation masks, a minimum pass duration of eight minutes,
-one ``schedule_probability`` draw per eligible station pass,
-and selection of whole non-overlapping passes. Overlaps favor the pass with
-the greatest downlink volume, then duration, then earlier start. For omni and
-gimballed antennas, ``PassTimes`` uses the effective link rate, including any
-range-dependent rate table, to estimate that volume. A probability of zero books
-no passes; one accepts every eligible pass before overlap selection.
-``random_seed`` makes bookings reproducible over
-the same ephemeris.
+For omni and gimballed antennas, ``contact_policy="continuous"`` is the
+communications default. :class:`~conops.simulation.PassTimes` retains
+all available visibility windows, including their overlapping tails and
+windows shorter than eight minutes. It selects the station with the highest
+instantaneous effective downlink rate, then highest elevation and station
+code for a stable tie. It tracks that station until it sets or its rate
+becomes zero, then hands over to the best usable station. A faster station
+rising does not interrupt the current link. A chain of overlapping windows
+therefore supplies continuous network coverage instead of being reduced to
+whole, mutually exclusive passes.
 
-Every booking is a :class:`~conops.simulation.Pass`. Its ``requires_tracking``
-flag is true for fixed antennas: ACS follows the pass's attitude profile in
-``PASS`` mode and science pauses. For omni and gimballed antennas it is false,
-so downlink can continue during science. :class:`~conops.simulation.StationCoverage`
-models usable link spans and outages within these passes, including acquisition
-delays, handovers and antenna repoints. It consumes the bookings from ``PassTimes``.
+Both ``PassTimes.predict()`` (the whole ephemeris) and ``PassTimes.get()``
+(the requested days) produce the selected station reservations under this policy.
+The pass scheduler owns availability draws, station selection and trimming;
+:class:`~conops.simulation.StationCoverage` consumes its reservations and applies
+link rates and acquisition, handover and repoint outages. Calling the scheduler
+directly therefore produces the same handovers used by planning and execution.
 
-Bookings are fixed before execution starts. For a daily run, the day's passes
-are therefore scheduled before the day begins; a multi-day run books the whole
-ephemeris upfront. Science dispatch and rolling replanning use these reservations
-without requesting new station time or repeating the scheduling-probability draw.
+Station access is still distinct from visibility: ``schedule_probability``
+is drawn once per station visibility window and ``random_seed`` reproduces
+those draws. Zero rejects the window; one accepts it. Availability is decided
+once over the full ephemeris, shared by dispatch and every replan.
 
-Station visibility is not guaranteed station access: in LEO, contacts end at
-the station's elevation mask and there is no downlink between booked passes.
-Within link coverage, every contact begins ``acquisition_seconds`` after its
-booked pass begins, and a switch straight from one station to
-another adds ``handover_seconds`` to that; nothing is downlinked meanwhile. A
-station acquired after a gap with no booking pays no handover, since the
-antenna can be pointed at it in advance. Each contact downlinks at the effective rate through
-the bands the station and the spacecraft share. A gimballed antenna reaches the station only within
-``gimbal_range_deg`` of ``fixed_boresight_body`` from the attitude flown, which
-the simulation checks at each step; planning takes the station as reachable.
-Every station with a compatible downlink may be booked this way, whether or not
-``schedule_for_tracking`` allows spacecraft-tracking activities; its
-``schedule_probability`` still applies. Planning, the recorder budget and
-execution use these booked contacts, including acquisition and repoint outages.
-Plans preserve tracking activities as ``GSP`` entries and pass windows that need
-no tracking in ``ground_contacts``, including an empty list when no passes were
-booked. Replay keeps those bookings without another probability draw, even
-without a random seed. Older plans without ``ground_contacts`` predict those
-bookings from the configuration.
+Set ``contact_policy="scheduled"`` to use whole-pass booking instead.
+:class:`~conops.simulation.PassTimes` then applies its eight-minute minimum
+and selects whole non-overlapping passes by downlink volume, duration and
+earlier start. Range-dependent effective rates contribute to that volume.
+Body-fixed antennas always use this pass-booking path, with spacecraft
+tracking profiles and ``PASS`` activities that pause science; the contact
+policy does not change their behavior. Only fixed antennas require
+``schedule_for_tracking`` eligibility.
+
+Both flexible-antenna policies select one station at a time and use the same
+acquisition, handover and repointing accounting. Every contact starts
+``acquisition_seconds`` after selection; a direct station switch adds
+``handover_seconds``. Nothing is downlinked during those outages. A fresh
+acquisition after a genuine availability gap pays no handover. Rates use the
+bands shared by station and spacecraft at their range at each step.
+Execution also checks a gimballed antenna's reach from the actual body pose;
+planning takes its selected station as reachable.
+
+The recorder ledgers, dispatch and planners consume the same selected
+contact timeline and its outages. Plans save the timeline's exact raw
+``(begin, end, station)`` segments in ``ground_contacts``, before acquisition
+and repoint costs. Replay restores those segments without selecting again
+or repeating availability draws, including when the seed or contact policy
+has changed. An empty list restores no contacts. A historical saved plan
+therefore retains its original bookings; rebuild from the program to use a
+new policy. Plans without ``ground_contacts`` predict from the configuration.
 
 **Antenna repoints.** A gimballed antenna is re-pointed at each acquisition and
 handover, and within a contact as the spacecraft moves along its orbit; an omni antenna
@@ -190,6 +197,9 @@ Main configuration class for the communications system.
 * ``antenna_pointing``: Antenna pointing configuration
 * ``pointing_accuracy_deg``: Maximum pointing error to maintain good signal (degrees)
 * ``polarization``: Antenna polarization type
+* ``contact_policy``: ``continuous`` (default) for station handovers without
+  dropping overlaps, or ``scheduled`` for whole-pass booking; fixed antennas
+  always use tracking passes
 * ``acquisition_seconds``: Seconds to acquire the link during passes without
   spacecraft tracking; no data is downlinked during acquisition (default 0)
 * ``handover_seconds``: Seconds to switch the link straight from one ground station to
