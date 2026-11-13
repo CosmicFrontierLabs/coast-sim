@@ -1354,6 +1354,7 @@ class PassTimes(ContactScheduler):
 
         Keep the current station until it sets or its effective rate becomes
         zero. At a switch choose by current rate, elevation, then station code.
+        Named stores use their aggregate reserved rate on the routed band.
         Coverage and execution consume these bookings without selecting again.
         """
         stations = self.ground_stations.stations
@@ -1367,7 +1368,11 @@ class PassTimes(ContactScheduler):
         elevations = np.full(available.shape, -90.0)
         for k in np.flatnonzero(available.any(axis=1)):
             station = stations[k]
-            rates[k] = self.downlink_rates(station, 0, len(times))
+            rates[k] = (
+                self.routed_rates(station)
+                if self.config.data_storage is not None
+                else self.downlink_rates(station, 0, len(times))
+            )
             elevations[k] = self.station_geometry(station, 0, len(times)).elevation_deg
         available &= rates > 0.0
         bookings: list[tuple[float, float, str]] = []
