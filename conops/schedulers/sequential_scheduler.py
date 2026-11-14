@@ -22,7 +22,7 @@ from ..config import AttitudeConstraintScope, MissionConfig
 from ..ditl.ditl_log import DITLLog
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
-from ..targets import Plan, PlanEntry
+from ..targets import MovingPointing, Plan, PlanEntry
 
 Attitude = tuple[float, float, float]
 
@@ -159,6 +159,15 @@ class SequentialScheduler:
         return ephem
 
     def _check_supported(self) -> None:
+        if any(
+            isinstance(target, MovingPointing)
+            or (_is_plan_entry(target) and target.moves)
+            for target in self.targets
+        ):
+            raise NotImplementedError(
+                f"{type(self).__name__} cannot plan moving targets; "
+                "use PriorityScheduler or QueueDITL"
+            )
         if any(
             panel.single_axis_drive is not None
             and bool(panel.drive_control.sun_tracking_modes)
@@ -305,13 +314,14 @@ class SequentialScheduler:
         """Build the plan entry for a selection and charge its exposure to the target."""
         target = selection.target
         assert target.exptime is not None
-        telescope = target.science_telescope() if _is_plan_entry(target) else None
         entry = PlanEntry(config=self.config)
         entry.ephem = self.ephem
         entry.ra = target.ra
         entry.dec = target.dec
         entry.roll = selection.roll
-        entry.instrument_name = telescope.name if telescope is not None else None
+        entry.instrument_name = (
+            target.science_instrument_name() if _is_plan_entry(target) else None
+        )
         if _is_plan_entry(target):
             entry.science_data = target.science_data
         entry.spacecraft_attitude = target.spacecraft_attitude

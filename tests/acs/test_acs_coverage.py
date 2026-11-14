@@ -669,6 +669,7 @@ class TestBatteryChargingMethods:
 
     def test_initiate_emergency_charging_calls_emergency_module(self, acs) -> None:
         utime = 1514764800.0
+        acs.roll = 32.5
         lastra, lastdec = 10.0, 20.0
         current_ppt = Mock()
 
@@ -694,6 +695,7 @@ class TestBatteryChargingMethods:
                 lastdec,
                 current_ppt,
                 drive_state=acs.solar_array_drive_state,
+                lastroll=32.5,
             )
 
     def test_initiate_emergency_charging_requests_charge(self, acs) -> None:
