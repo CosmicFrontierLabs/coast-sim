@@ -1154,6 +1154,258 @@ def test_motion_limit_cache_ignores_unrelated_acs_configuration(scenario):
     assert slew.motion_limits is first
 
 
+@pytest.fixture
+def idle_certificate_scenario(scenario, monkeypatch):
+    sim, _ = scenario
+    sim.ppt = None
+    sim.step_size = 2
+    ephem = DeterministicEphemeris(
+        SCENARIO_BEGIN, SCENARIO_BEGIN + timedelta(hours=1), 2
+    )
+    sim.ephem = sim.acs.ephem = sim.config.constraint.ephem = ephem
+    sim.config.spacecraft_bus.inertia_tensor_body_kg_m2 = np.diag([1000, 800, 600])
+    settings = sim.config.spacecraft_bus.attitude_control.stored_momentum
+    settings.gravity_gradient_enabled = True
+    settings.initial_momentum_body_n_m_s = (3, 4, 0)
+    # Nonzero gravity-gradient torque exercises evolving inertial momentum,
+    # not just a trivially constant-momentum rest hold.
+    executor = AttitudeExecutor(sim.ustart, (0, 45, 0))
+    sim.acs._executor = executor
+    executor.momentum = MomentumBudget(sim.config, ephem, executor.state)
+    # Exercise configurations where the conservative torque envelope is too loose.
+    executor.momentum.max_external_torque = 1
+    sim._idle_safety = IdleSafetyPlanner(sim.config, sim.uend)
+    search = Mock()
+
+    def escape(planner, state, momentum):
+        search(state.utime)
+        return planner.recovery(state, momentum, (40, 15, 0))
+
+    monkeypatch.setattr(MomentumObservationPlanner, "_idle_escape", escape)
+    assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart) is None
+    assert sim._momentum_idle_certificate is not None
+    assert sim._momentum_idle_certificate.departure == sim.ustart + 60
+    assert (
+        np.linalg.norm(
+            executor.momentum.current.sample.gravity_gradient_torque_body_n_m
+        )
+        > 0
+    )
+    return sim, search
+
+
+def test_idle_certificate_reuses_fixed_departure_and_recertifies_at_expiry(
+    idle_certificate_scenario,
+):
+    sim, search = idle_certificate_scenario
+    original = sim._momentum_idle_certificate
+    for offset in range(2, 60, 2):
+        sim.acs._advance_attitude(sim.ustart + offset)
+        assert (
+            MomentumObservationPlanner(sim).idle_recovery(sim.ustart + offset) is None
+        )
+        assert sim._momentum_idle_certificate is original
+    search.assert_called_once_with(sim.ustart + 2)
+    sim.acs._advance_attitude(sim.ustart + 60)
+    assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart + 60) is None
+    assert sim._momentum_idle_certificate is not original
+    assert sim._momentum_idle_certificate.departure == sim.ustart + 120
+    # The known destination is re-certified; no second grid search is needed.
+    search.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "capacity",
+        "inertia",
+        "motion_config",
+        "constraint_config",
+        "orbit",
+        "orbit_tables",
+        "torque_sources",
+        "environment_config",
+        "command",
+        "trajectory",
+        "integration_grid",
+        "attitude",
+        "momentum_vector",
+        "previous_torque",
+        "past_departure",
+        "pass_conflict",
+        "end",
+        "step",
+    ],
+)
+def test_idle_certificate_invalidates_changed_dependencies(
+    idle_certificate_scenario, monkeypatch, change
+):
+    from dataclasses import replace
+    from conops.simulation.attitude import AttitudeTrajectory
+
+    sim, _ = idle_certificate_scenario
+    executor = sim.acs._executor
+    now = sim.ustart + (62 if change == "past_departure" else 2)
+    executor.advance(now)
+    if change == "capacity":
+        executor.momentum.capacity *= 0.9
+    elif change == "inertia":
+        executor.momentum.inertia[0, 0] += 1
+    elif change == "motion_config":
+        sim.config.spacecraft_bus.attitude_control.max_slew_rate *= 0.9
+    elif change == "constraint_config":
+        sim.config.attitude_constraint_scopes["IDLE"] = []
+    elif change == "orbit":
+        sim.ephem = DeterministicEphemeris(
+            SCENARIO_BEGIN, SCENARIO_BEGIN + timedelta(hours=1), 2
+        )
+    elif change == "orbit_tables":
+        executor.momentum.orbit = executor.momentum.orbit.model_copy()
+    elif change == "torque_sources":
+        executor.momentum.live.sources.clear()
+    elif change == "environment_config":
+        sim.config.spacecraft_bus.attitude_control.stored_momentum.residual_dipole_body_a_m2 = (
+            0.1,
+            0.0,
+            0.0,
+        )
+    elif change == "command":
+        sim.acs.command_queue.append(Mock())
+    elif change == "trajectory":
+        executor.install(
+            AttitudeTrajectory.turn_from_state(
+                executor.state,
+                executor.state.attitude,
+                sim.config.spacecraft_bus.attitude_control,
+            )
+        )
+    elif change == "integration_grid":
+        executor.momentum.current = executor.momentum.current.model_copy(
+            update={"path": None}
+        )
+    elif change == "attitude":
+        executor._state = replace(executor.state, quaternion=(0.0, 1.0, 0.0, 0.0))
+    elif change == "momentum_vector":
+        # Same norm, different inertial vector: cannot reuse the certificate.
+        executor.momentum.current.tracker._momentum_eci_n_m_s *= -1
+    elif change == "previous_torque":
+        executor.momentum.current.tracker._previous_torque_eci_n_m[0] += 0.01
+    elif change == "pass_conflict":
+        pending = Mock()
+        pending.tracking_profile_slew_deadlines.return_value = [(None, now)]
+        monkeypatch.setattr(sim.acs.passrequests, "next_pass", lambda time: pending)
+    elif change == "end":
+        sim.uend -= 1
+        sim.end -= timedelta(seconds=1)
+    elif change == "step":
+        sim.step_size = 4
+    assert MomentumObservationPlanner(sim)._idle_certificate(now) is None
+    assert sim._momentum_idle_certificate is None
+
+
+@pytest.mark.parametrize("notify_budget", [False, True])
+def test_idle_certificate_is_invalid_after_unloading(
+    idle_certificate_scenario, notify_budget
+):
+    sim, _ = idle_certificate_scenario
+    executor = sim.acs._executor
+    budget = executor.momentum
+    now = sim.ustart + 2
+    executor.advance(now)
+    assert MomentumObservationPlanner(sim)._idle_certificate(now) is not None
+    before = budget.live.stored_momentum_norm_n_m_s
+    budget.live.unload(0.25)
+    if notify_budget:
+        budget.unloaded(executor.state)
+        assert budget.current.path is None
+        assert budget.current.sample.stored_momentum_norm_n_m_s == pytest.approx(
+            before * 0.25
+        )
+    assert MomentumObservationPlanner(sim)._idle_certificate(now) is None
+    assert sim._momentum_idle_certificate is None
+    assert budget.live.stored_momentum_norm_n_m_s == pytest.approx(before * 0.25)
+
+
+def test_idle_certificate_reuse_preserves_environmental_torques(
+    idle_certificate_scenario,
+):
+    from types import SimpleNamespace
+    from conops.config.surfaces import Surface, SurfaceModel
+
+    sim, _ = idle_certificate_scenario
+    executor = sim.acs._executor
+    settings = sim.config.spacecraft_bus.attitude_control.stored_momentum
+    settings.solar_radiation_pressure_enabled = True
+    settings.magnetorquer_max_dipole_a_m2 = 20.0
+    settings.geomagnetic_field = "dipole"
+    sim.config.spacecraft_bus.surfaces = SurfaceModel(
+        surfaces=[
+            Surface(name="plate", center_m=(0, 1, 0), normal=(1, 0, 0), area_m2=2)
+        ]
+    )
+    sim.ephem.itrs_pv = SimpleNamespace(position=sim.ephem.gcrs_pv.position.copy())
+    executor.momentum = MomentumBudget(sim.config, sim.ephem, executor.state)
+    executor.momentum.max_external_torque = 1
+    sim._momentum_idle_certificate = None
+    reference = AttitudeExecutor(sim.ustart, executor.state.attitude)
+    reference.momentum = MomentumBudget(sim.config, sim.ephem, reference.state)
+    assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart) is None
+    certificate = sim._momentum_idle_certificate
+    assert certificate is not None
+    for offset in range(2, 60, 2):
+        now = sim.ustart + offset
+        executor.advance(now)
+        reference.advance(now)
+        assert MomentumObservationPlanner(sim).idle_recovery(now) is None
+        assert sim._momentum_idle_certificate is certificate
+        assert executor.momentum.current.sample == reference.momentum.current.sample
+        assert executor.momentum.live.state == reference.momentum.live.state
+    torques = executor.momentum.current.sample.torques_body_n_m
+    for name in (
+        "gravity_gradient",
+        "solar_radiation_pressure",
+        "magnetorquer_unloading",
+    ):
+        assert np.linalg.norm(torques[name]) > 0
+
+
+def test_expiring_certificate_dispatches_original_escape_if_wait_is_unsafe(
+    idle_certificate_scenario,
+    monkeypatch,
+):
+    sim, _ = idle_certificate_scenario
+    certificate = sim._momentum_idle_certificate
+    sim.acs._advance_attitude(certificate.departure)
+    monkeypatch.setattr(MomentumObservationPlanner, "_safe", lambda *a, **k: False)
+    search = Mock(side_effect=AssertionError("use the already-certified escape"))
+    monkeypatch.setattr(MomentumObservationPlanner, "_idle_escape", search)
+    assert (
+        MomentumObservationPlanner(sim).idle_recovery(certificate.departure)
+        is certificate.escape
+    )
+    assert sim._momentum_idle_certificate is None
+    search.assert_not_called()
+    # Execute that retained, absolute-time maneuver through the normal guard.
+    sim.acs._start_slew(certificate.escape, certificate.departure)
+    sim.acs._advance_attitude(certificate.escape._momentum_hold_end)
+    assert sim.acs.momentum_budget.current.first_violation is None
+
+
+def test_idle_certificate_rejects_unsafe_extension_and_keeps_one_tick_proof(
+    idle_certificate_scenario,
+    monkeypatch,
+):
+    sim, _ = idle_certificate_scenario
+    sim._momentum_idle_certificate = None
+    monkeypatch.setattr(
+        MomentumObservationPlanner,
+        "_safe",
+        lambda self, trajectory, end, mode: end <= sim.ustart + sim.step_size,
+    )
+    assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart) is None
+    assert sim._momentum_idle_certificate.departure == sim.ustart + 2
+
+
 @pytest.mark.parametrize("replay", [False, True])
 def test_capacity_run_rejects_uncovered_end_before_execution(
     scenario, monkeypatch, replay
