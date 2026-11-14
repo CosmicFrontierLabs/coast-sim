@@ -5998,7 +5998,13 @@ class TestTOOFunctionality:
             created.append(target)
             return target
 
+        def add_request(request: Pointing) -> Pointing:
+            # A ToO's request arrives built; the queue keeps it as it is.
+            created.append(request)
+            return request
+
         queue_ditl.queue.add = Mock(side_effect=add)
+        queue_ditl.queue.add_request = Mock(side_effect=add_request)
         queue_ditl.queue.targets = created
         return created
 
@@ -6029,17 +6035,16 @@ class TestTOOFunctionality:
         queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
 
-        queue_ditl.queue.add.assert_called_once_with(
-            ra=180.0,
-            dec=45.0,
-            obsid=1000001,
-            name="Successful TOO",
-            merit=10000.0,
-            exptime=3600,
-            deadline=5000.0,
-            science_data={},
-            instrument_modes={},
+        queue_ditl.queue.add_request.assert_called_once()
+        [request] = queue_ditl.queue.add_request.call_args.args
+        assert (request.ra, request.dec, request.obsid) == (180.0, 45.0, 1000001)
+        assert (request.name, request.merit, request.exptime) == (
+            "Successful TOO",
+            10000.0,
+            3600,
         )
+        assert request.deadline == 5000.0
+        assert request.science_data == {} and request.instrument_modes == {}
 
     def test_queued_too_carries_its_science_data(
         self, mock_pointing_visibility, queue_ditl, queued_targets
@@ -6154,7 +6159,7 @@ class TestTOOFunctionality:
         assert result is False
         assert not too.interrupt
         mock_too_interrupt_success["terminate"].assert_not_called()
-        queue_ditl.queue.add.assert_called_once()
+        queue_ditl.queue.add_request.assert_called_once()
 
     def test_check_too_interrupt_observation_not_interruptible(
         self,
@@ -6176,7 +6181,7 @@ class TestTOOFunctionality:
 
         assert result is False
         mock_too_interrupt_success["terminate"].assert_not_called()
-        queue_ditl.queue.add.assert_called_once()
+        queue_ditl.queue.add_request.assert_called_once()
 
     def test_check_too_interrupt_executed_when_too_is_selected(
         self,
@@ -6361,20 +6366,22 @@ class TestTOOFunctionality:
         )
 
         data = too.model_dump()
-        expected = {
-            "obsid": 1000001,
-            "ra": 180.0,
-            "dec": 45.0,
-            "merit": 10000.0,
-            "exptime": 3600,
-            "name": "Test TOO",
-            "submit_time": 1234567890.0,
-            "deadline": None,
-            "science_data": {},
-            "interrupt": True,
-            "executed": True,
-        }
-        assert data == expected
+        # The ToO holds its request; its run state is not written.
+        assert set(data) == {"request", "submit_time", "deadline", "interrupt"}
+        assert (data["submit_time"], data["deadline"], data["interrupt"]) == (
+            1234567890.0,
+            None,
+            True,
+        )
+        request = data["request"]
+        assert (request["obsid"], request["ra"], request["dec"], request["name"]) == (
+            1000001,
+            180.0,
+            45.0,
+            "Test TOO",
+        )
+        assert request["merit"] == 10000.0 and request["exptime"] == 3600
+        assert too.executed
 
 
 class TestQueueDITLCoverage:

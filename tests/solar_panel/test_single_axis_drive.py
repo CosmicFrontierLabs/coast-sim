@@ -267,7 +267,7 @@ class TestExecutedEvaluation:
 
     def test_scoring_is_pure_and_uses_the_supplied_state(self) -> None:
         panel_set = SolarPanelSet(panels=[_tracking_panel()])
-        state = SolarArrayDriveState((30.0,), updated_at_s=30.0, revision=1)
+        state = SolarArrayDriveState(angles_deg=(30.0,), updated_at_s=30.0, revision=1)
         before = state
         scores = panel_set.power_from_normalized_sun_body(
             np.asarray([(0.0, 1.0, 0.0), (1.0, 0.0, 0.0)]),
@@ -412,7 +412,7 @@ class TestDriveAwareRollSelection:
                 )
             ]
         )
-        state = SolarArrayDriveState((30.0,), updated_at_s=30.0, revision=4)
+        state = SolarArrayDriveState(angles_deg=(30.0,), updated_at_s=30.0, revision=4)
         ephem = _ephem_with_sun((1.0, 0.0, 1.0))
         roll = optimum_roll(
             0.0,
@@ -423,7 +423,9 @@ class TestDriveAwareRollSelection:
             drive_state=state,
         )
         assert roll == pytest.approx(60.0)
-        assert state == SolarArrayDriveState((30.0,), updated_at_s=30.0, revision=4)
+        assert state == SolarArrayDriveState(
+            angles_deg=(30.0,), updated_at_s=30.0, revision=4
+        )
 
     def test_ideal_gimbal_is_flat_in_fast_path(self) -> None:
         panel_set = SolarPanelSet(
@@ -446,7 +448,7 @@ class TestDriveAwareRollSelection:
 
     def test_mounted_instrument_scores_finite_drive_in_body_frame(self) -> None:
         panel_set = SolarPanelSet(panels=[_tracking_panel()])
-        state = SolarArrayDriveState((30.0,), updated_at_s=30.0, revision=1)
+        state = SolarArrayDriveState(angles_deg=(30.0,), updated_at_s=30.0, revision=1)
         telescope = Telescope(boresight=(0.0, 1.0, 0.0))
         ephem = _ephem_with_sun((0.2, 0.7, 1.0))
 

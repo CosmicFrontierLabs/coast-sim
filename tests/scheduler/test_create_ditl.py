@@ -20,7 +20,7 @@ from conops.config import (
 )
 from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import SCHEDULERS, LocalSearchScheduler, PriorityScheduler
-from conops.targets import Pointing
+from conops.targets import Pointing, visit_windows
 from conops.targets.merit import MeritModel
 
 from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
@@ -47,6 +47,49 @@ def _run(ditl: QueueDITL | DITL | RollingHorizonDITL) -> None:
 
 
 class TestDispatch:
+    def test_frame_adapter_is_shared_but_request_history_is_owned(self) -> None:
+        from conops.config import Instrument, SpacecraftFrame
+
+        config, targets = _setup(SchedulerConfig())
+        config.spacecraft_bus.frame = SpacecraftFrame(
+            boresight=(0, 0, 1), sun_side=(1, 0, 0)
+        )
+        config.payload = Payload(instruments=[Instrument(name="Camera")])
+        target = targets[0]
+        target.instrument_name = "Camera"
+        mount = target.science_telescope()
+        assert mount is not None
+        run = create_ditl(config, [target], BEGIN, END)
+        assert isinstance(run, QueueDITL)
+        (queued,) = run.queue.targets
+        assert queued.science_telescope() is mount
+        assert queued.instrument_name == "Camera"
+        assert queued.config is run.config
+        queued.record_collection(T0 + 60, 60)
+        assert queued.collected_seconds == 60
+        assert target.collected_seconds == 0
+
+    def test_execution_does_not_mutate_input_visit_history(self) -> None:
+        config, _ = _setup(SchedulerConfig())
+        target = Pointing(
+            config=config,
+            obsid=100,
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            ss_min=5 * MIN,
+            ss_max=5 * MIN,
+            visit_windows=visit_windows([T0 + 20 * MIN, T0 + HOUR], 10 * MIN),
+        )
+        run = create_ditl(config, [target], BEGIN, END)
+        _run(run)
+        assert isinstance(run, QueueDITL)
+        (executed,) = run.queue.targets
+        assert executed.visits_done == frozenset({0, 1})
+        assert target.visits_done == frozenset()
+        assert not target.visit_complete(0)
+        assert target.collected_seconds == 0
+        assert target.exptime == 10 * MIN
+
     def test_a_target_can_name_a_plain_instrument(self) -> None:
         """A plain instrument has no mounting, so the queued target keeps its
         name and its science coordinates are the body attitude."""
@@ -277,6 +320,31 @@ class TestPlanned:
         assert ditl.plan.metadata is not None
         assert ditl.plan.metadata["scheduler"] == "cp_sat"
         _run(ditl)
+
+    @pytest.mark.skipif(
+        importlib.util.find_spec("ortools") is None, reason="needs OR-Tools"
+    )
+    def test_a_configured_deterministic_budget_repeats_the_plan(self) -> None:
+        """The notebooks set the planner through the configuration: the
+        deterministic budget set there, with one worker and a seed, gives
+        the same plan twice."""
+        plans = []
+        for _ in range(2):
+            config, targets = _setup(
+                SchedulerConfig(
+                    mode=SchedulerMode.PLANNED,
+                    kind=SchedulerKind.CP_SAT,
+                    solver_time_limit=30,
+                    solver_deterministic_time=0.5,
+                    workers=1,
+                    seed=1,
+                )
+            )
+            ditl = create_ditl(config, targets, BEGIN, END)
+            plans.append(
+                [(int(e.obsid), float(e.begin), float(e.end)) for e in ditl.plan]
+            )
+        assert plans[0] and plans[0] == plans[1]
 
     def test_without_passes_the_plan_has_none(self) -> None:
         config, targets = _setup(

@@ -242,19 +242,40 @@ class TestPlanner:
         assert ditl.validate_plan_matches_execution() == []
 
 
-@pytest.mark.parametrize("kind", ["moving", "body", "entry"])
-def test_sequential_rejects_moving_requests_before_modifying_them(kind: str) -> None:
-    config = _config(1)
-    target = (
-        MovingPointing(config=config, obsid=700, body="Jupiter", exptime=120)
-        if kind == "body"
-        else _mover(config)
-    )
-    if kind == "entry":
-        target = PlanEntry.model_validate(target.model_dump())
-    before = target.model_dump()
-    scheduler = SequentialScheduler(config, [target], BEGIN, BEGIN + timedelta(hours=1))
-    with pytest.raises(NotImplementedError, match="cannot plan moving targets"):
-        scheduler.schedule()
-    assert target.model_dump() == before
-    assert not scheduler.plan
+class TestVisibilityOncePerRequest:
+    def test_a_moving_target_s_windows_are_evaluated_once_across_plans(self) -> None:
+        """A moving target's visibility follows its track over the whole
+        ephemeris, which is costly to evaluate; the first plan evaluates
+        it on the target, and every candidate of it in that plan and in
+        later plans takes the target's windows."""
+        from unittest.mock import patch
+
+        from conops.targets import PlanEntry
+
+        config = _config(HOURS)
+        # Where the roll does not enter the windows, as with a mounted
+        # instrument or field-of-regard scheduling.
+        config.constraint.ignore_roll = True
+        mover = _mover(config)
+        targets = [mover, *_fillers(config)]
+        evaluated: list[int] = []
+        original = PlanEntry.visibility
+
+        def counting(self: PlanEntry, *args: object, **kwargs: object) -> int:
+            evaluated.append(int(self.obsid))
+            return original(self, *args, **kwargs)
+
+        with patch.object(PlanEntry, "visibility", counting):
+            first = PriorityScheduler(
+                config, targets, BEGIN, END, step_size=STEP
+            ).schedule()
+            assert evaluated.count(700) == 1
+            evaluated.clear()
+            second = PriorityScheduler(
+                config, targets, BEGIN, END, step_size=STEP
+            ).schedule()
+            assert evaluated.count(700) == 0
+        assert [e.obsid for e in first if e.obsid == 700]
+        assert [(e.obsid, float(e.begin)) for e in first] == [
+            (e.obsid, float(e.begin)) for e in second
+        ]

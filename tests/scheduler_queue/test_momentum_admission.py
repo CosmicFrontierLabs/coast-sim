@@ -29,7 +29,7 @@ from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from conops.simulation.momentum_planning import MomentumObservationPlanner
 from conops.simulation.passes import Pass
 from conops.simulation.slew import Slew
-from conops.targets import PlanEntry, track_from_table
+from conops.targets import Plan, PlanEntry, track_from_table
 from scripts.check_default_plan_output import (
     SCENARIO_BEGIN,
     DeterministicConstraint,
@@ -308,7 +308,7 @@ def test_reduced_speed_survives_plan_entry_roundtrip_and_dispatch(scenario):
     assert plan is not None
     target.end = plan.end
     sim._apply_slew_metadata(target, plan.slew)
-    restored = PlanEntry.model_validate_json(target.model_dump_json())
+    restored = Plan.model_validate_json(Plan(entries=[target]).model_dump_json())[0]
     assert restored.slew_rate_fraction == 0.5
     assert "slew_rate_fraction" not in PlanEntry().model_dump()
     restored.config = sim.config
@@ -582,7 +582,7 @@ def test_exact_exposure_survives_padded_hold_execution_and_export(scenario, expo
         hk.collection_seconds for hk in sim.telemetry.housekeeping
     ) == pytest.approx(exposure)
     assert not sim.validate_plan_matches_execution()
-    restored = PlanEntry.model_validate_json(entry.model_dump_json())
+    restored = Plan.model_validate_json(Plan(entries=[entry]).model_dump_json())[0]
     assert restored.collection_begin == entry.collection_begin
     assert restored.collection_end == entry.collection_end
 

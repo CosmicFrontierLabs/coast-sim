@@ -39,6 +39,7 @@ from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
+from ..common.numerics import UNIT_MAGNITUDE_TOLERANCE
 from ..common.vector import (
     _zero_roll_body_axes,
     normal_to_boresight_offset_euler_deg,
@@ -51,6 +52,10 @@ from .constraint import Constraint
 
 if TYPE_CHECKING:
     from .frame import SpacecraftFrame
+
+_ALIGNED_WITH_Z = 0.99
+"""A boresight whose Z component reaches this lies along the Z axis, and
+the second axis is built from X instead."""
 
 
 def create_star_tracker_vector(
@@ -131,7 +136,7 @@ class StarTrackerOrientation(ConfigModel):
     ) -> tuple[float, float, float]:
         """Validate that boresight is a unit vector."""
         magnitude = np.sqrt(sum(x**2 for x in v))
-        if magnitude < 0.99 or magnitude > 1.01:
+        if abs(magnitude - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(
                 f"Boresight must be a unit vector. Got magnitude {magnitude}"
             )
@@ -171,7 +176,7 @@ class StarTrackerOrientation(ConfigModel):
         # Construct orthonormal basis
         # Choose second axis perpendicular to boresight
         # If boresight is not parallel to Z, use cross product with Z
-        if abs(bore[2]) < 0.99:  # Not aligned with Z
+        if abs(bore[2]) < _ALIGNED_WITH_Z:
             # Second axis: perpendicular to both boresight and Z-axis
             second = np.cross(np.array([0.0, 0.0, 1.0]), bore)
         else:

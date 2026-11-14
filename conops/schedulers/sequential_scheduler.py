@@ -11,11 +11,11 @@ ground passes or model slews and observation timing the way
 
 import bisect
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
 import rust_ephem
+from pydantic import BaseModel, ConfigDict, SkipValidation
 
 from ..common import dtutcfromtimestamp
 from ..config import AttitudeConstraintScope, MissionConfig
@@ -35,11 +35,13 @@ def _is_plan_entry(target: object) -> bool:
     return issubclass(type(target), PlanEntry)
 
 
-@dataclass
-class _Selection:
+class _Selection(BaseModel):
     """A target chosen at one time, with the geometry it was chosen for."""
 
-    target: PlanEntry
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Keep the existing request identity, including supported duck-typed targets.
+    target: SkipValidation[PlanEntry]
     roll: float
     attitude: Attitude
     """Spacecraft body attitude held for the observation."""
@@ -215,7 +217,7 @@ class SequentialScheduler:
             if target.obsid in self.scheduled:
                 continue
             roll, attitude = self._point(target, utime)
-            slewtime = self._slewtime(target)
+            slewtime = self._slewtime(target, utime)
             assert target.exptime is not None
             clear_seconds = min(
                 self._clear_seconds(
@@ -224,7 +226,13 @@ class SequentialScheduler:
                 latest_end - utime,
             )
             if clear_seconds >= min_window + slewtime:
-                return _Selection(target, roll, attitude, slewtime, clear_seconds)
+                return _Selection(
+                    target=target,
+                    roll=roll,
+                    attitude=attitude,
+                    slewtime=slewtime,
+                    clear_seconds=clear_seconds,
+                )
         return None
 
     def _point(self, target: PlanEntry, utime: float) -> tuple[float, Attitude]:
@@ -267,13 +275,20 @@ class SequentialScheduler:
         target.spacecraft_attitude = attitude if mounted else None
         return roll, attitude
 
-    def _slewtime(self, target: PlanEntry) -> float:
+    def _slewtime(self, target: PlanEntry, utime: float | None = None) -> float:
         """Return the slew time into ``target`` from the previous observation."""
         if len(self.plan) == 0:
             return FIRST_SLEW_SECONDS
         last = self.plan[-1]
         last_attitude = last.spacecraft_attitude or (last.ra, last.dec, last.roll)
-        estimate = target.calc_slewtime(*last_attitude)
+        table = getattr(
+            self.config.spacecraft_bus.attitude_control, "thermal_settling", None
+        )
+        estimate = (
+            target.calc_slewtime(*last_attitude, utime=utime)
+            if isinstance(table, list) and table
+            else target.calc_slewtime(*last_attitude)
+        )
         if estimate is not None:
             target.slewtime = estimate
         return target.slewtime

@@ -14,11 +14,14 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from .._version import __version__
 from ..common import unixtime_from
+from .entries import AnyEntry, with_kind
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
+from .pointing import Pointing
 
 if TYPE_CHECKING:
     import rust_ephem
@@ -29,7 +32,14 @@ if TYPE_CHECKING:
 class TargetList(BaseModel):
     """List of potential targets for Spacecraft to observe"""
 
-    targets: list[PlanEntry] = Field(default_factory=list)
+    targets: list[SerializeAsAny[AnyEntry]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _targets_with_kinds(cls, data: object) -> object:
+        if isinstance(data, dict) and isinstance(data.get("targets"), list):
+            data = {**data, "targets": [with_kind(t) for t in data["targets"]]}
+        return data
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.targets[number]
@@ -202,7 +212,7 @@ class Plan(BaseModel):
             "None predicts bookings; an empty list reserves no station time."
         ),
     )
-    entries: list[SerializeAsAny[PlanEntry]] = Field(default_factory=list)
+    entries: list[SerializeAsAny[AnyEntry]] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True
     )
@@ -216,12 +226,28 @@ class Plan(BaseModel):
         return len(self.entries)
 
     @property
+    def _scheduled(self) -> list[PlanEntry]:
+        """The entries a run has placed in time; a request never scheduled
+        has no begin or end and says nothing about the plan's span."""
+        return [e for e in self.entries if not (e.begin == 0 and e.end == 0)]
+
+    @property
     def _start_ts(self) -> float:
-        return self.entries[0].begin if self.entries else 0.0
+        scheduled = self._scheduled
+        return scheduled[0].begin if scheduled else 0.0
 
     @property
     def _end_ts(self) -> float:
-        return self.entries[-1].end if self.entries else 0.0
+        scheduled = self._scheduled
+        return scheduled[-1].end if scheduled else 0.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _entries_with_kinds(cls, data: object) -> object:
+        """A file written before entries carried a ``kind`` holds plain entries."""
+        if isinstance(data, dict) and isinstance(data.get("entries"), list):
+            data = {**data, "entries": [with_kind(e) for e in data["entries"]]}
+        return data
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -436,4 +462,10 @@ class Plan(BaseModel):
             The deserialised plan.
         """
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls.model_validate(raw)
+        plan = cls.model_validate(raw)
+        for saved, entry in zip(raw.get("entries", []), plan.entries, strict=True):
+            done = saved.get("done")
+            if isinstance(entry, Pointing) and isinstance(done, bool):
+                # A completed visit may retain its parent's remaining exposure.
+                entry.done = done
+        return plan

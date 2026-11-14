@@ -278,6 +278,70 @@ class TestPlanning:
         ).schedule()
         assert _activities(plan) == []
 
+    def test_a_sliding_activity_due_at_the_horizon_end_is_left_out(self) -> None:
+        """A sliding block is reserved from its latest start; at or past the
+        internal horizon's end that reservation would have no length. The
+        physical run and ephemeris continue, so a later plan can reserve it."""
+        config = _config(HOURS + 4)
+        at_the_end = ScheduledActivity(
+            name="Late calibration",
+            begin=T0 + (HOURS - 2) * HOUR,
+            duration_seconds=1800,
+            slide_seconds=3 * HOUR,
+        )
+        scheduler = PriorityScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
+        )
+        plan = scheduler.schedule()
+        assert _activities(plan) == []
+        assert any(
+            "at or past the end of the horizon" in e.description
+            for e in scheduler.log.events
+        )
+        # Within the horizon, the same block is reserved and settles early.
+        inside = at_the_end.model_copy(update={"slide_seconds": HOUR})
+        plan = PriorityScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[inside],
+        ).schedule()
+        [entry] = _activities(plan)
+        assert float(entry.end) - float(entry.begin) == 1800
+
+    def test_cpsat_leaves_the_block_at_the_horizon_end_out(self) -> None:
+        pytest.importorskip("ortools")
+        from conops.schedulers import CpSatScheduler
+
+        config = _config(HOURS + 4)
+        at_the_end = ScheduledActivity(
+            name="Late calibration",
+            begin=T0 + (HOURS - 2) * HOUR,
+            duration_seconds=1800,
+            slide_seconds=3 * HOUR,
+        )
+        scheduler = CpSatScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
+            time_limit=5.0,
+        )
+        plan = scheduler.schedule()
+        assert _activities(plan) == []
+        assert _science(plan)
+
     def test_without_activities_nothing_changes(self) -> None:
         config = _config(HOURS)
         plain = PriorityScheduler(config, _targets(config), BEGIN, END, step_size=STEP)
@@ -542,6 +606,8 @@ def test_candidate_copies_keep_the_sliding_activity_hold() -> None:
     assert float(original.entry.begin) == activity.begin
     candidate = original.model_copy(update={"entry": original.entry.model_copy()})
     # Candidate reconnection records the reserved latest start on the copy.
+    candidate.ready = activity.latest_start
+    candidate.end = activity.latest_start + activity.duration_seconds
     candidate.entry.begin = candidate.ready
     candidate.entry.end = candidate.end
     assert float(candidate.entry.begin) == activity.latest_start

@@ -623,31 +623,37 @@ class TestWithEnforcement:
         assert sum(e.startswith("Thruster dump unloads") for e in events) == len(dumps)
 
 
-@pytest.mark.parametrize("pending_dump", [False, True])
-def test_capacity_fault_is_recorded_without_an_available_dump(
-    pending_dump: bool,
-) -> None:
-    config = _config(
-        capacity_n_m_s=CAPACITY, initial_momentum_body_n_m_s=(2.0, 0.0, 0.0)
-    )
-    ditl = create_ditl(config, [_held(config)], BEGIN, BEGIN + timedelta(minutes=10))
-    if pending_dump:
-        config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump = (
-            ThrusterDumpConfig()
+class TestOneDumpAnswersACall:
+    def test_a_dump_added_or_ended_clears_the_pending_call(self) -> None:
+        """A dump called for at the planning level while an observation ran
+        is answered by any dump that follows, whether the forecast asked for
+        it before the next visit or the call itself placed it: no second
+        dump follows the first to unload nothing."""
+        config = _config(
+            capacity_n_m_s=CAPACITY,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
         )
-        ditl.activities = [
-            ScheduledActivity(
-                name="Pending dump",
-                begin=BEGIN.timestamp() + 500,
-                duration_seconds=120,
-                desaturation=True,
-            )
-        ]
-    assert ditl.calc()
-    faults = [
-        e
-        for e in _capacity_faults(ditl)
-        if e.name == "stored_momentum" and "unloaded" not in e.cause
-    ]
-    assert len(faults) == 1
-    assert faults[0].utime == BEGIN.timestamp()
+        ditl = create_ditl(config, [_held(config)], BEGIN, END)
+        assert isinstance(ditl, QueueDITL)
+        ditl.step_size = STEP
+        ditl._dump_pending = True
+        ditl._add_dump(BEGIN.timestamp() + 600.0)
+        assert not ditl._dump_pending
+        dumps = [a for a in ditl.activities if a.desaturation]
+        assert len(dumps) == 1
+
+    def test_no_dump_follows_another_at_once(self) -> None:
+        config = _config(
+            capacity_n_m_s=CAPACITY,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+        )
+        ditl = _dispatch(config)
+        dumps = sorted(
+            (e for e in ditl.plan if e.obstype == ObsType.ACTIVITY and e.desaturation),
+            key=lambda e: float(e.begin),
+        )
+        assert len(dumps) >= 2
+        for earlier, later in zip(dumps, dumps[1:], strict=False):
+            assert float(later.begin) > float(earlier.end) + STEP

@@ -10,6 +10,12 @@ from ..common import (
     dtutcfromtimestamp,
     unixtime2date,
 )
+from ..common.numerics import (
+    ANGLE_TOLERANCE_DEG,
+    ATTITUDE_TOLERANCE_DEG,
+    POLE_DEC_DEG,
+    REST_RATE_DEG_S,
+)
 from ..common.vector import (
     _quaternion_delta,
     attitude_to_quat,
@@ -37,6 +43,7 @@ from .attitude import (
     Attitude,
     AttitudeExecutionError,
     AttitudeExecutor,
+    AttitudeState,
     AttitudeTrajectory,
 )
 from .emergency_charging import EmergencyCharging
@@ -255,6 +262,7 @@ class ACS:
                         self.ephem,
                         self.solar_panel,
                         self.constraint,
+                        science_attitude=False,
                         drive_state=self.solar_array_drive_state,
                     )
             executor = AttitudeExecutor(utime, self._initial_attitude)
@@ -286,6 +294,17 @@ class ACS:
         now: a moving science target being tracked brakes from ``utime``,
         as ending its observation brakes it; any other motion rests when it
         rests. Nothing is changed."""
+        state = self.science_stop_state(utime)
+        return state.utime if state is not None else self.motion_ready_time(utime)
+
+    def science_stop_state(self, utime: float) -> AttitudeState | None:
+        """Rest after ending installed moving science now, including its ingress.
+
+        Dispatch can preempt a moving observation while its ingress is still
+        under way. Ending that observation brakes the installed motion at the
+        interruption, rather than flying on to its original arrival pose.
+        This preview follows the same stop without advancing execution.
+        """
         if (
             self._tracked_slew is not None
             and self._executor is not None
@@ -295,8 +314,8 @@ class ACS:
             trajectory = AttitudeTrajectory.braking(
                 state, self.config.spacecraft_bus.attitude_control
             )
-            return float(trajectory.end) if trajectory is not None else utime
-        return self.motion_ready_time(utime)
+            return trajectory.state(trajectory.end) if trajectory is not None else state
+        return None
 
     def predicted_attitude(self, utime: float) -> Attitude:
         """Evaluate installed physical motion without advancing execution."""
@@ -305,6 +324,57 @@ class ACS:
             if self._executor
             else self._initial_attitude
         )
+
+    def science_handoff_state(
+        self, entry: "PlanEntry", utime: float
+    ) -> AttitudeState | None:
+        """Rest after cutting this installed moving observation at ``utime``.
+
+        A replan can shorten an entry while its original tracking trajectory
+        is already installed, even during the ingress. Predict that trajectory
+        and its brake without changing execution; rebuilding a short track
+        from the shortened entry would discard its nonzero terminal rate.
+        """
+        state = self.science_tracking_state(entry, utime)
+        if state is None:
+            return None
+        braking = AttitudeTrajectory.braking(
+            state, self.config.spacecraft_bus.attitude_control
+        )
+        return braking.state(braking.end) if braking is not None else state
+
+    def pass_tracking_state(self, gspass: Pass, utime: float) -> AttitudeState | None:
+        """Predict this installed contact without replacing its flown profile."""
+        current = self.current_pass
+        if (
+            current is None
+            or self._executor is None
+            or (current.obsid, current.station, current.begin)
+            != (gspass.obsid, gspass.station, gspass.begin)
+        ):
+            return None
+        return self._executor.predict(utime)
+
+    def science_tracking_state(
+        self, entry: "PlanEntry", utime: float
+    ) -> AttitudeState | None:
+        """Predict this installed science track without advancing execution.
+
+        A retained entry can end earlier than the originally installed track.
+        Resource forecasts must use its actual state at that cutoff before
+        predicting the stop, rather than reconstructing a shorter track.
+        """
+        slew = self._tracked_slew
+        if (
+            slew is None
+            or self._executor is None
+            or slew.at is None
+            or slew.obsid != entry.obsid
+            or float(slew.at.begin) != float(entry.begin)
+            or utime < float(slew.slewend)
+        ):
+            return None
+        return self._executor.predict(utime)
 
     def executed_attitude(self, utime: float) -> Attitude:
         """The attitude flown at ``utime``, a time up to the present, from
@@ -661,7 +731,7 @@ class ACS:
         tracking = self._tracking_after(slew, trajectory, slew.motion_limits)
         if tracking is not None:
             trajectory = AttitudeTrajectory(
-                (*trajectory.legs, *tracking.legs), tracking.end
+                legs=(*trajectory.legs, *tracking.legs), end=tracking.end
             )
         executor.install(trajectory, momentum_end=slew._momentum_hold_end)
         self._tracked_slew = slew if tracking is not None else None
@@ -672,7 +742,17 @@ class ACS:
             "SLEW",
             f"{unixtime2date(utime)}: Starting slew from RA={self.ra:.2f} Dec={self.dec:.2f} "
             f"to RA={slew.endra:.2f} Dec={slew.enddec:.2f} "
-            f"(duration: {slew.slewtime:.1f}s, distance: {slewdist:.1f} deg)",
+            f"(duration: {slew.slewtime:.1f}s, distance: {slewdist:.1f} deg"
+            + (
+                f", Sun moves {slew.sun_vector_change_deg:.1f} deg, "
+                f"settle {slew.settle_seconds:.0f}s)"
+                if slew.settle_seconds is not None
+                and isinstance(
+                    self.config.spacecraft_bus.attitude_control.thermal_settling, list
+                )
+                and self.config.spacecraft_bus.attitude_control.thermal_settling
+                else ")"
+            ),
         )
 
         self.current_slew = slew
@@ -789,6 +869,7 @@ class ACS:
                 self.ephem,
                 self.solar_panel,
                 self.constraint,
+                science_attitude=False,
                 drive_state=self.solar_array_drive_state,
             )
         else:
@@ -1092,7 +1173,7 @@ class ACS:
 
         # Tracking can be braking after contact ends, independently of the
         # stale ingress-slew metadata. Do not report that moving tail as IDLE.
-        if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
+        if any(abs(rate) > REST_RATE_DEG_S for rate in self.angular_velocity_body):
             return ACSMode.SLEWING
 
         # Holding for a thruster momentum dump
@@ -1161,6 +1242,7 @@ class ACS:
                 self.constraint,
                 reference_roll=reference_roll,
                 max_roll_delta=180.0,
+                science_attitude=False,
                 drive_state=self.solar_array_drive_state,
             )
         else:
@@ -1181,7 +1263,7 @@ class ACS:
         distance, _ = _quaternion_delta(
             executor.state.quaternion, attitude_to_quat(*target)
         )
-        if distance > 1e-8:
+        if distance > ATTITUDE_TOLERANCE_DEG:
             executor.install(
                 AttitudeTrajectory.turn_from_state(
                     executor.state,
@@ -1263,7 +1345,8 @@ class ACS:
         def add(roll: float) -> None:
             normalized = roll % 360.0
             is_new = all(
-                abs(((normalized - existing + 180.0) % 360.0) - 180.0) > 1e-6
+                abs(((normalized - existing + 180.0) % 360.0) - 180.0)
+                > ANGLE_TOLERANCE_DEG
                 for existing in rolls
             )
             if is_new:
@@ -1304,7 +1387,7 @@ class ACS:
 
         grid: list[tuple[float, float]] = []
         for dec in range(-90, 91, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
-            if abs(dec) == 90:
+            if abs(dec) == POLE_DEC_DEG:
                 grid.append((0.0, float(dec)))
                 continue
             for grid_ra in range(0, 360, IDLE_SAFE_ATTITUDE_GRID_STEP_DEG):
@@ -1327,7 +1410,7 @@ class ACS:
         """Install a zero-duration IDLE hold so future ticks keep the safe attitude."""
         executor = self._advance_attitude(utime)
         distance, _ = quaternion_attitude_delta(*executor.state.attitude, ra, dec, roll)
-        if distance > 1e-8:
+        if distance > ATTITUDE_TOLERANCE_DEG:
             raise AttitudeExecutionError("A hold cannot change the physical attitude")
         executor.hold(utime)
         hold = Slew.idle_hold(self.config, *executor.state.attitude, utime)
