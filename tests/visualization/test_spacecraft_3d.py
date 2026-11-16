@@ -241,8 +241,7 @@ class TestTraceComposition:
         axis_lines = [
             t
             for t in _default_fig().data
-            if isinstance(t, go.Scatter3d)
-            and t.name in ("+X (boresight)", "+Y (up)", "+Z")
+            if isinstance(t, go.Scatter3d) and t.name in ("+X (boresight)", "+Y", "+Z")
         ]
         assert len(axis_lines) == 3
 
@@ -250,7 +249,7 @@ class TestTraceComposition:
         axis_cones = [
             t
             for t in _default_fig().data
-            if isinstance(t, go.Cone) and t.name in ("+X (boresight)", "+Y (up)", "+Z")
+            if isinstance(t, go.Cone) and t.name in ("+X (boresight)", "+Y", "+Z")
         ]
         assert len(axis_cones) == 3
 
@@ -293,7 +292,7 @@ class TestFlagParameters:
     def test_show_axes_false_removes_axis_traces(self) -> None:
         fig = plot_spacecraft_3d(MissionConfig(), show_axes=False)
         names = _trace_names(fig)
-        assert not any(n in names for n in ("+X (boresight)", "+Y (up)", "+Z"))
+        assert not any(n in names for n in ("+X (boresight)", "+Y", "+Z"))
 
     def test_show_axes_false_removes_nine_traces(self) -> None:
         # Default has 9 axis traces (3 line + 3 cone + 3 text labels)
