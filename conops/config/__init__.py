@@ -35,6 +35,7 @@ from .momentum import (
     MomentumWheel,
     StoredMomentumConfig,
     ThrusterDumpConfig,
+    WheelArray,
     wheel_array_capacity_n_m_s,
 )
 from .observation_categories import ObservationCategories, ObservationCategory
@@ -141,6 +142,7 @@ __all__ = [
     "AtmosphereConfig",
     "MomentumWheel",
     "StoredMomentumConfig",
+    "WheelArray",
     "wheel_array_capacity_n_m_s",
     "Surface",
     "ThrusterDumpConfig",

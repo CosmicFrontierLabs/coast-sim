@@ -566,6 +566,12 @@ class DITL(DITLMixin, DITLStats):
                     if momentum_sample is not None
                     else None
                 ),
+                wheel_momentum_n_m_s=(
+                    list(momentum_sample.wheel_momentum_n_m_s)
+                    if momentum_sample is not None
+                    and momentum_sample.wheel_momentum_n_m_s is not None
+                    else None
+                ),
                 disturbance_torques_body_n_m=(
                     {
                         name: list(torque)

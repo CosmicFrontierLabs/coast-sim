@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     import rust_ephem
 
     from ..config import MissionConfig
+    from ..config.momentum import WheelArray
     from ..config.surfaces import SurfaceModel
 
 EARTH_GRAVITATIONAL_PARAMETER_KM3_S2 = 398600.4418
@@ -575,6 +576,16 @@ class MomentumSample(BaseModel):
     body's own, I·ω, while it turns; None where no angular velocity was given."""
     actuator_momentum_norm_n_m_s: float | None = None
     """The norm of the wheels' momentum; None where no angular velocity was given."""
+    stored_momentum_load_n_m_s: float
+    """The stored momentum as it is checked against the capacity: its norm,
+    or with wheel limits the fullest wheel's share of it as a fraction of
+    the wheels' capacity (see ``WheelArray.load_n_m_s``)."""
+    actuator_momentum_load_n_m_s: float | None = None
+    """What the wheels hold as it is checked against the capacity; None
+    where no angular velocity was given."""
+    wheel_momentum_n_m_s: tuple[float, ...] | None = None
+    """Each configured wheel's momentum along its spin axis, in the order
+    configured: its share of what the wheels hold; None without wheels."""
 
 
 def _as_tuple(vector: npt.NDArray[np.float64]) -> tuple[float, float, float]:
@@ -610,6 +621,12 @@ class StoredMomentumTracker:
     between samples, for a caller that certifies motion against a capacity
     at a fixed cadence; None, the default, samples at whatever resolution
     the caller has.
+
+    ``wheels`` shares what the wheels hold among them, reported with each
+    sample. With ``limit_by_wheels`` the momentum checked against the
+    capacity (the ``*_load_n_m_s`` values) is the fullest wheel's share
+    rather than the norm, so it depends on the momentum's direction in the
+    body.
     """
 
     def __init__(
@@ -620,6 +637,8 @@ class StoredMomentumTracker:
         sources: Sequence[TorqueSource] | None = None,
         max_sample_interval_s: float | None = None,
         gravity_gradient_enabled: bool = True,
+        wheels: WheelArray | None = None,
+        limit_by_wheels: bool = False,
     ) -> None:
         if max_sample_interval_s is not None and (
             not np.isfinite(max_sample_interval_s)
@@ -643,6 +662,8 @@ class StoredMomentumTracker:
             self.sources = [GravityGradientTorque(self.inertia_tensor_body_kg_m2)]
         else:
             self.sources = []
+        self.wheels = wheels
+        self.limit_by_wheels = bool(limit_by_wheels and wheels is not None)
         self.reset()
 
     @property
@@ -656,6 +677,18 @@ class StoredMomentumTracker:
         self._previous_torque_eci_n_m: npt.NDArray[np.float64] | None = None
         self._previous_utime: float | None = None
         self._actuator_norm_n_m_s: float | None = None
+        self._actuator_load_n_m_s: float | None = None
+        # The attitude at the last sample: wheel limits depend on where the
+        # stored momentum points in the body.
+        self._rotation_eci_to_body: npt.NDArray[np.float64] | None = None
+
+    def load_n_m_s(self, momentum_body_n_m_s: npt.ArrayLike) -> float:
+        """A body-frame momentum as it is checked against the capacity: its
+        norm, or with wheel limits the fullest wheel's share of it."""
+        if self.limit_by_wheels:
+            assert self.wheels is not None
+            return self.wheels.load_n_m_s(momentum_body_n_m_s)
+        return float(np.linalg.norm(np.asarray(momentum_body_n_m_s, dtype=float)))
 
     def copy(self) -> StoredMomentumTracker:
         """Independent speculative state; immutable inputs may be shared."""
@@ -673,6 +706,8 @@ class StoredMomentumTracker:
             setattr(self, name, None if value is None else value.copy())
         self._previous_utime = other._previous_utime
         self._actuator_norm_n_m_s = other._actuator_norm_n_m_s
+        self._actuator_load_n_m_s = other._actuator_load_n_m_s
+        self._rotation_eci_to_body = other._rotation_eci_to_body
 
     def validate_sample_interval(self, elapsed_s: float) -> None:
         """Reject undersampling without changing integration state, where a
@@ -720,6 +755,8 @@ class StoredMomentumTracker:
         )
         self._previous_utime = state.previous_utime
         self._actuator_norm_n_m_s = None
+        self._actuator_load_n_m_s = None
+        self._rotation_eci_to_body = None
 
     def unload(self, residual_fraction: float = 0.0) -> None:
         """Take the stored momentum out of the wheels, as a thruster dump
@@ -729,6 +766,7 @@ class StoredMomentumTracker:
         if self._momentum_eci_n_m_s is not None:
             self._momentum_eci_n_m_s *= residual_fraction
         self._actuator_norm_n_m_s = None
+        self._actuator_load_n_m_s = None
 
     @property
     def stored_momentum_norm_n_m_s(self) -> float:
@@ -745,6 +783,28 @@ class StoredMomentumTracker:
         if self._actuator_norm_n_m_s is None:
             return self.stored_momentum_norm_n_m_s
         return self._actuator_norm_n_m_s
+
+    @property
+    def stored_momentum_load_n_m_s(self) -> float:
+        """The stored momentum now as it is checked against the capacity: its
+        norm, or with wheel limits the fullest wheel's share of it at the
+        last sample's attitude. Before a sample gives the attitude the norm
+        stands in, which is never less."""
+        if not self.limit_by_wheels:
+            return self.stored_momentum_norm_n_m_s
+        if self._momentum_eci_n_m_s is None:
+            return self.load_n_m_s(self.initial_momentum_body_n_m_s)
+        if self._rotation_eci_to_body is None:
+            return self.stored_momentum_norm_n_m_s
+        return self.load_n_m_s(self._rotation_eci_to_body @ self._momentum_eci_n_m_s)
+
+    @property
+    def actuator_momentum_load_n_m_s(self) -> float:
+        """What the wheels hold at the last sample as it is checked against
+        the capacity; the stored momentum's where the sample gave no rate."""
+        if self._actuator_load_n_m_s is None:
+            return self.stored_momentum_load_n_m_s
+        return self._actuator_load_n_m_s
 
     @property
     def momentum_eci_n_m_s(self) -> npt.NDArray[np.float64] | None:
@@ -872,11 +932,14 @@ class StoredMomentumTracker:
         self._previous_torque_eci_n_m = torque_eci
         assert self._momentum_eci_n_m_s is not None
         momentum_body = rotation_eci_to_body @ self._momentum_eci_n_m_s
+        self._rotation_eci_to_body = rotation_eci_to_body
         actuator: npt.NDArray[np.float64] | None = None
         self._actuator_norm_n_m_s = None
+        self._actuator_load_n_m_s = None
         if angular_velocity_body_rad_s is not None:
             actuator = momentum_body - body_momentum
             self._actuator_norm_n_m_s = float(np.linalg.norm(actuator))
+            self._actuator_load_n_m_s = self.load_n_m_s(actuator)
 
         field_body: tuple[float, float, float] | None = None
         density: float | None = None
@@ -904,6 +967,23 @@ class StoredMomentumTracker:
                 _as_tuple(actuator) if actuator is not None else None
             ),
             actuator_momentum_norm_n_m_s=self._actuator_norm_n_m_s,
+            # Without wheel limits, exactly the norm reported above.
+            stored_momentum_load_n_m_s=(
+                self.load_n_m_s(momentum_body)
+                if self.limit_by_wheels
+                else float(np.linalg.norm(self._momentum_eci_n_m_s))
+            ),
+            actuator_momentum_load_n_m_s=self._actuator_load_n_m_s,
+            wheel_momentum_n_m_s=(
+                tuple(
+                    float(x)
+                    for x in self.wheels.wheel_momenta_n_m_s(
+                        actuator if actuator is not None else momentum_body
+                    )
+                )
+                if self.wheels is not None
+                else None
+            ),
         )
 
 
@@ -972,6 +1052,8 @@ def tracker_from_config(config: MissionConfig) -> StoredMomentumTracker | None:
         inertia_tensor_body_kg_m2=inertia,
         initial_momentum_body_n_m_s=momentum_config.initial_momentum_body_n_m_s,
         sources=sources,
+        wheels=momentum_config.wheel_array,
+        limit_by_wheels=momentum_config.wheel_limits is not None,
     )
 
 

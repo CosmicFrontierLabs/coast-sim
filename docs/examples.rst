@@ -216,6 +216,24 @@ environment applies, gravity gradient and solar radiation pressure, over a day:
 
 See :doc:`configuration` (Stored momentum) and :doc:`telemetry` for reference.
 
+Momentum Wheels
+~~~~~~~~~~~~~~~
+
+**Location**: ``examples/Momentum_Wheels_Example.ipynb``
+
+This notebook describes a spacecraft's momentum wheels and runs a day within them:
+
+* Two sets of wheels, three orthogonal and a four-wheel pyramid, and the total
+  capacity each gives
+* How a momentum is shared among the wheels, and how the momentum a set holds
+  depends on its direction in the body
+* The wheels drawn on the 3-D spacecraft plot, placed automatically and by hand
+* A day holding one attitude, with each wheel's share from the telemetry and the
+  dumps called for when a wheel reaches the planning level of its own capacity
+* The same day limited by one figure instead, and with wheels of different sizes
+
+See :doc:`momentum` (Wheels) and :doc:`spacecraft_3d_visualization` for reference.
+
 Example Configuration
 ~~~~~~~~~~~~~~~~~~~~~
 

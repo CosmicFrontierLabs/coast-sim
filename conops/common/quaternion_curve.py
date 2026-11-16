@@ -180,6 +180,7 @@ class QuaternionHermite:
         inertia: npt.NDArray[np.float64],
         momentum_eci: npt.NDArray[np.float64],
         capacity: float,
+        wheel_limits: npt.NDArray[np.float64] | None = None,
     ) -> bool:
         """Bound actuator demand over a subinterval, not just its endpoints.
 
@@ -188,6 +189,10 @@ class QuaternionHermite:
         linearly interpolated external torque, matching trapezoidal integration.
         The rotating inertial momentum and I omega are combined before bounding
         their norm, retaining off-axis inertia and vector cancellation.
+
+        ``wheel_limits`` replaces the norm with each wheel's own limit: one
+        row a wheel, giving its fraction of its capacity per unit of body
+        momentum, each bounded within 1.
         """
         if not (0 <= first < last <= 1 and isfinite(capacity) and capacity > 0):
             return False
@@ -212,10 +217,15 @@ class QuaternionHermite:
         numerator[:7] -= np.deg2rad(transform[:, :6] @ rate) @ inertia.T
         if not np.isfinite(numerator).all() or not np.isfinite(denominator).all():
             return False
-        return _certify(
-            _bernstein_matrix(6) @ denominator,
-            _bernstein_matrix(8) @ (numerator / capacity),
-            1,
+        bound = _bernstein_matrix(6) @ denominator
+        if wheel_limits is None:
+            return _certify(bound, _bernstein_matrix(8) @ (numerator / capacity), 1)
+        if not np.isfinite(wheel_limits).all():
+            return False
+        shares = _bernstein_matrix(8) @ (numerator @ np.asarray(wheel_limits).T)
+        return all(
+            _certify(bound, shares[:, index : index + 1], 1)
+            for index in range(shares.shape[1])
         )
 
     def within_limits(

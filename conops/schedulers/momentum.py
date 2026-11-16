@@ -85,7 +85,9 @@ _Integrated = tuple[
     MomentumState,
 ]
 """A span integrated: its sample times, the norm at each, what the wheels
-hold at each and the state at its end."""
+hold at each and the state at its end. The norm and what the wheels hold are
+as they are checked against the capacity: with wheel limits, the fullest
+wheel's share."""
 
 SpanCache = dict[tuple[_SpanKey, MomentumState], _Integrated]
 """Spans integrated, by the span's key and the state they started from.
@@ -342,17 +344,17 @@ class MomentumForecast:
                     ),
                 )
                 times.append(float(utime))
-                norms.append(sample.stored_momentum_norm_n_m_s)
+                norms.append(sample.stored_momentum_load_n_m_s)
                 demands.append(
-                    sample.actuator_momentum_norm_n_m_s
-                    if sample.actuator_momentum_norm_n_m_s is not None
-                    else sample.stored_momentum_norm_n_m_s
+                    sample.actuator_momentum_load_n_m_s
+                    if sample.actuator_momentum_load_n_m_s is not None
+                    else sample.stored_momentum_load_n_m_s
                 )
             if span.unload_at_end is not None:
                 tracker.unload(span.unload_at_end)
                 times.append(span.end)
-                norms.append(tracker.stored_momentum_norm_n_m_s)
-                demands.append(tracker.stored_momentum_norm_n_m_s)
+                norms.append(tracker.stored_momentum_load_n_m_s)
+                demands.append(tracker.stored_momentum_load_n_m_s)
             self.cache[key] = (
                 np.array(times[first:]),
                 np.array(norms[first:]),

@@ -63,7 +63,7 @@ class _MomentumPath(BaseModel):
     # Their protocol-based internals are not another record-validation boundary.
     trajectory: SkipValidation[AttitudeTrajectory | None]
     state_at: Callable[[float], AttitudeState]
-    signature: tuple[float, float, bytes]
+    signature: tuple[float, float, bytes, bytes | None]
     nodes: list[MomentumForecast]
     times: list[float]
 
@@ -95,6 +95,12 @@ class MomentumBudget:
         self.capacity = settings.total_capacity_n_m_s
         if not np.isfinite(self.capacity) or self.capacity <= 0:
             raise ValueError("Momentum capacity must be finite and positive")
+        self.wheels = settings.wheel_limits
+        """The wheels, where each one's own capacity is the limit: what they
+        hold is then checked as the fullest wheel's share, not the norm."""
+        self.wheel_limit_rows: npt.NDArray[np.float64] | None = (
+            self.wheels.fractions if self.wheels is not None else None
+        )
         fastest = max(acs.max_slew_rate_body or (acs.max_slew_rate,))
         if not np.isfinite(fastest) or fastest <= 0:
             raise ValueError("Momentum enforcement requires finite positive slew rates")
@@ -119,6 +125,8 @@ class MomentumBudget:
                 self.inertia,
                 settings.initial_momentum_body_n_m_s,
                 sources=build_torque_sources(config),
+                wheels=settings.wheel_array,
+                limit_by_wheels=self.wheels is not None,
             )
         # Do not pretend sub-sampling motion repairs an under-sampled orbit.
         if (
@@ -141,8 +149,8 @@ class MomentumBudget:
             sum(source.torque_bound_n_m(self.orbit) for source in tracker.sources)
         )
         sample = self._sample(self.live, initial)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        peak = sample.actuator_momentum_norm_n_m_s
+        assert sample.actuator_momentum_load_n_m_s is not None
+        peak = sample.actuator_momentum_load_n_m_s
         self.current = MomentumForecast(
             tracker=self.live,
             sample=sample,
@@ -180,8 +188,8 @@ class MomentumBudget:
         holds at ``state``, and any certified path is dropped."""
         tracker = self.live.copy()
         sample = self._sample(tracker, state)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        norm = sample.actuator_momentum_norm_n_m_s
+        assert sample.actuator_momentum_load_n_m_s is not None
+        norm = sample.actuator_momentum_load_n_m_s
         self.current = MomentumForecast(
             tracker=tracker,
             sample=sample,
@@ -283,7 +291,13 @@ class MomentumBudget:
             demand = rotation @ total - self.inertia @ np.deg2rad(
                 state.angular_velocity_body
             )
-            norm = float(np.linalg.norm(demand))
+            # With wheel limits this is the fullest wheel's share, which never
+            # changes by more than the demand does: the bound below holds.
+            norm = (
+                self.wheels.load_n_m_s(demand)
+                if self.wheels is not None
+                else float(np.linalg.norm(demand))
+            )
             if norm > self.capacity * (1 + 1e-10):
                 return False
             rates = [first_rate + f * duration * acceleration for f in (left, right)]
@@ -322,10 +336,10 @@ class MomentumBudget:
         previous, state = path.state_at(base.utime), path.state_at(end)
         tracker = base.tracker.copy()
         sample = self._sample(tracker, state, torque)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        peak = max(base.peak_n_m_s, sample.actuator_momentum_norm_n_m_s)
+        assert sample.actuator_momentum_load_n_m_s is not None
+        peak = max(base.peak_n_m_s, sample.actuator_momentum_load_n_m_s)
         violation, uncertified = base.first_violation, base.uncertified_interval
-        if sample.actuator_momentum_norm_n_m_s > self.capacity and violation is None:
+        if sample.actuator_momentum_load_n_m_s > self.capacity and violation is None:
             violation = end
         elapsed = end - base.utime
         if elapsed > 0 and violation is None:
@@ -348,7 +362,12 @@ class MomentumBudget:
             if interval is not None:
                 curve, first, last = interval
                 safe = curve.within_momentum_limit(
-                    first, last, self.inertia, momentum, self.capacity
+                    first,
+                    last,
+                    self.inertia,
+                    momentum,
+                    self.capacity,
+                    self.wheel_limit_rows,
                 )
             else:
                 safe = self._fixed_axis_within_limit(
@@ -379,7 +398,12 @@ class MomentumBudget:
             raise ValueError("Momentum forecast time must be finite and monotonic")
         if not self.times[0] <= end <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        signature = (self.capacity, self.step, self.inertia.tobytes())
+        signature = (
+            self.capacity,
+            self.step,
+            self.inertia.tobytes(),
+            None if self.wheel_limit_rows is None else self.wheel_limit_rows.tobytes(),
+        )
         path = base.path
         if (
             path is None
@@ -392,14 +416,14 @@ class MomentumBudget:
             )
             tracker = base.tracker.copy()
             sample = self._sample(tracker, state)
-            assert sample.actuator_momentum_norm_n_m_s is not None
+            assert sample.actuator_momentum_load_n_m_s is not None
             peak = max(
                 base.peak_n_m_s if initial is not None else 0.0,
-                sample.actuator_momentum_norm_n_m_s,
+                sample.actuator_momentum_load_n_m_s,
             )
             violation = base.first_violation if initial is not None else None
             if (
-                sample.actuator_momentum_norm_n_m_s > self.capacity
+                sample.actuator_momentum_load_n_m_s > self.capacity
                 and violation is None
             ):
                 violation = base.utime

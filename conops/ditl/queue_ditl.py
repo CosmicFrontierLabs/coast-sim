@@ -1259,7 +1259,7 @@ class QueueDITL(DITLMixin, DITLStats):
             return
         if any(a.desaturation for a in self._activities_left):
             return
-        stored = tracker.stored_momentum_norm_n_m_s
+        stored = tracker.stored_momentum_load_n_m_s
         capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         assert capacity is not None
         observing = self.ppt is not None and self.ppt is not self.charging_ppt
@@ -2516,6 +2516,12 @@ class QueueDITL(DITLMixin, DITLStats):
             actuator_momentum_norm_n_m_s=(
                 momentum_sample.actuator_momentum_norm_n_m_s
                 if momentum_sample is not None
+                else None
+            ),
+            wheel_momentum_n_m_s=(
+                list(momentum_sample.wheel_momentum_n_m_s)
+                if momentum_sample is not None
+                and momentum_sample.wheel_momentum_n_m_s is not None
                 else None
             ),
             disturbance_torques_body_n_m=(

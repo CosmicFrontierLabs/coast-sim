@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 from pydantic import Field, field_validator, model_validator
 
 from ._base import ConfigModel
@@ -93,34 +94,77 @@ class MomentumWheel(ConfigModel):
         return value
 
 
-def wheel_array_capacity_n_m_s(wheels: Sequence[MomentumWheel]) -> float:
-    """The momentum a set of wheels holds about every body axis, in N m s.
+class WheelArray:
+    """How a set of wheels shares the momentum they hold, and how much of
+    their capacity it takes.
 
-    Each wheel holds up to its capacity along its spin axis, so together they
-    reach a polyhedron of momenta (a zonotope) that is roomier along some
-    directions than others. This is the radius of the largest sphere inside
-    it: the momentum the wheels hold whichever way it points, and so the one
-    figure that is safe to take "as the same about every axis". It is zero
-    where the spin axes do not span three dimensions.
+    The momentum the wheels hold together, in body coordinates, is shared
+    among them by the capacity-weighted minimum-norm (pseudo-inverse) law:
+    of all the ways to make it up along the spin axes, the one with the
+    least sum of squared fractions of each wheel's capacity. With three
+    wheels there is only one way; with more, the larger wheels take more.
+    The set is at its capacity where any one wheel is at its own.
     """
-    if not wheels:
+
+    def __init__(self, wheels: Sequence[MomentumWheel]) -> None:
+        axes = np.array([wheel.spin_axis for wheel in wheels], dtype=float)
+        capacities = np.array([wheel.capacity_n_m_s for wheel in wheels], dtype=float)
+        if axes.shape[0] < 3:
+            raise ValueError("the wheels' spin axes do not span three dimensions")
+        weighted = axes.T * capacities**2
+        gram = weighted @ axes
+        if np.linalg.matrix_rank(gram, tol=1e-9 * float(np.trace(gram))) < 3:
+            raise ValueError("the wheels' spin axes do not span three dimensions")
+        self.names: tuple[str, ...] = tuple(wheel.name for wheel in wheels)
+        self.capacities_n_m_s: npt.NDArray[np.float64] = capacities
+        self.distribution: npt.NDArray[np.float64] = weighted.T @ np.linalg.inv(gram)
+        """Each wheel's momentum per unit of body momentum: one row a wheel."""
+        self.fractions: npt.NDArray[np.float64] = (
+            self.distribution / capacities[:, None]
+        )
+        """Each wheel's fraction of its capacity per unit of body momentum."""
+        self.capacity_n_m_s: float = float(
+            1.0 / np.linalg.norm(self.fractions, axis=1).max()
+        )
+        """The momentum the wheels hold whichever way it points: the least,
+        over every direction, at which the first wheel reaches its capacity."""
+
+    def wheel_momenta_n_m_s(
+        self, momentum_body_n_m_s: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """Each wheel's momentum along its spin axis, in N m s."""
+        return np.asarray(
+            self.distribution @ np.asarray(momentum_body_n_m_s, dtype=float),
+            dtype=np.float64,
+        )
+
+    def utilisation(self, momentum_body_n_m_s: npt.ArrayLike) -> float:
+        """The fullest wheel's fraction of its capacity: 1 at the limit."""
+        return float(
+            np.abs(self.fractions @ np.asarray(momentum_body_n_m_s, dtype=float)).max()
+        )
+
+    def load_n_m_s(self, momentum_body_n_m_s: npt.ArrayLike) -> float:
+        """The momentum to check against ``capacity_n_m_s``: the fullest
+        wheel's fraction of its capacity, as that fraction of the set's.
+
+        It is the momentum's norm along the wheels' weakest direction and
+        less along any other, never more, so a level or capacity set on the
+        norm is reached exactly when a wheel reaches that fraction of its
+        own. It never changes by more than the momentum does.
+        """
+        return self.capacity_n_m_s * self.utilisation(momentum_body_n_m_s)
+
+
+def wheel_array_capacity_n_m_s(wheels: Sequence[MomentumWheel]) -> float:
+    """The momentum a set of wheels holds about every body axis, in N m s:
+    the least, over every direction, at which the first wheel reaches its
+    capacity as the wheels share it (see :class:`WheelArray`). Zero where
+    the spin axes do not span three dimensions."""
+    try:
+        return WheelArray(wheels).capacity_n_m_s
+    except ValueError:
         return 0.0
-    axes = np.array([wheel.spin_axis for wheel in wheels], dtype=float)
-    capacities = np.array([wheel.capacity_n_m_s for wheel in wheels], dtype=float)
-    # The polyhedron's faces are normal to the cross products of pairs of
-    # spin axes; its reach along a normal is the sum of every wheel's.
-    radius = np.inf
-    for first in range(len(wheels)):
-        for second in range(first + 1, len(wheels)):
-            normal = np.cross(axes[first], axes[second])
-            length = float(np.linalg.norm(normal))
-            if length < 1e-9:
-                continue
-            reach = float(capacities @ np.abs(axes @ (normal / length)))
-            radius = min(radius, reach)
-    if not np.isfinite(radius) or radius < 1e-12:
-        return 0.0
-    return float(radius)
 
 
 class AtmosphereConfig(ConfigModel):
@@ -182,10 +226,30 @@ class StoredMomentumConfig(ConfigModel):
         return wheel_array_capacity_n_m_s(self.wheels)
 
     @property
+    def wheel_array(self) -> WheelArray | None:
+        """How the configured wheels share momentum; None where there are no
+        wheels or their spin axes do not span three dimensions."""
+        if not self.wheels:
+            return None
+        try:
+            return WheelArray(self.wheels)
+        except ValueError:
+            return None
+
+    @property
+    def wheel_limits(self) -> WheelArray | None:
+        """The wheels, where each one's own capacity is the limit: where
+        there are wheels and ``capacity_n_m_s`` does not override them."""
+        return self.wheel_array if self.capacity_n_m_s is None else None
+
+    @property
     def total_capacity_n_m_s(self) -> float | None:
         """The total momentum capacity that tracking, dumps and enforcement
         use: ``capacity_n_m_s`` where it is given, otherwise what the
-        configured wheels hold about every axis; None sets no capacity."""
+        configured wheels hold about every axis; None sets no capacity.
+        Where it comes from the wheels, the momentum checked against it is
+        the fullest wheel's share (``wheel_limits``), so a direction the
+        wheels reach further in holds more."""
         if self.capacity_n_m_s is not None:
             return self.capacity_n_m_s
         return self.wheel_capacity_n_m_s
@@ -339,17 +403,21 @@ class StoredMomentumConfig(ConfigModel):
         allow_inf_nan=False,
         description=(
             "The wheels' total momentum capacity, in N m s, taken as the same "
-            "about every axis. None takes it from the configured wheels, as "
-            "what they hold about every axis (total_capacity_n_m_s), and sets "
-            "no capacity where there are none"
+            "about every axis. None takes the limit from the configured "
+            "wheels, each held within its own capacity, and sets no capacity "
+            "where there are none. Given alongside wheels, it replaces their "
+            "limits with this one figure"
         ),
     )
     wheels: list[MomentumWheel] = Field(
         default_factory=list,
         description=(
             "The momentum wheels: each one's spin axis, capacity and place in "
-            "the body. They give the total capacity where capacity_n_m_s is "
-            "None, and are drawn on the 3-D spacecraft plot"
+            "the body. Where capacity_n_m_s is None the momentum is shared "
+            "among them and each is held within its own capacity, so the "
+            "limit depends on the momentum's direction. Each wheel's momentum "
+            "is reported in the telemetry, and they are drawn on the 3-D "
+            "spacecraft plot"
         ),
     )
     planning_level: float = Field(
