@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType, angular_separation, unixtime2date
 from ..common.numerics import TIME_TOLERANCE_S
-from ..common.vector import attitude_to_quat
+from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import MissionConfig
 from ..simulation.passes import Pass
 from ..targets import Plan, PlanEntry
@@ -542,10 +542,10 @@ class PlanExecutionValidator:
     ) -> list[PlanExecutionMismatch]:
         """Check that no science, contact or charge ran during an activity.
 
-        From the end of its slew to its end the spacecraft holds in ``IDLE``
-        mode, or in ``SAA`` mode where it crosses the SAA. Reserved stationary
-        holds reject slewing and unexpected SAFE; flexible legacy holds retain
-        idle-safety recovery.
+        The full stationary interval uses IDLE (SAA allowed), DESAT for dumps,
+        or SAFE for recoverable safe holds. SAFE holds also retain their planned
+        quaternion. Unexpected safe mode violates other stationary holds; legacy
+        and flexible dispatch holds allow idle-safety recovery.
         """
         start = float(entry.begin) + max(0.0, float(entry.slewtime))
         if entry.activity_hold_begin is not None:
@@ -554,12 +554,16 @@ class PlanExecutionValidator:
         mismatches: list[PlanExecutionMismatch] = []
         if end <= start:
             return mismatches
-        # A thruster dump holds in DESAT; any other activity holds in IDLE.
-        expected = ACSMode.DESAT if entry.desaturation else ACSMode.IDLE
+        # SAFE engineering holds and DESAT dumps carry their own hold modes.
+        expected = entry.activity_mode
         wrong = {ACSMode.SCIENCE, ACSMode.PASS, ACSMode.CHARGING}
-        wrong.add(ACSMode.IDLE if entry.desaturation else ACSMode.DESAT)
+        wrong.update({ACSMode.IDLE, ACSMode.DESAT} - {expected})
+        if entry.safe_hold:
+            wrong.add(ACSMode.SAA)
+        if not entry.safe_hold and entry.activity_requires_stationary:
+            wrong.add(ACSMode.SAFE)
         if entry.activity_requires_stationary:
-            wrong.update((ACSMode.SLEWING, ACSMode.SAFE))
+            wrong.add(ACSMode.SLEWING)
         for i in self._window_indices(start, end):
             mode = self._mode_at_index(i)
             if mode in wrong:
@@ -568,6 +572,19 @@ class PlanExecutionValidator:
                         entry, self.utime[i], mode, expected, "activity"
                     )
                 )
+            if entry.safe_hold:
+                error, _ = quaternion_attitude_delta(
+                    float(self.ra[i]),
+                    float(self.dec[i]),
+                    float(self.roll[i]),
+                    float(entry.ra),
+                    float(entry.dec),
+                    float(entry.roll),
+                )
+                if error > self._tolerance_deg():
+                    mismatches.append(
+                        self._pointing_mismatch(entry, self.utime[i], error, "activity")
+                    )
         return mismatches
 
     def _charge_entry_mismatches(
