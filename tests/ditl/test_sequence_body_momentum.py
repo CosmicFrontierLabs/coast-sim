@@ -17,7 +17,10 @@ from .test_momentum_dumps import BEGIN, END, _config
 @pytest.mark.parametrize("instrument", ["Camera", "Scope"])
 @pytest.mark.parametrize("switch_instrument", [False, True])
 def test_sequence_momentum_forecast_uses_each_steps_physical_body_attitude(
-    changed_frame: bool, instrument: str, switch_instrument: bool
+    changed_frame: bool,
+    instrument: str,
+    switch_instrument: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config()
     if changed_frame:
@@ -58,11 +61,13 @@ def test_sequence_momentum_forecast_uses_each_steps_physical_body_attitude(
     first = parent.step_pointing(0)
     first.collection_begin = BEGIN.timestamp() + 100
     instrument_roll = 37.0
+    monkeypatch.setattr(QueueDITL, "_power_optimal_roll", lambda self, target, at: 32.0)
     body = first.target_body_attitude(instrument_roll)
     slew = Slew.model_construct(
         config=config,
         slewstart=BEGIN.timestamp(),
         slewtime=100,
+        slewend=first.collection_begin,
         startra=body[0],
         startdec=body[1],
         startroll=body[2],
@@ -71,19 +76,16 @@ def test_sequence_momentum_forecast_uses_each_steps_physical_body_attitude(
         endroll=body[2],
         instrument_roll=instrument_roll,
     )
-    end, forecast = sim._visit_forecast(first, slew)
-    starts = parent.sequence.step_starts(
-        config.spacecraft_bus.attitude_control,
-        sim._timing_for(parent),
-        *parent.visit_base_pointing,
-    )
-    for index, start in enumerate(starts):
+    end, forecast, motions = sim._visit_forecast(first, slew)
+    assert len(motions) == 2
+    assert motions[1].slewstart >= first.collection_begin + 600
+    for index, motion in enumerate(motions):
         roll = instrument_roll + (0 if index == 0 else 15)
         expected = parent.step_pointing(index).target_body_attitude(roll)
-        observed = forecast(first.collection_begin + start + 1)
+        observed = forecast(motion.slewend + 1)
         assert quaternion_to_rotation_matrix(
             attitude_to_quat(*observed)
         ) == pytest.approx(
             quaternion_to_rotation_matrix(attitude_to_quat(*expected)), abs=1e-12
         )
-    assert end >= first.collection_begin + starts[-1] + 600
+    assert end >= motions[-1].slewend + 600

@@ -9,6 +9,7 @@ therefore execute as planned, step for step.
 
 from collections.abc import Iterator, Sequence
 from datetime import datetime
+from typing import overload
 
 import numpy as np
 import numpy.typing as npt
@@ -18,12 +19,17 @@ from rust_ephem.constraints import ConstraintResult, MovingVisibilityResult
 from ..common import ACSMode, ObsType, dtutcfromtimestamp
 from ..common.enums import SlewAlgorithm
 from ..common.numerics import MIN_SAMPLES
+from ..common.vector import attitude_to_quat
 from ..config import AttitudeControlSystem, MissionConfig
 from ..config.constraint import attitude_constraint_name_for_scopes
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..ditl.ditl_log import DITLLog
 from ..simulation.acs import ACS
-from ..simulation.attitude import AttitudeExecutionError, AttitudeTrajectory
+from ..simulation.attitude import (
+    AttitudeExecutionError,
+    AttitudeState,
+    AttitudeTrajectory,
+)
 from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_body_roll, optimum_roll
@@ -214,10 +220,6 @@ class SchedulingContext:
             for roll in rolls:
                 yield (ra, dec, roll)
 
-    def science_rest(self, entry: PlanEntry) -> tuple[float, Attitude]:
-        """The actual resting handoff after a fixed or tracked observation."""
-        return science_rest(entry, self.config.spacecraft_bus.attitude_control)
-
     def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
         ra, dec = target.position_at(utime)
@@ -378,8 +380,16 @@ class SchedulingContext:
         self._hold_cache[key] = violation
         return violation
 
+    @overload
+    def science_rest(self, entry: PlanEntry) -> tuple[float, Attitude]: ...
+
+    @overload
     def science_rest(
         self, entry: PlanEntry, slew: Slew
+    ) -> tuple[float, Attitude] | None: ...
+
+    def science_rest(
+        self, entry: PlanEntry, slew: Slew | None = None
     ) -> tuple[float, Attitude] | None:
         """The departure state after science tracking and its physical brake.
 
@@ -387,6 +397,8 @@ class SchedulingContext:
         slew starts from the same attitude, at rest. None means the track or
         its brake cannot be flown safely within this planning horizon.
         """
+        if slew is None:
+            return science_rest(entry, self.config.spacecraft_bus.attitude_control)
         attitude = (float(slew.endra), float(slew.enddec), float(slew.endroll))
         if not entry.moves:
             return float(entry.end), attitude
@@ -667,41 +679,21 @@ def science_tracking(
 ) -> AttitudeTrajectory | None:
     """The moving-science trajectory installed by ACS, including its stop."""
     begin = float(entry.begin) + float(entry.slewtime or 0)
-    end = float(entry.end)
-    interval = ACS.TRACK_SAMPLE_SECONDS
-    if not entry.moves or end <= begin + interval:
-        return None
-    arrival = entry.spacecraft_attitude or entry.target_body_attitude()
-    samples: list[tuple[float, Attitude]] = [(begin, arrival)]
-    at = begin + interval
-    while at < end:
-        samples.append((at, entry.target_body_attitude(at=at)))
-        at += interval
-    samples.append((end, entry.target_body_attitude(at=end)))
-    return AttitudeTrajectory.tracking(samples, limits, initial_rate=(0.0, 0.0, 0.0))
+    attitude = entry.spacecraft_attitude or entry.target_body_attitude()
+    q = attitude_to_quat(*attitude)
+    arrival = AttitudeState(
+        utime=begin, quaternion=(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+    )
+    return target_tracking(entry, arrival, entry.roll, limits)
 
 
 def science_rest(
     entry: PlanEntry, limits: AttitudeControlSystem
 ) -> tuple[float, Attitude]:
-    """Rest after tracking, including the terminal braking used by ACS.
-
-    Only the final tracking interval sets its terminal rate, so rebuilding
-    that interval gives the same stop without replaying the whole visit.
-    """
-    end = float(entry.end)
-    arrival = float(entry.begin) + entry.slewtime
-    step = ACS.TRACK_SAMPLE_SECONDS
-    if not entry.moves or end <= arrival + step:
-        return end, entry.target_body_attitude()
-    previous = arrival + (float(np.ceil((end - arrival) / step)) - 1) * step
-    trajectory = AttitudeTrajectory.tracking(
-        [
-            (previous, entry.target_body_attitude(at=previous)),
-            (end, entry.target_body_attitude(at=end)),
-        ],
-        limits,
-    )
+    """Rest after tracking, including the terminal braking used by ACS."""
+    trajectory = science_tracking(entry, limits)
+    if trajectory is None:
+        return float(entry.end), entry.target_body_attitude()
     return float(trajectory.end), trajectory.state(trajectory.end).attitude
 
 

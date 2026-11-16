@@ -279,3 +279,21 @@ class TestVisibilityOncePerRequest:
         assert [(e.obsid, float(e.begin)) for e in first] == [
             (e.obsid, float(e.begin)) for e in second
         ]
+
+
+@pytest.mark.parametrize("kind", ["moving", "body", "entry"])
+def test_sequential_rejects_moving_requests_before_modifying_them(kind: str) -> None:
+    config = _config(1)
+    target = (
+        MovingPointing(config=config, obsid=700, body="Jupiter", exptime=120)
+        if kind == "body"
+        else _mover(config)
+    )
+    if kind == "entry":
+        target = PlanEntry.model_validate(target.model_dump(exclude={"kind"}))
+    before = target.model_dump()
+    scheduler = SequentialScheduler(config, [target], BEGIN, BEGIN + timedelta(hours=1))
+    with pytest.raises(NotImplementedError, match="cannot plan moving targets"):
+        scheduler.schedule()
+    assert target.model_dump() == before
+    assert not scheduler.plan

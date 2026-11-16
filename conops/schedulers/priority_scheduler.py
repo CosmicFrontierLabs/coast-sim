@@ -3624,7 +3624,15 @@ class PriorityScheduler:
             return None
         entry.collection_end = collection_end
         entry.end = violation
-        block.end, block.attitude_out = self.ctx.science_rest(entry)
+        block.end = violation
+        return self._science_departure(block, slew)
+
+    def _science_departure(self, block: _Block, slew: Slew) -> _Block | None:
+        """Finish a science block at the tracked departure state, after braking."""
+        rest = self.ctx.science_rest(block.entry, slew)
+        if rest is None:
+            return None
+        block.end, block.attitude_out = rest
         return block
 
     def _visit(

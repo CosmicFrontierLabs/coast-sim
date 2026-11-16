@@ -657,3 +657,33 @@ class TestOneDumpAnswersACall:
         assert len(dumps) >= 2
         for earlier, later in zip(dumps, dumps[1:], strict=False):
             assert float(later.begin) > float(earlier.end) + STEP
+
+
+@pytest.mark.parametrize("pending_dump", [False, True])
+def test_capacity_fault_is_recorded_without_an_available_dump(
+    pending_dump: bool,
+) -> None:
+    config = _config(
+        capacity_n_m_s=CAPACITY, initial_momentum_body_n_m_s=(2.0, 0.0, 0.0)
+    )
+    ditl = create_ditl(config, [_held(config)], BEGIN, BEGIN + timedelta(minutes=10))
+    if pending_dump:
+        config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump = (
+            ThrusterDumpConfig()
+        )
+        ditl.activities = [
+            ScheduledActivity(
+                name="Pending dump",
+                begin=BEGIN.timestamp() + 500,
+                duration_seconds=120,
+                desaturation=True,
+            )
+        ]
+    assert ditl.calc()
+    faults = [
+        e
+        for e in _capacity_faults(ditl)
+        if e.name == "stored_momentum" and "unloaded" not in e.cause
+    ]
+    assert len(faults) == 1
+    assert faults[0].utime == BEGIN.timestamp()
