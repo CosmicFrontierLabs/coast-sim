@@ -132,8 +132,12 @@ Under ``spacecraft_bus.attitude_control.stored_momentum``:
 * ``residual_dipole_body_a_m2`` (three floats or None): the spacecraft's dipole.
 * ``initial_momentum_body_n_m_s`` (three floats): the wheels' momentum at the start.
 * ``max_attitude_step_deg`` (default 5): the attitude step along slews.
-* ``capacity_n_m_s`` (float or None): the wheels' capacity, taken as the same about
-  every axis; None sets none.
+* ``capacity_n_m_s`` (float or None): the wheels' total capacity, taken as the same
+  about every axis. None takes it from ``wheels`` (see `Wheels`_), and sets none
+  where there are no wheels.
+* ``wheels`` (list of :class:`~conops.config.MomentumWheel`, default empty): the
+  momentum wheels, each with its ``spin_axis``, ``capacity_n_m_s`` and place in the
+  body (see `Wheels`_).
 * ``planning_level`` (default 0.8): the fraction of the capacity at which a thruster
   dump is called for, the rest being margin.
 * ``thruster_dump`` (:class:`~conops.config.ThrusterDumpConfig` or None):
@@ -174,6 +178,52 @@ A minimal configuration that tracks gravity gradient and drag with thruster dump
          capacity_n_m_s: 4.0
          planning_level: 0.8
          thruster_dump: {duration_seconds: 180, residual_fraction: 0.05}
+
+Wheels
+------
+
+``wheels`` describes the momentum wheels themselves. Each
+:class:`~conops.config.MomentumWheel` has:
+
+* ``name`` (default ``Wheel``).
+* ``spin_axis`` (three floats): the axis it spins about, in body coordinates,
+  normalised to a unit vector.
+* ``capacity_n_m_s`` (float): the greatest momentum it holds along that axis, in
+  either sense.
+* ``position_m`` (three floats or None), ``radius_m`` (default 0.15) and
+  ``thickness_m`` (default 0.06): where it sits and its size, for the
+  :doc:`3-D spacecraft plot <spacecraft_3d_visualization>`. None places it inside
+  the bus along its spin axis.
+
+Together the wheels reach a polyhedron of momenta that is roomier along some
+directions than others. The tracker checks one figure about every axis, so the
+wheels give it the momentum they hold whichever way it points: the radius of the
+largest sphere inside that polyhedron, as
+:func:`~conops.config.wheel_array_capacity_n_m_s` and
+``stored_momentum.wheel_capacity_n_m_s``. Three orthogonal wheels of 4 N m s hold
+4 N m s about every axis; a fourth, canted wheel adds to it.
+
+``stored_momentum.total_capacity_n_m_s`` is the capacity everything on this page
+uses: the planning level and dumps, the capacity fault, slew momentum and
+``enforce_capacity``. It is ``capacity_n_m_s`` where that is given, which overrides
+the wheels (a derated figure, say), and otherwise what the wheels hold. Wheels
+whose spin axes do not span three dimensions hold nothing about some axis, so
+they need ``capacity_n_m_s`` set alongside them.
+
+A four-wheel pyramid about the boresight, giving the capacity for dumps:
+
+.. code-block:: yaml
+
+   spacecraft_bus:
+     attitude_control:
+       stored_momentum:
+         gravity_gradient_enabled: true
+         wheels:
+           - {name: RW1, spin_axis: [0.577,  0.577,  0.577], capacity_n_m_s: 4.0}
+           - {name: RW2, spin_axis: [0.577, -0.577,  0.577], capacity_n_m_s: 4.0}
+           - {name: RW3, spin_axis: [0.577, -0.577, -0.577], capacity_n_m_s: 4.0}
+           - {name: RW4, spin_axis: [0.577,  0.577, -0.577], capacity_n_m_s: 4.0}
+         thruster_dump: {duration_seconds: 180}
 
 Dumps
 -----
@@ -301,6 +351,10 @@ What is left out
   ``max_attitude_step_deg`` of motion, so a peak between samples is read a sample
   late; the attitude step is the convergence control.
 * Self-shadowing between plates, for sunlight and drag alike.
+* The momentum in each wheel: the wheels give one capacity about every axis, and
+  the stored momentum is checked against that, not shared out among the wheels.
+  Momentum along a direction the wheels reach further in is limited as if it were
+  along their weakest.
 * A thruster firing attitude: a dump holds the attitude the spacecraft has.
 * Propellant accounting for dumps.
 * The accuracy of the environment: the built-in atmosphere table and the dipole

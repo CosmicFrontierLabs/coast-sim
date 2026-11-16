@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
@@ -25,6 +26,101 @@ class ThrusterDumpConfig(ConfigModel):
             "0 unloads them fully"
         ),
     )
+
+
+class MomentumWheel(ConfigModel):
+    """A momentum (reaction) wheel: where it sits, the axis it spins about and
+    the momentum it can hold along that axis."""
+
+    name: str = Field(default="Wheel", description="The wheel's name")
+    spin_axis: tuple[float, float, float] = Field(
+        description=(
+            "The wheel's spin axis in spacecraft body coordinates; normalised "
+            "to a unit vector"
+        ),
+    )
+    capacity_n_m_s: float = Field(
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "The greatest momentum the wheel holds along its spin axis, in "
+            "either sense, in N m s"
+        ),
+    )
+    position_m: tuple[float, float, float] | None = Field(
+        default=None,
+        description=(
+            "The wheel's centre in spacecraft body coordinates, in m, for the "
+            "3-D spacecraft plot; None places it inside the bus along its "
+            "spin axis"
+        ),
+    )
+    radius_m: float = Field(
+        default=0.15,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="The wheel's radius, in m, for the 3-D spacecraft plot",
+    )
+    thickness_m: float = Field(
+        default=0.06,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "The wheel's thickness along its spin axis, in m, for the 3-D "
+            "spacecraft plot"
+        ),
+    )
+
+    @field_validator("spin_axis")
+    @classmethod
+    def _normalise_axis(
+        cls, value: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        axis = np.asarray(value, dtype=float)
+        norm = float(np.linalg.norm(axis))
+        if not np.isfinite(norm) or norm < 1e-9:
+            raise ValueError("spin_axis must be a finite, non-zero vector")
+        axis = axis / norm
+        return float(axis[0]), float(axis[1]), float(axis[2])
+
+    @field_validator("position_m")
+    @classmethod
+    def _validate_position(
+        cls, value: tuple[float, float, float] | None
+    ) -> tuple[float, float, float] | None:
+        if value is not None and not all(np.isfinite(x) for x in value):
+            raise ValueError("position_m must contain finite values")
+        return value
+
+
+def wheel_array_capacity_n_m_s(wheels: Sequence[MomentumWheel]) -> float:
+    """The momentum a set of wheels holds about every body axis, in N m s.
+
+    Each wheel holds up to its capacity along its spin axis, so together they
+    reach a polyhedron of momenta (a zonotope) that is roomier along some
+    directions than others. This is the radius of the largest sphere inside
+    it: the momentum the wheels hold whichever way it points, and so the one
+    figure that is safe to take "as the same about every axis". It is zero
+    where the spin axes do not span three dimensions.
+    """
+    if not wheels:
+        return 0.0
+    axes = np.array([wheel.spin_axis for wheel in wheels], dtype=float)
+    capacities = np.array([wheel.capacity_n_m_s for wheel in wheels], dtype=float)
+    # The polyhedron's faces are normal to the cross products of pairs of
+    # spin axes; its reach along a normal is the sum of every wheel's.
+    radius = np.inf
+    for first in range(len(wheels)):
+        for second in range(first + 1, len(wheels)):
+            normal = np.cross(axes[first], axes[second])
+            length = float(np.linalg.norm(normal))
+            if length < 1e-9:
+                continue
+            reach = float(capacities @ np.abs(axes @ (normal / length)))
+            radius = min(radius, reach)
+    if not np.isfinite(radius) or radius < 1e-12:
+        return 0.0
+    return float(radius)
 
 
 class AtmosphereConfig(ConfigModel):
@@ -75,7 +171,24 @@ class StoredMomentumConfig(ConfigModel):
     def capacity_enabled(self) -> bool:
         """Whether the capacity is enforced as a hard limit on the executed
         motion (see ``enforce_capacity``)."""
-        return self.capacity_n_m_s is not None and self.enforce_capacity
+        return self.total_capacity_n_m_s is not None and self.enforce_capacity
+
+    @property
+    def wheel_capacity_n_m_s(self) -> float | None:
+        """The momentum the configured wheels hold about every axis (see
+        ``wheel_array_capacity_n_m_s``); None where no wheels are configured."""
+        if not self.wheels:
+            return None
+        return wheel_array_capacity_n_m_s(self.wheels)
+
+    @property
+    def total_capacity_n_m_s(self) -> float | None:
+        """The total momentum capacity that tracking, dumps and enforcement
+        use: ``capacity_n_m_s`` where it is given, otherwise what the
+        configured wheels hold about every axis; None sets no capacity."""
+        if self.capacity_n_m_s is not None:
+            return self.capacity_n_m_s
+        return self.wheel_capacity_n_m_s
 
     enforce_capacity: bool = Field(
         default=False,
@@ -225,8 +338,18 @@ class StoredMomentumConfig(ConfigModel):
         gt=0.0,
         allow_inf_nan=False,
         description=(
-            "The wheels' momentum capacity, in N m s, taken as the same about "
-            "every axis; None sets no capacity"
+            "The wheels' total momentum capacity, in N m s, taken as the same "
+            "about every axis. None takes it from the configured wheels, as "
+            "what they hold about every axis (total_capacity_n_m_s), and sets "
+            "no capacity where there are none"
+        ),
+    )
+    wheels: list[MomentumWheel] = Field(
+        default_factory=list,
+        description=(
+            "The momentum wheels: each one's spin axis, capacity and place in "
+            "the body. They give the total capacity where capacity_n_m_s is "
+            "None, and are drawn on the 3-D spacecraft plot"
         ),
     )
     planning_level: float = Field(
@@ -264,20 +387,34 @@ class StoredMomentumConfig(ConfigModel):
 
     @model_validator(mode="after")
     def _dumps_need_a_capacity(self) -> "StoredMomentumConfig":
-        if self.thruster_dump is not None and self.capacity_n_m_s is None:
-            raise ValueError("thruster dumps need capacity_n_m_s to be triggered at")
-        if self.slew_momentum_enabled and self.capacity_n_m_s is None:
+        if (
+            self.wheels
+            and self.capacity_n_m_s is None
+            and not wheel_array_capacity_n_m_s(self.wheels)
+        ):
             raise ValueError(
-                "slew momentum needs capacity_n_m_s to be admitted against"
+                "the wheels' spin axes do not span three dimensions, so they "
+                "hold no momentum about some axis: add wheels or set "
+                "capacity_n_m_s"
+            )
+        capacity = self.total_capacity_n_m_s
+        if self.thruster_dump is not None and capacity is None:
+            raise ValueError(
+                "thruster dumps need capacity_n_m_s or wheels to be triggered at"
+            )
+        if self.slew_momentum_enabled and capacity is None:
+            raise ValueError(
+                "slew momentum needs capacity_n_m_s or wheels to be admitted against"
             )
         return self
 
     @property
     def dump_level_n_m_s(self) -> float | None:
         """The stored momentum at which a thruster dump is called for."""
-        if self.capacity_n_m_s is None or self.thruster_dump is None:
+        capacity = self.total_capacity_n_m_s
+        if capacity is None or self.thruster_dump is None:
             return None
-        return self.planning_level * self.capacity_n_m_s
+        return self.planning_level * capacity
 
     @property
     def enabled(self) -> bool:

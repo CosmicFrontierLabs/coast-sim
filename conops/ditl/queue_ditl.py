@@ -1260,9 +1260,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if any(a.desaturation for a in self._activities_left):
             return
         stored = tracker.stored_momentum_norm_n_m_s
-        capacity = (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         assert capacity is not None
         observing = self.ppt is not None and self.ppt is not self.charging_ppt
         obsid = self.ppt.obsid if observing and self.ppt is not None else None
@@ -1333,9 +1331,7 @@ class QueueDITL(DITLMixin, DITLStats):
         observation does not begin now."""
         tracker = self._stored_momentum_tracker
         level = self._dump_level_n_m_s()
-        capacity = (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         ppt = self.ppt
         assert ppt is not None
         if tracker is None or level is None or capacity is None:
@@ -1519,7 +1515,7 @@ class QueueDITL(DITLMixin, DITLStats):
         fraction for later steps and checks them again from the live state."""
         tracker = self._stored_momentum_tracker
         momentum_config = self.config.spacecraft_bus.attitude_control.stored_momentum
-        capacity = momentum_config.capacity_n_m_s
+        capacity = momentum_config.total_capacity_n_m_s
         if (
             tracker is None
             or capacity is None

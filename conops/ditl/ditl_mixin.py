@@ -650,9 +650,7 @@ class DITLMixin:
         the observation under way if any: an emergency dump interrupting an
         observation is what the planning level exists to prevent."""
         tracker = self._stored_momentum_tracker
-        capacity = (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         if tracker is None or capacity is None:
             return False
         stored = self._momentum_demand_n_m_s(tracker)

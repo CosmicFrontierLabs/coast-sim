@@ -9,6 +9,7 @@ Organised by concern:
   TestMultiplePanels        — trace count scales with panel count
   TestMultipleRadiators     — trace count scales with radiator count
   TestMultipleStarTrackers  — trace count scales with star-tracker count
+  TestMomentumWheels        — momentum wheels and the translucent bus
   TestRealConfig            — smoke test against examples/example_config.json
 """
 
@@ -21,6 +22,7 @@ import plotly.graph_objects as go
 import pytest
 
 from conops.config import MissionConfig
+from conops.config import AttitudeControlSystem, MomentumWheel, StoredMomentumConfig
 from conops.config.instrument import Payload, Telescope, TelescopeConfig, TelescopeType
 from conops.config.radiator import (
     Radiator,
@@ -40,6 +42,7 @@ from conops.config.star_tracker import (
 )
 from conops.visualization import plot_spacecraft_3d
 from conops.visualization.plotly.spacecraft_3d import (
+    _BUS_OPACITY_WITH_WHEELS,
     _face_placement,
     _perp_pair,
     _unit,
@@ -682,6 +685,103 @@ class TestMultipleStarTrackers:
 # ---------------------------------------------------------------------------
 # TestRealConfig — integration smoke test
 # ---------------------------------------------------------------------------
+
+
+class TestMomentumWheels:
+    def _config(self, wheels: list[MomentumWheel]) -> MissionConfig:
+        bus = SpacecraftBus(
+            attitude_control=AttitudeControlSystem(
+                stored_momentum=StoredMomentumConfig(wheels=wheels, capacity_n_m_s=4.0)
+            )
+        )
+        return MissionConfig(spacecraft_bus=bus)
+
+    def _wheels(self, n: int = 3) -> list[MomentumWheel]:
+        axes = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)]
+        return [
+            MomentumWheel(name=f"RW{i + 1}", spin_axis=axes[i], capacity_n_m_s=4.0)
+            for i in range(n)
+        ]
+
+    def _wheel_meshes(self, fig: go.Figure) -> list[go.Mesh3d]:
+        return [t for t in fig.data if getattr(t, "legendgroup", None) == "wheels"]
+
+    def _center(self, meshes: list[go.Mesh3d]) -> np.ndarray:
+        rim = meshes[0]
+        return np.array([np.mean(rim.x), np.mean(rim.y), np.mean(rim.z)])
+
+    def test_no_wheels_leaves_the_plot_unchanged(self) -> None:
+        fig = plot_spacecraft_3d(MissionConfig())
+        assert not self._wheel_meshes(fig)
+        assert fig.data[0].opacity == 1.0
+
+    def test_each_wheel_adds_a_rim_two_faces_and_an_axis_arrow(self) -> None:
+        base = len(plot_spacecraft_3d(self._config([])).data)
+        for n in (1, 3, 4):
+            fig = plot_spacecraft_3d(self._config(self._wheels(n)))
+            assert len(fig.data) == base + 5 * n
+            assert len(self._wheel_meshes(fig)) == 3 * n
+
+    def test_spin_axes_follow_show_normals(self) -> None:
+        with_axes = plot_spacecraft_3d(self._config(self._wheels(3)))
+        without = plot_spacecraft_3d(self._config(self._wheels(3)), show_normals=False)
+        assert sum("spin axis" in (t.name or "") for t in with_axes.data) == 6
+        assert not any("spin axis" in (t.name or "") for t in without.data)
+        assert len(self._wheel_meshes(without)) == 9
+
+    def test_bus_is_translucent_only_when_wheels_are_drawn(self) -> None:
+        config = self._config(self._wheels(3))
+        assert plot_spacecraft_3d(config).data[0].opacity == _BUS_OPACITY_WITH_WHEELS
+        hidden = plot_spacecraft_3d(config, show_wheels=False)
+        assert hidden.data[0].opacity == 1.0
+        assert not self._wheel_meshes(hidden)
+
+    def test_wheel_name_carries_its_capacity(self) -> None:
+        fig = plot_spacecraft_3d(self._config(self._wheels(1)))
+        assert self._wheel_meshes(fig)[0].name == "RW1 (4 N m s)"
+
+    def test_configured_position_is_used(self) -> None:
+        wheel = MomentumWheel(
+            spin_axis=(0.0, 1.0, 0.0), capacity_n_m_s=4.0, position_m=(0.3, -0.2, 0.1)
+        )
+        fig = plot_spacecraft_3d(self._config([wheel]))
+        assert self._center(self._wheel_meshes(fig)) == pytest.approx(
+            (0.3, -0.2, 0.1), abs=1e-9
+        )
+
+    def test_default_positions_are_inside_the_bus_and_distinct(self) -> None:
+        wheels = self._wheels(4) + [
+            MomentumWheel(name="Spare", spin_axis=(-1.0, 0.0, 0.0), capacity_n_m_s=4.0),
+            MomentumWheel(
+                name="Spare 2", spin_axis=(1.0, 0.0, 0.0), capacity_n_m_s=4.0
+            ),
+        ]
+        meshes = self._wheel_meshes(plot_spacecraft_3d(self._config(wheels)))
+        centers = [self._center(meshes[3 * i :]) for i in range(len(wheels))]
+        for center in centers:
+            assert np.all(np.abs(center) < np.array(_BUS_HD))
+        for i, first in enumerate(centers):
+            for second in centers[i + 1 :]:
+                assert np.linalg.norm(first - second) > 0.05
+
+    def test_wheel_is_drawn_about_its_spin_axis(self) -> None:
+        wheel = MomentumWheel(
+            spin_axis=(0.0, 0.0, 1.0),
+            capacity_n_m_s=4.0,
+            position_m=(0.0, 0.0, 0.0),
+            radius_m=0.2,
+            thickness_m=0.08,
+        )
+        rim = self._wheel_meshes(plot_spacecraft_3d(self._config([wheel])))[0]
+        assert max(rim.z) - min(rim.z) == pytest.approx(0.08)
+        assert np.hypot(rim.x, rim.y) == pytest.approx(0.2)
+
+    def test_distant_wheel_widens_the_scene(self) -> None:
+        wheel = MomentumWheel(
+            spin_axis=(1.0, 0.0, 0.0), capacity_n_m_s=4.0, position_m=(9.0, 0.0, 0.0)
+        )
+        fig = plot_spacecraft_3d(self._config([wheel]))
+        assert fig.layout.scene.xaxis.range[1] >= 9.0
 
 
 class TestRealConfig:

@@ -416,7 +416,8 @@ Momentum-constrained queue scheduling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Set ``stored_momentum.enforce_capacity`` with a finite positive spherical actuator
-momentum limit in ``stored_momentum.capacity_n_m_s`` to enable admission and
+momentum limit in ``stored_momentum.capacity_n_m_s``, or the momentum wheels in
+``stored_momentum.wheels`` (see :doc:`momentum`), to enable admission and
 execution checks. The default leaves existing scheduling unchanged. A physical
 inertia tensor is required, even when gravity-gradient torque is disabled.
 Enforcement integrates the same torque sources the run tracks, into the run's own

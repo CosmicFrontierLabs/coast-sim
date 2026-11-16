@@ -1,7 +1,7 @@
 """Interactive 3-D spacecraft configuration visualizer.
 
-Renders the spacecraft body, solar panels, radiators, star trackers and
-telescope as a Plotly 3-D scene that is freely rotatable in the browser or
+Renders the spacecraft body, solar panels, radiators, star trackers, momentum
+wheels and telescope as a Plotly 3-D scene that is freely rotatable in the browser or
 Jupyter.
 
 Coordinate system (spacecraft body frame)
@@ -19,6 +19,9 @@ Component placement rules
   Radiators   – placed on the bus face whose outward normal best matches the
                 radiator normal; sized by ``width_m`` × ``height_m``.
   Star trackers – small prism on the bus face matching the boresight direction.
+  Momentum wheels – disc at ``MomentumWheel.position_m`` when present; otherwise
+                placed inside the bus along the wheel's spin axis.  The bus is
+                drawn translucent so the wheels show through it.
 """
 
 from __future__ import annotations
@@ -44,6 +47,10 @@ _C_SOLAR = "rgb(15, 55, 145)"
 _C_SOLAR_FRAME = "rgb(195, 200, 215)"
 _C_RADIATOR = "rgb(228, 232, 240)"
 _C_ST = "rgb(65, 70, 88)"
+_C_WHEEL = "rgb(205, 130, 55)"
+_C_WHEEL_AXIS = "rgb(255, 190, 90)"
+# The bus is drawn translucent where there are wheels inside it to show.
+_BUS_OPACITY_WITH_WHEELS: float = 0.35
 _C_X = "red"
 _C_Y = "limegreen"
 _C_Z = "dodgerblue"
@@ -370,6 +377,38 @@ def _face_placement(
     return center, u, v
 
 
+def _wheel_centers(
+    wheels: list[Any], bus_hd: tuple[float, float, float]
+) -> list[npt.NDArray[np.float64]]:
+    """Where each wheel is drawn: its configured position, or halfway from the
+    bus centre to the bus surface along its spin axis. Wheels sharing an axis
+    take alternate sides of the centre, then sit further in."""
+    half = np.asarray(bus_hd, dtype=float)
+    shared: dict[tuple[float, float, float], int] = {}
+    centers: list[npt.NDArray[np.float64]] = []
+    for wheel in wheels:
+        position = getattr(wheel, "position_m", None)
+        if position is not None:
+            centers.append(np.asarray(position, dtype=float))
+            continue
+        axis = _unit(np.asarray(wheel.spin_axis, dtype=float))
+        # One key for an axis and its opposite.
+        lead = next((x for x in axis if abs(x) > 1e-9), 1.0)
+        canonical = axis if lead > 0 else -axis
+        key = (
+            round(float(canonical[0]), 6),
+            round(float(canonical[1]), 6),
+            round(float(canonical[2]), 6),
+        )
+        count = shared.get(key, 0)
+        shared[key] = count + 1
+        with np.errstate(divide="ignore"):
+            to_surface = float(np.min(half / np.abs(canonical)))
+        side = 1.0 if count % 2 == 0 else -1.0
+        centers.append(canonical * to_surface * side * 0.5 / (1 + count // 2))
+    return centers
+
+
 # ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
@@ -381,6 +420,7 @@ def plot_spacecraft_3d(
     show_axes: bool = True,
     bus_half_dims: tuple[float, float, float] | None = None,
     title: str | None = None,
+    show_wheels: bool = True,
 ) -> go.Figure:
     """Build an interactive rotatable 3-D model of the spacecraft.
 
@@ -403,6 +443,11 @@ def plot_spacecraft_3d(
         metres.  Defaults to ``(1.0, 0.55, 0.55)``.
     title:
         Figure title.  Falls back to the spacecraft bus name from config.
+    show_wheels:
+        Draw the momentum wheels configured in
+        ``spacecraft_bus.attitude_control.stored_momentum.wheels``, with the
+        bus translucent so they show through it (default ``True``).  Their
+        spin axes are drawn where ``show_normals`` is set.
 
     Returns
     -------
@@ -433,7 +478,22 @@ def plot_spacecraft_3d(
     bus_name = getattr(
         getattr(config, "spacecraft_bus", None), "name", "Spacecraft Bus"
     )
-    traces.append(_box_mesh(hx, hy, hz, name=bus_name, color=_C_BUS))
+    stored_momentum = getattr(
+        getattr(getattr(config, "spacecraft_bus", None), "attitude_control", None),
+        "stored_momentum",
+        None,
+    )
+    wheels = list(getattr(stored_momentum, "wheels", []) or []) if show_wheels else []
+    traces.append(
+        _box_mesh(
+            hx,
+            hy,
+            hz,
+            name=bus_name,
+            color=_C_BUS,
+            opacity=_BUS_OPACITY_WITH_WHEELS if wheels else 1.0,
+        )
+    )
 
     # ------------------------------------------------------------------ #
     # 2. Telescope / payload instruments                                   #
@@ -775,7 +835,56 @@ def plot_spacecraft_3d(
             )
 
     # ------------------------------------------------------------------ #
-    # 6. Spacecraft body-frame coordinate axes                             #
+    # 6. Momentum wheels                                                   #
+    # ------------------------------------------------------------------ #
+    for widx, (wheel, c) in enumerate(
+        zip(wheels, _wheel_centers(wheels, bus_hd), strict=True)
+    ):
+        axis = _unit(np.asarray(wheel.spin_axis, dtype=float))
+        radius = float(wheel.radius_m)
+        thickness = float(wheel.thickness_m)
+        wname = f"{wheel.name} ({wheel.capacity_n_m_s:g} N m s)"
+        rim_start = c - axis * thickness / 2
+        traces.append(
+            _cylinder_mesh(
+                rim_start,
+                axis,
+                radius,
+                thickness,
+                color=_C_WHEEL,
+                name=wname,
+                show_legend=(widx == 0),
+                legendgroup="wheels",
+            )
+        )
+        for face in (rim_start, rim_start + axis * thickness):
+            traces.append(
+                _disk_mesh(
+                    face,
+                    axis,
+                    radius,
+                    0.0,
+                    color=_C_WHEEL,
+                    name=wname,
+                    legendgroup="wheels",
+                )
+            )
+        if show_normals:
+            traces.extend(
+                _arrow_traces(
+                    c + axis * thickness / 2,
+                    axis,
+                    _NORMAL_LEN * 0.8,
+                    color=_C_WHEEL_AXIS,
+                    name=f"{wheel.name} spin axis",
+                    show_legend=(widx == 0),
+                    legendgroup="wheel_axes",
+                    line_width=3,
+                )
+            )
+
+    # ------------------------------------------------------------------ #
+    # 7. Spacecraft body-frame coordinate axes                             #
     # ------------------------------------------------------------------ #
     if show_axes:
         origin = np.zeros(3)
@@ -800,7 +909,7 @@ def plot_spacecraft_3d(
             traces.append(_axis_label(label_pos, label.split()[0], color))
 
     # ------------------------------------------------------------------ #
-    # 7. Figure layout                                                     #
+    # 8. Figure layout                                                     #
     # ------------------------------------------------------------------ #
     fig_title = title or f"{bus_name} — 3-D Configuration"
     fig = go.Figure(data=traces)
@@ -808,7 +917,14 @@ def plot_spacecraft_3d(
     # Compute a sensible axis range
     scope_reach = hx + 2.5  # telescope extends in +X
     panel_reach = max(hy + 2.5, hz + 1.5)
-    rng = max(scope_reach, panel_reach, _AXIS_LEN + 0.5)
+    wheel_reach = max(
+        (
+            float(np.max(np.abs(c))) + float(wheel.radius_m)
+            for wheel, c in zip(wheels, _wheel_centers(wheels, bus_hd), strict=True)
+        ),
+        default=0.0,
+    )
+    rng = max(scope_reach, panel_reach, wheel_reach, _AXIS_LEN + 0.5)
 
     fig.update_layout(
         title=dict(

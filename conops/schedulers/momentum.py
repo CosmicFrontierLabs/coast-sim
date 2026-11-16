@@ -153,9 +153,7 @@ class MomentumForecast:
 
     @property
     def capacity_n_m_s(self) -> float | None:
-        return (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        return self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
 
     # ── The timeline as attitudes ─────────────────────────────────────────
 

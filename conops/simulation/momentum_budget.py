@@ -87,12 +87,12 @@ class MomentumBudget:
         self.config = config
         acs = config.spacecraft_bus.attitude_control
         settings = acs.stored_momentum
-        assert settings.capacity_n_m_s is not None
+        assert settings.total_capacity_n_m_s is not None
         inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
         if inertia is None:
             raise ValueError("Momentum capacity enforcement requires an inertia tensor")
         self.inertia = np.asarray(inertia, dtype=float).copy()
-        self.capacity = settings.capacity_n_m_s
+        self.capacity = settings.total_capacity_n_m_s
         if not np.isfinite(self.capacity) or self.capacity <= 0:
             raise ValueError("Momentum capacity must be finite and positive")
         fastest = max(acs.max_slew_rate_body or (acs.max_slew_rate,))
