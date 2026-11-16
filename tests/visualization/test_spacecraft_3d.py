@@ -21,8 +21,12 @@ import numpy as np
 import plotly.graph_objects as go
 import pytest
 
-from conops.config import MissionConfig
-from conops.config import AttitudeControlSystem, MomentumWheel, StoredMomentumConfig
+from conops.config import (
+    AttitudeControlSystem,
+    MissionConfig,
+    MomentumWheel,
+    StoredMomentumConfig,
+)
 from conops.config.instrument import Payload, Telescope, TelescopeConfig, TelescopeType
 from conops.config.radiator import (
     Radiator,

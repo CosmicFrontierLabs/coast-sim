@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from conops.common import attitude_to_quat
+from conops.common.quaternion_curve import QuaternionHermite
 from conops.config import (
     AttitudeControlSystem,
     MissionConfig,
@@ -11,11 +13,9 @@ from conops.config import (
     SpacecraftBus,
     StoredMomentumConfig,
     ThrusterDumpConfig,
+    WheelArray,
     wheel_array_capacity_n_m_s,
 )
-from conops.common import attitude_to_quat
-from conops.common.quaternion_curve import QuaternionHermite
-from conops.config import WheelArray
 from conops.schedulers.momentum import MomentumForecast
 from conops.simulation.momentum import StoredMomentumTracker, tracker_from_config
 
