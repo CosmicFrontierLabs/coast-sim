@@ -149,6 +149,10 @@ class Constraint(ConfigModel):
         default=None,
         description="Moon constraint configuration",
     )
+    science_in_eclipse: bool = Field(
+        default=True,
+        description="Whether observations may run in eclipse; categories can override this default",
+    )
     eclipse_intervals: list[tuple[float, float]] = Field(
         default_factory=list,
         description=(
@@ -261,6 +265,11 @@ class Constraint(ConfigModel):
     :meth:`held_over`): a miss then evaluates them all in one call."""
     _eclipse_constraint: rust_ephem.EclipseConstraint = PrivateAttr(
         default_factory=rust_ephem.EclipseConstraint
+    )
+
+    _sunlit_ephem: object | None = PrivateAttr(default=None)
+    _natural_sunlit_windows: list[tuple[float, float]] = PrivateAttr(
+        default_factory=list
     )
 
     # validate_assignment=False: this class holds external rust_ephem types
@@ -716,6 +725,64 @@ class Constraint(ConfigModel):
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
 
+    def sunlit_windows(self) -> list[tuple[float, float]]:
+        """Natural sunlit windows less injected eclipses, using half-open bounds.
+
+        Rust computes natural boundaries. Only that immutable ephemeris result
+        is cached: injected intervals are read afresh so updates cannot reuse
+        stale admission windows.
+        """
+        assert self.ephem is not None, "An ephemeris is required for eclipse policy"
+        if self._sunlit_ephem is not self.ephem:
+            result = self._eclipse_constraint.evaluate(
+                ephemeris=self.ephem, target_ra=0.0, target_dec=0.0
+            )
+            self._natural_sunlit_windows = [
+                (w.start_time.timestamp(), w.end_time.timestamp())
+                for w in result.visibility
+            ]
+            self._sunlit_ephem = self.ephem
+        windows = list(self._natural_sunlit_windows)
+        for start, end in self.eclipse_intervals_unix():
+            cut = []
+            for lo, hi in windows:
+                if end <= lo or start >= hi:
+                    cut.append((lo, hi))
+                else:
+                    if lo < start:
+                        cut.append((lo, start))
+                    if end < hi:
+                        cut.append((end, hi))
+            windows = cut
+        return windows
+
+    def without_eclipses(
+        self, windows: Sequence[Sequence[float]]
+    ) -> list[tuple[float, float]]:
+        """Intersect observing windows with the shared sunlit intervals."""
+        sunlit = self.sunlit_windows()
+        return [
+            (max(a, lo), min(b, hi))
+            for a, b in windows
+            for lo, hi in sunlit
+            if max(a, lo) < min(b, hi)
+        ]
+
+    def first_eclipse_overlap(self, begin: float, end: float) -> float | None:
+        """First forbidden instant in ``[begin, end)``, or None if all is sunlit."""
+        cursor = begin
+        if end <= begin:
+            return None
+        for lo, hi in self.sunlit_windows():
+            if hi <= cursor:
+                continue
+            if lo > cursor:
+                return cursor
+            cursor = max(cursor, hi)
+            if cursor >= end:
+                return None
+        return cursor
+
     def in_moon(
         self, ra: float, dec: float, time: float, target_roll: float | None = None
     ) -> bool:
@@ -880,6 +947,8 @@ class Constraint(ConfigModel):
         acs_mode: ACSMode | int | None = None,
     ) -> bool:
         """Check imaging-quality and power-generation constraints."""
+        if not self.science_in_eclipse and self.in_eclipse(ra, dec, utime):
+            return True
         return in_attitude_constraint_scopes(
             self,
             [
@@ -980,6 +1049,8 @@ class Constraint(ConfigModel):
         acs_mode: ACSMode | int | None = None,
     ) -> str | None:
         """Return the first violated science/scheduling constraint name."""
+        if not self.science_in_eclipse and self.in_eclipse(ra, dec, utime):
+            return "science_eclipse"
         return science_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
@@ -1085,7 +1156,7 @@ class Constraint(ConfigModel):
         target_rolls: list[float] | None = None,
     ) -> npt.NDArray[np.bool_]:
         """Check imaging-quality and power-generation constraints."""
-        return self._in_constraint_batch_for_components(
+        result = self._in_constraint_batch_for_components(
             ras,
             decs,
             utime,
@@ -1101,6 +1172,10 @@ class Constraint(ConfigModel):
             ],
             target_rolls=target_rolls,
         )
+
+        if not self.science_in_eclipse and self.in_eclipse(0, 0, utime):
+            return np.ones_like(result, dtype=bool)
+        return result
 
     def in_imaging_quality_constraint_batch(
         self,

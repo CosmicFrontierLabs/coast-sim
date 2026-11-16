@@ -1579,6 +1579,9 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
 * ``sun_constraint``: Minimum angle from the Sun
 * ``anti_sun_constraint``: Maximum angle from anti-Sun direction
 * ``moon_constraint``: Minimum angle from the Moon
+* ``science_in_eclipse`` (bool, default ``True``): Whether observations may run
+  in eclipse. Set ``False`` to restrict observing to sunlit intervals; an
+  observation category can override this default. See `Science in eclipse`_.
 * ``eclipse_intervals``: Intervals, each a ``(start, end)`` pair in Unix seconds, datetimes or ISO-8601 strings, during which the spacecraft is taken to be in eclipse whatever the ephemeris says, for a test of an eclipse the orbit does not give. The constraint's eclipse test, the solar panels, the bus and instrument eclipse power, the planners' battery ledger, the momentum sources' Sun, telemetry and the timeline plots all see them
 * ``earth_constraint``: Minimum angle from Earth limb
 * ``panel_constraint``: Solar panel pointing constraint
@@ -1601,6 +1604,49 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
 
    # Set ephemeris at runtime
    constraint.ephem = ephemeris
+
+Science in eclipse
+^^^^^^^^^^^^^^^^^^
+
+Set the policy before creating requests or binding a program:
+
+.. code-block:: python
+
+   from conops.config import ObservationCategory
+
+   config.constraint.science_in_eclipse = False
+   config.observation_categories.categories.append(
+       ObservationCategory(
+           name="Eclipse-capable follow-up", obsid_min=9000, obsid_max=9999,
+           science_in_eclipse=True,
+       )
+   )
+
+``ObservationCategory.science_in_eclipse=None`` inherits the mission default;
+``True`` allows that category to observe during eclipse, and ``False`` forbids it.
+The default mission value preserves existing behaviour. The resolved policy is
+available through ``config.science_in_eclipse_for(obsid)`` and is shared by
+request visibility, dispatch, all three planners and rolling replanning, including
+Targets of Opportunity and moving targets. Protected sequences must fit wholly
+inside a permitted window. Setup and cleanup hold times also fit inside that
+window; the slew into it may start earlier if the existing slew rules permit it.
+
+Both the ephemeris's natural eclipses and ``eclipse_intervals`` apply. Natural
+window boundaries use rust-ephem's ephemeris resolution; injected intervals use
+half-open bounds, including boundaries between simulation ticks. Science credit
+and data collection are clipped before a forbidden interval. A saved plan that
+violates the policy is rejected before execution: regenerate the plan after
+changing its observing policy or eclipses.
+
+This policy controls observation availability. Instrument standby modes and
+``eclipse_power_w`` still come from the mission's load configuration. Scheduled
+activities retain their explicit modes, and hardware keep-outs still apply to
+slews and holds. Synthetic eclipse activities are no longer needed solely to
+prohibit science; keep an activity when it represents a separate required
+operation or a particular instrument mode.
+
+Roll-dependent stray light
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A stray-light patch, a region beside the boresight into which a bright body scatters light, is written as a ``rust_ephem`` field-of-view polygon on ``science_constraint``: a :class:`~rust_ephem.constraints.BodyConstraint` for the Sun, Moon or Earth, or a :class:`~rust_ephem.constraints.BrightStarConstraint` for a list of stars, each with the patch as ``fov_polygon`` in the instrument frame (gnomonic degrees; at zero roll +v points north and +u east, and a roll is the position angle of +v east of north). Leave ``roll_deg`` unset so the roll in question is used. The patch turns with the instrument, so where it sits on the sky depends on the roll: the check is applied to science attitudes at their roll, named ``Science`` in the violation names, and the roll optimiser tests the candidate rolls in power order and takes the first that keeps the patch clear, or the power-optimal roll when none does. Charging, safe-mode and idle attitudes take the power-optimal roll regardless.
 
@@ -1790,6 +1836,9 @@ Each :class:`~conops.config.ObservationCategory` also carries:
 * ``antenna_repoints`` (``allowed``, ``reported`` or ``forbidden``, default ``allowed``):
   What an antenna repoint during one of the category's observations means; ``forbidden``
   keeps the category's snapshots between repoints (see :doc:`communications`)
+* ``science_in_eclipse`` (bool or ``None``, default ``None``): Override the
+  mission's eclipse observing policy, or inherit it with ``None`` (see
+  `Science in eclipse`_)
 * ``interruptible`` (bool, default ``True``): Whether a Target of Opportunity may cut
   short the category's observations (see :doc:`target_of_opportunity`)
 * ``skip_thermal_settling`` (bool, default ``False``): Whether a slew into one of the
