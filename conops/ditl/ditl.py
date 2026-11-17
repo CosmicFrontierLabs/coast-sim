@@ -420,7 +420,15 @@ class DITL(DITLMixin, DITLStats):
             _pos = np.asarray(
                 position_vectors(self.ephem, "gcrs")[ephem_index], dtype=np.float64
             )
-            earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
+            earth_body_vector: list[float] = [
+                float(value)
+                for value in scbodyvector(
+                    np.radians(ra),
+                    np.radians(dec),
+                    np.radians(roll),
+                    -_pos / np.linalg.norm(_pos),
+                )
+            ]
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
                 if self.calculate_field_of_regard

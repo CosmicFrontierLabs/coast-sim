@@ -13,6 +13,7 @@ from datetime import datetime
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
+from rust_ephem.constraints import ConstraintResult, MovingVisibilityResult
 
 from ..common import ACSMode, ObsType
 from ..common.enums import SlewAlgorithm
@@ -26,7 +27,9 @@ from ..simulation.coverage import StationCoverage, cut_windows
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.roll import optimum_roll
 from ..simulation.slew import Slew
-from ..targets import PlanEntry, Pointing
+from ..simulation.target_tracking import target_tracking
+from ..targets import MovingPointing, PlanEntry, Pointing
+from ..targets.track import positions_along
 
 Attitude = tuple[float, float, float]
 """Spacecraft body attitude: RA, Dec and roll in degrees."""
@@ -157,9 +160,10 @@ class SchedulingContext:
 
     def optimum_roll(self, target: PlanEntry, utime: float) -> float:
         """Return the power-optimal instrument roll for a target at ``utime``."""
+        ra, dec = target.position_at(utime)
         return optimum_roll(
-            target.ra,
-            target.dec,
+            ra,
+            dec,
             utime,
             self.ephem,
             self.config.solar_panel,
@@ -253,6 +257,8 @@ class SchedulingContext:
         Mounted instruments are checked with science and body constraints in
         their own frames, as DITL records them.
         """
+        if entry.moves:
+            attitude = entry.target_body_attitude(entry.roll, at=utime)
         if entry.uses_mounted_attitude():
             names = entry.attitude_constraint_names(
                 self.config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE),
@@ -271,6 +277,39 @@ class SchedulingContext:
             if self.attitude_violation(attitude, float(utime), mode) is not None:
                 return float(utime)
         return None
+
+    def science_rest(
+        self, entry: PlanEntry, slew: Slew
+    ) -> tuple[float, Attitude] | None:
+        """The departure state after science tracking and its physical brake.
+
+        Use the executor's guidance and motion limits so the next planned
+        slew starts from the same attitude, at rest. None means the track or
+        its brake cannot be flown safely within this planning horizon.
+        """
+        attitude = (float(slew.endra), float(slew.enddec), float(slew.endroll))
+        if not entry.moves:
+            return float(entry.end), attitude
+        arrival = AttitudeTrajectory.from_slew(slew, slew.motion_limits).state(
+            float(slew.slewend)
+        )
+        try:
+            tracking = target_tracking(entry, arrival, entry.roll, slew.motion_limits)
+        except AttitudeExecutionError:
+            return None
+        if tracking is None:
+            return float(entry.end), attitude
+        if tracking.end > self.uend:
+            return None
+        for utime in self.steps(float(entry.end), tracking.end):
+            if (
+                self.attitude_violation(
+                    tracking.state(float(utime)).attitude, float(utime), ACSMode.SLEWING
+                )
+                is not None
+            ):
+                return None
+        return tracking.end, tracking.state(tracking.end).attitude
 
     def first_science_violation(
         self, entry: PlanEntry, attitude: Attitude, begin: float, end: float
@@ -297,6 +336,8 @@ class SchedulingContext:
         them before checking a specific roll. A mounted instrument's windows
         follow its science line of sight, not the body attitude.
         """
+        if isinstance(target, MovingPointing) and not target.track:
+            target.fetch_track()
         constraint = (
             target.roll_independent_visibility_constraint()
             if target.constraint is not None
@@ -305,12 +346,26 @@ class SchedulingContext:
         if constraint is None:
             windows = [(self.ustart, self.uend)]
         else:
-            result = constraint.evaluate(
-                ephemeris=self.ephem,
-                target_ra=target.ra,
-                target_dec=target.dec,
-                target_roll=None,
-            )
+            result: ConstraintResult | MovingVisibilityResult
+            if target.track:
+                times = list(self.ephem.timestamp)
+                ras, decs = positions_along(
+                    target.track, [float(t.timestamp()) for t in times]
+                )
+                result = constraint.evaluate_moving_body(
+                    self.ephem,
+                    target_ras=ras.tolist(),
+                    target_decs=decs.tolist(),
+                    times=times,
+                    target_roll=None,
+                )
+            else:
+                result = constraint.evaluate(
+                    ephemeris=self.ephem,
+                    target_ra=target.ra,
+                    target_dec=target.dec,
+                    target_roll=None,
+                )
             windows = [
                 (window.start_time.timestamp(), window.end_time.timestamp())
                 for window in result.visibility
