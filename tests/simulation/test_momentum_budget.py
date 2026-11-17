@@ -52,6 +52,96 @@ def setup_budget(
     return config, ephem, executor
 
 
+def test_orbit_columns_are_contiguous_and_interpolation_is_unchanged():
+    config, ephem, executor = setup_budget(gravity=True)
+    times = np.arange(len(ephem.timestamp)) * 0.01
+    positions = np.column_stack(
+        (7000 * np.cos(times), 7000 * np.sin(times), 400 * np.sin(2 * times))
+    )
+    ephem.gcrs_pv.position = positions
+    ephem.gcrs_pv.velocity = positions * 0.001
+    ephem.itrs_pv = SimpleNamespace(position=positions * 0.9)
+    ephem.sun_pv = SimpleNamespace(position=positions + 1.5e8)
+    budget = MomentumBudget(config, ephem, executor.state)
+    assert not budget.times.flags.writeable
+    for name, original in (
+        ("positions_eci_km", ephem.gcrs_pv.position),
+        ("velocities_eci_km_s", ephem.gcrs_pv.velocity),
+        ("positions_ecef_km", ephem.itrs_pv.position),
+        ("sun_positions_eci_km", ephem.sun_pv.position),
+    ):
+        table = getattr(budget.orbit, name)
+        assert all(table[:, i].flags.c_contiguous for i in range(3))
+        assert not table.flags.writeable
+        assert original.flags.writeable and not np.shares_memory(table, original)
+        for time in np.linspace(budget.times[0], budget.times[-1], 53):
+            expected = np.array(
+                [np.interp(time, budget.times, original[:, i]) for i in range(3)]
+            )
+            assert np.array_equal(budget._interpolate(table, time), expected)
+
+
+@pytest.mark.parametrize("capacity", [10.0, 100.0])
+def test_admission_prefix_matches_full_forecast_and_can_be_extended(capacity):
+    config, _, executor = setup_budget(capacity=capacity)
+    budget = executor.momentum
+    trajectory = AttitudeTrajectory.turn_from_state(
+        executor.state, (90, 30, 70), config.spacecraft_bus.attitude_control
+    )
+    end = trajectory.end + 123.17
+    current = budget.current
+    short = budget.forecast(
+        trajectory.state, end, trajectory=trajectory, stop_on_violation=True
+    )
+    full = budget.forecast(trajectory.state, end, trajectory=trajectory)
+    assert short.first_violation == full.first_violation
+    assert short.uncertified_interval == full.uncertified_interval
+    assert budget.current is current
+    if capacity == 10:
+        assert short.utime < trajectory.end < full.utime
+        assert len(short.path.nodes) < len(full.path.nodes) / 10
+        assert not any(node.first_violation for node in short.path.nodes[:-1])
+        with pytest.raises(MomentumLimitError):
+            budget.commit(short)
+    else:
+        assert short.utime == end and short.sample == full.sample
+        assert short.peak_n_m_s == full.peak_n_m_s
+    extended = budget.forecast(
+        trajectory.state, end, trajectory=trajectory, initial=short
+    )
+    assert extended.utime == end and extended.sample == full.sample
+    assert extended.peak_n_m_s == full.peak_n_m_s
+    assert extended.first_violation == full.first_violation
+
+
+def test_admission_does_not_reject_a_safe_prefix_of_a_violating_cell():
+    config, _, executor = setup_budget(capacity=10)
+    budget = executor.momentum
+    trajectory = AttitudeTrajectory.turn_from_state(
+        executor.state, (0, 0, 90), config.spacecraft_bus.attitude_control
+    )
+    # The first full integration cell exceeds capacity, but this earlier
+    # partial acceleration interval does not. Reuse that already-filled path.
+    rejected = budget.forecast(
+        trajectory.state,
+        trajectory.end,
+        trajectory=trajectory,
+        stop_on_violation=True,
+    )
+    origin = budget.current.model_copy(update={"path": rejected.path})
+    end = executor.state.utime + 0.01
+    short = budget.forecast(
+        trajectory.state,
+        end,
+        trajectory=trajectory,
+        initial=origin,
+        stop_on_violation=True,
+    )
+    full = budget.forecast(trajectory.state, end, trajectory=trajectory)
+    assert short.first_violation is None and short.utime == end
+    assert short.sample == full.sample and short.peak_n_m_s == full.peak_n_m_s
+
+
 def test_short_slew_peak_cannot_hide_between_scheduler_ticks():
     config, _, executor = setup_budget(capacity=10.0)
     start = executor.state.utime
