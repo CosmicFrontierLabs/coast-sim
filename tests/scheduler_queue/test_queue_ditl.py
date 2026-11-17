@@ -6681,6 +6681,7 @@ class TestQueueDITLCoverage:
             mock_charging_ppt = Mock()
             mock_charging_ppt.ra = 10.0
             mock_charging_ppt.dec = 20.0
+            mock_charging_ppt.roll = 33.0
             mock_charging_ppt.obsid = 12345  # Fix: use int instead of Mock
             ditl.charging_ppt = mock_charging_ppt
             ditl.ppt = mock_charging_ppt  # Currently charging
@@ -6691,7 +6692,7 @@ class TestQueueDITLCoverage:
             # Verify scoped constraint check and termination.
             mock_config.constraint.in_constraint.assert_not_called()
             mock_config.constraint.in_panel.assert_called_once_with(
-                10.0, 20.0, 1000.0, target_roll=mock_acs.roll
+                10.0, 20.0, 1000.0, target_roll=33.0
             )
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 

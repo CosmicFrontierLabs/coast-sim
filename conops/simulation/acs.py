@@ -18,9 +18,12 @@ from ..common.vector import (
 )
 from ..config import (
     AttitudeConstraintScope,
+    AttitudeControlSystem,
     MissionConfig,
     SolarArrayDriveState,
     SolarPanelSet,
+    SpacecraftFrame,
+    Telescope,
 )
 from ..config.constraint import (
     attitude_constraint_names_for_scopes,
@@ -28,7 +31,7 @@ from ..config.constraint import (
     in_attitude_constraint_scopes,
 )
 from ..simulation.passes import PassTimes
-from ..simulation.roll import optimum_body_roll
+from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from .acs_command import ACSCommand
 from .attitude import (
     Attitude,
@@ -41,6 +44,7 @@ from .momentum import StoredMomentumTracker
 from .momentum_budget import MomentumBudget
 from .passes import Pass
 from .slew import Slew
+from .target_tracking import TRACK_SAMPLE_SECONDS, target_tracking
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
@@ -95,6 +99,15 @@ class ACS:
         assert config.constraint is not None, "Constraint must be provided to ACS"
         self.constraint = config.constraint
         self.config = config
+        frame = getattr(config.spacecraft_bus, "frame", None)
+        self._guidance_frame = (
+            frame if isinstance(frame, SpacecraftFrame) else SpacecraftFrame()
+        )
+        self._guidance_telescope = (
+            None
+            if self._guidance_frame.is_identity
+            else Telescope(mounting=self._guidance_frame.mounting)
+        )
         self.fault_management = config.fault_management.new_run()
         self.log = log
         self._executor: AttitudeExecutor | None = None
@@ -156,7 +169,10 @@ class ACS:
         self.solar_panel = config.solar_panel or SolarPanelSet()
         self.solar_array_drive_state = self.solar_panel.initial_drive_state()
         self.slew_dists: list[float] = []
+        self._tracked_slew: Slew | None = None
+        """The science slew whose moving target the executor is following."""
         self.saa = None
+        self._default_initial_pointing = True
 
     def _attitude_component(self, index: int) -> float:
         attitude = (
@@ -172,6 +188,7 @@ class ACS:
         values = list(self._initial_attitude)
         values[index] = float(value)
         self._initial_attitude = (values[0], values[1], values[2])
+        self._default_initial_pointing = False
 
     @property
     def ra(self) -> float:
@@ -210,15 +227,36 @@ class ACS:
     def _advance_attitude(self, utime: float) -> AttitudeExecutor:
         if self._executor is None:
             if not self._initial_roll_explicit:
-                self.roll = optimum_body_roll(
-                    self.ra,
-                    self.dec,
-                    utime,
-                    self.ephem,
-                    self.solar_panel,
-                    self.constraint,
-                    drive_state=self.solar_array_drive_state,
-                )
+                frame = getattr(self.config.spacecraft_bus, "frame", None)
+                if (
+                    self._default_initial_pointing
+                    and isinstance(frame, SpacecraftFrame)
+                    and not frame.is_identity
+                ):
+                    # The default direction describes the science boresight,
+                    # rather than physical +X in every declared frame. Explicit
+                    # user-supplied initial attitudes remain body coordinates.
+                    ra, dec = self.ra, self.dec
+                    roll = optimum_instrument_roll(
+                        ra,
+                        dec,
+                        utime,
+                        self.ephem,
+                        Telescope(mounting=frame.mounting),
+                        self.solar_panel,
+                        drive_state=self.solar_array_drive_state,
+                    )
+                    self._initial_attitude = frame.mounting.body_attitude(ra, dec, roll)
+                else:
+                    self.roll = optimum_body_roll(
+                        self.ra,
+                        self.dec,
+                        utime,
+                        self.ephem,
+                        self.solar_panel,
+                        self.constraint,
+                        drive_state=self.solar_array_drive_state,
+                    )
             executor = AttitudeExecutor(utime, self._initial_attitude)
             if (
                 self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
@@ -242,6 +280,23 @@ class ACS:
     def motion_ready_time(self, utime: float) -> float:
         """Next feasible rest-to-rest handoff, without changing executed state."""
         return self._executor.next_rest_time(utime) if self._executor else utime
+
+    def handoff_ready_time(self, utime: float) -> float:
+        """When a new slew could start if the current motion were stopped
+        now: a moving science target being tracked brakes from ``utime``,
+        as ending its observation brakes it; any other motion rests when it
+        rests. Nothing is changed."""
+        if (
+            self._tracked_slew is not None
+            and self._executor is not None
+            and self.science_observation_active
+        ):
+            state = self._executor.predict(utime)
+            trajectory = AttitudeTrajectory.braking(
+                state, self.config.spacecraft_bus.attitude_control
+            )
+            return float(trajectory.end) if trajectory is not None else utime
+        return self.motion_ready_time(utime)
 
     def predicted_attitude(self, utime: float) -> Attitude:
         """Evaluate installed physical motion without advancing execution."""
@@ -522,9 +577,14 @@ class ACS:
         # Initiate slew to Sun pointing for safe mode
         # Use solar panel optimal pointing to maximize power generation
         if self.solar_panel is not None:
-            safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
-                utime, self.ephem
-            )
+            if self._guidance_telescope is None:
+                safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
+                    utime, self.ephem
+                )
+            else:
+                safe_ra, safe_dec = self.solar_panel.optimal_charging_pointing(
+                    utime, self.ephem, frame=self._guidance_frame
+                )
         else:
             # Fallback: point directly at Sun if no solar panel config
             index = self.ephem.index(dtutcfromtimestamp(utime))
@@ -537,9 +597,31 @@ class ACS:
             f"{unixtime2date(utime)}: Initiating slew to safe mode pointing at RA={safe_ra:.2f} Dec={safe_dec:.2f}",
         )
         # Enqueue slew to safe pointing with a special obsid
-        self._enqueue_slew(
-            safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
-        )
+        if self._guidance_telescope is None:
+            self._enqueue_slew(
+                safe_ra, safe_dec, obsid=-999, utime=utime, obstype=ObsType.SAFE
+            )
+        else:
+            roll = optimum_instrument_roll(
+                safe_ra,
+                safe_dec,
+                utime,
+                self.ephem,
+                self._guidance_telescope,
+                self.solar_panel,
+                self.constraint,
+                drive_state=self.solar_array_drive_state,
+                science_attitude=False,
+            )
+            pose = self._guidance_frame.body_attitude(safe_ra, safe_dec, roll)
+            self._enqueue_slew(
+                pose[0],
+                pose[1],
+                obsid=-999,
+                utime=utime,
+                obstype=ObsType.SAFE,
+                roll=pose[2],
+            )
 
     def _start_slew(self, slew: Slew, utime: float) -> Slew | None:
         """Start executing a slew.
@@ -566,16 +648,23 @@ class ACS:
                     utime, "SLEW", "Delayed slew requires scheduler re-admission"
                 )
                 return None
-            executor.install(prepared, momentum_end=slew._momentum_hold_end)
+            trajectory = prepared
         else:
             slew.startra = self.ra
             slew.startdec = self.dec
             slew.startroll = self.roll
             slew.slewstart = utime
             slew.calc_slewtime()
-            executor.install(
-                AttitudeTrajectory.from_slew(slew, slew.motion_limits, executor.state)
+            trajectory = AttitudeTrajectory.from_slew(
+                slew, slew.motion_limits, executor.state
             )
+        tracking = self._tracking_after(slew, trajectory, slew.motion_limits)
+        if tracking is not None:
+            trajectory = AttitudeTrajectory(
+                (*trajectory.legs, *tracking.legs), tracking.end
+            )
+        executor.install(trajectory, momentum_end=slew._momentum_hold_end)
+        self._tracked_slew = slew if tracking is not None else None
 
         slewdist = slew.slewdist
         self._log_or_print(
@@ -597,13 +686,59 @@ class ACS:
             self.science_observation_active = False
         return slew
 
+    TRACK_SAMPLE_SECONDS = TRACK_SAMPLE_SECONDS
+    """How often a moving target's track is sampled for the executor."""
+
+    def _tracking_after(
+        self, slew: Slew, trajectory: AttitudeTrajectory, limits: AttitudeControlSystem
+    ) -> AttitudeTrajectory | None:
+        """The motion that follows the slew to a moving science target: its
+        track, at the roll the slew ends at, from the slew's end to the
+        observation's end, as a ground contact's profile is followed, then a
+        stop. None for a fixed target, or one not observed past the slew."""
+        target = slew.at
+        # A test double's target has no track to speak of.
+        if (
+            not self._is_science_pointing(slew)
+            or getattr(target, "moves", False) is not True
+        ):
+            return None
+        assert target is not None
+        end = float(getattr(target, "end", 0.0) or 0.0)
+        begin = float(slew.slewend)
+        if end <= begin:
+            return None
+        instrument_roll = (
+            slew.instrument_roll if slew.instrument_roll is not None else slew.endroll
+        )
+        arrival = trajectory.state(begin)
+        tracking = target_tracking(
+            target, arrival, instrument_roll, limits, self.TRACK_SAMPLE_SECONDS
+        )
+        self._log_or_print(
+            begin,
+            "SLEW",
+            f"{unixtime2date(begin)}: Tracking moving target {slew.obsid} at "
+            f"{target.track_rate_deg_per_s(begin) * 3600.0:.3f} deg/h until "
+            f"{unixtime2date(end)}",
+        )
+        return tracking
+
     def _is_science_pointing(self, slew: Slew) -> bool:
         """Check if slew represents a science pointing (not a pass)."""
         return slew.obstype == ObsType.PPT and isinstance(slew, Slew)
 
-    def end_science_observation(self) -> None:
-        """Mark the current held attitude as no longer collecting science."""
+    def end_science_observation(self, utime: float | None = None) -> None:
+        """Mark the current held attitude as no longer collecting science. A
+        moving target being tracked is braked to rest from ``utime``, so the
+        next slew need not wait for the end of its track."""
         self.science_observation_active = False
+        if utime is None or self._tracked_slew is None or self._executor is None:
+            return
+        executor = self._advance_attitude(utime)
+        if executor.next_rest_time(utime) > utime:
+            executor.request_stop(utime, self.config.spacecraft_bus.attitude_control)
+        self._tracked_slew = None
 
     def begin_desaturation(self) -> None:
         """A thruster momentum dump begins: the attitude held is its, and the
@@ -947,6 +1082,14 @@ class ACS:
         if self._is_in_pass_dwell(utime):
             return ACSMode.PASS
 
+        # A moving science target is followed at its rate while observed.
+        if (
+            self._tracked_slew is not None
+            and self._tracked_slew is self.last_slew
+            and self.science_observation_active
+        ):
+            return ACSMode.SCIENCE
+
         # Tracking can be braking after contact ends, independently of the
         # stale ingress-slew metadata. Do not report that moving tail as IDLE.
         if any(abs(rate) > 1e-10 for rate in self.angular_velocity_body):
@@ -992,25 +1135,49 @@ class ACS:
         executor = self._advance_attitude(utime)
         if executor.next_rest_time(utime) > utime:
             return
-        ra, dec = self.ra, self.dec
+        ra, dec, reference_roll = self._guidance_frame.canonical_attitude(
+            self.ra, self.dec, self.roll
+        )
         if self.in_safe_mode:
             if self.solar_panel is not None:
-                ra, dec = self.solar_panel.optimal_charging_pointing(utime, self.ephem)
+                if self._guidance_telescope is None:
+                    ra, dec = self.solar_panel.optimal_charging_pointing(
+                        utime, self.ephem
+                    )
+                else:
+                    ra, dec = self.solar_panel.optimal_charging_pointing(
+                        utime, self.ephem, frame=self._guidance_frame
+                    )
             else:
                 index = self.ephem.index(dtutcfromtimestamp(utime))
                 ra, dec = self.ephem.sun_ra_deg[index], self.ephem.sun_dec_deg[index]
-        roll = optimum_body_roll(
-            ra,
-            dec,
-            utime,
-            self.ephem,
-            self.solar_panel,
-            self.constraint,
-            reference_roll=self.roll,
-            max_roll_delta=180.0,
-            drive_state=self.solar_array_drive_state,
-        )
-        target = (ra, dec, roll)
+        if self._guidance_telescope is None:
+            roll = optimum_body_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self.solar_panel,
+                self.constraint,
+                reference_roll=reference_roll,
+                max_roll_delta=180.0,
+                drive_state=self.solar_array_drive_state,
+            )
+        else:
+            roll = optimum_instrument_roll(
+                ra,
+                dec,
+                utime,
+                self.ephem,
+                self._guidance_telescope,
+                self.solar_panel,
+                self.constraint,
+                reference_roll=reference_roll,
+                max_roll_delta=180.0,
+                science_attitude=False,
+                drive_state=self.solar_array_drive_state,
+            )
+        target = self._guidance_frame.body_attitude(ra, dec, roll)
         distance, _ = _quaternion_delta(
             executor.state.quaternion, attitude_to_quat(*target)
         )
@@ -1501,6 +1668,7 @@ class ACS:
             lastdec,
             current_ppt,
             drive_state=self.solar_array_drive_state,
+            lastroll=self.roll,
         )
         if charging_ppt is not None:
             self.request_battery_charge(

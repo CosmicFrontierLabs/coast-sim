@@ -1015,7 +1015,7 @@ class PriorityScheduler:
             return addition
         addition = self._battery.addition(
             block.entry,
-            rest=block.end if block.is_pass else None,
+            rest=block.end if block.is_pass or block.entry.moves else None,
             path=slew.attitude if slew is not None else None,
             path_start=(
                 (float(slew.startra), float(slew.startdec), float(slew.startroll))
@@ -2539,13 +2539,28 @@ class PriorityScheduler:
                 start += self.ctx.step_size
                 continue
             instrument_roll = self.ctx.instrument_roll(arrival_pointing, start)
-            attitude = arrival_pointing.target_body_attitude(instrument_roll)
+            attitude = arrival_pointing.target_body_attitude(instrument_roll, at=start)
             slew = self.ctx.slew(
                 self._start_attitude(pred, start),
                 attitude,
                 start,
                 obsid=target.obsid,
             )
+            if arrival_pointing.track:
+                # A moving target is pointed at where it is when the slew
+                # ends, as dispatch points it: the slew is timed to its
+                # position at the start, then once more to the position
+                # that gives, and the entry takes that position.
+                for _ in range(2):
+                    attitude = arrival_pointing.target_body_attitude(
+                        instrument_roll, at=float(slew.slewend)
+                    )
+                    slew = self.ctx.slew(
+                        self._start_attitude(pred, start),
+                        attitude,
+                        start,
+                        obsid=target.obsid,
+                    )
 
             # The target must be visible when ACS needs it to be. If it is
             # not, start again when it next becomes visible, less the slew
@@ -2716,7 +2731,9 @@ class PriorityScheduler:
     ) -> float:
         """Return when collection of ``target`` begins if the slew to it after
         ``pred`` starts at ``start``."""
-        attitude = target.target_body_attitude(self.ctx.instrument_roll(target, start))
+        attitude = target.target_body_attitude(
+            self.ctx.instrument_roll(target, start), at=start
+        )
         slew = self.ctx.slew(
             self._start_attitude(pred, start), attitude, start, obsid=target.obsid
         )
@@ -2748,10 +2765,10 @@ class PriorityScheduler:
             # Each step's hold was checked when the visit was built.
             return block
         violation = self.ctx.first_science_violation(
-            entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(block.end)
+            entry, block.attitude_in, slew.slewend, self.ctx.ceil_step(float(entry.end))
         )
         if violation is None:
-            return block
+            return self._science_departure(block, slew)
         # End the observation at the step the attitude stops being allowed.
         assert entry.collection_begin is not None
         collection_end = violation - self.ctx.post_collection_for(int(entry.obsid))
@@ -2760,6 +2777,14 @@ class PriorityScheduler:
         entry.collection_end = collection_end
         entry.end = violation
         block.end = violation
+        return self._science_departure(block, slew)
+
+    def _science_departure(self, block: _Block, slew: Slew) -> _Block | None:
+        """Finish a science block at the tracked departure state, after braking."""
+        rest = self.ctx.science_rest(block.entry, slew)
+        if rest is None:
+            return None
+        block.end, block.attitude_out = rest
         return block
 
     def _visit(
@@ -2817,7 +2842,7 @@ class PriorityScheduler:
                 step_attitude = (
                     previous
                     if same_pointing and abs(step_roll - previous_roll) < 1e-9
-                    else pointing.target_body_attitude(step_roll)
+                    else pointing.target_body_attitude(step_roll, at=cursor)
                 )
                 # Commands execute on simulation steps: the slew starts on the
                 # first step after the collection before it ends.
@@ -2825,6 +2850,14 @@ class PriorityScheduler:
                 step_slew = self.ctx.slew(
                     previous, step_attitude, slew_begin, obsid=target.obsid
                 )
+                if pointing.moves:
+                    for _ in range(2):
+                        step_attitude = pointing.target_body_attitude(
+                            step_roll, at=float(step_slew.slewend)
+                        )
+                        step_slew = self.ctx.slew(
+                            previous, step_attitude, slew_begin, obsid=target.obsid
+                        )
                 if float(step_slew.slewend) > self.ctx.uend:
                     return None
                 if self.ctx.first_slew_violation(step_slew, ACSMode.SLEWING):
@@ -2850,6 +2883,8 @@ class PriorityScheduler:
                 is not None
             ):
                 return None
+            assert step_slew is not None
+            ra, dec = pointing.position_at(float(step_slew.slewend))
             entry = PlanEntry(
                 config=self.config,
                 name=pointing.name,
@@ -2857,8 +2892,9 @@ class PriorityScheduler:
                 instrument_modes=dict(pointing.instrument_modes),
                 science_data=pointing.science_data,
                 own_timing=target.own_timing,
-                ra=pointing.ra,
-                dec=pointing.dec,
+                track=list(pointing.track),
+                ra=ra,
+                dec=dec,
                 roll=step_roll,
                 spacecraft_attitude=(
                     step_attitude if pointing.uses_mounted_attitude() else None
@@ -2880,9 +2916,12 @@ class PriorityScheduler:
             entry.exptime = step.duration_seconds
             steps.append(entry)
             slews.append(step_slew)
-            previous = step_attitude
+            rest = self.ctx.science_rest(entry, step_slew)
+            if rest is None:
+                return None
+            rest_time, previous = rest
             previous_roll = step_roll
-            cursor = step_end
+            cursor = max(step_end, rest_time)
         first = steps[0]
         visit_entry = PlanEntry(
             config=self.config,
@@ -2891,6 +2930,7 @@ class PriorityScheduler:
             instrument_modes=dict(target.instrument_modes),
             science_data=target.science_data,
             own_timing=target.own_timing,
+            track=list(first.track),
             ra=first.ra,
             dec=first.dec,
             roll=first.roll,
@@ -2908,7 +2948,7 @@ class PriorityScheduler:
             ss_max=target.ss_max,
         )
         visit_entry.exptime = sequence.science_seconds
-        return _Visit(visit_entry, steps, slews, previous, float(steps[-1].end))
+        return _Visit(visit_entry, steps, slews, previous, cursor)
 
     def _science_entry(
         self,
@@ -2922,17 +2962,20 @@ class PriorityScheduler:
         """Build the plan entry for one science snapshot."""
         target = request.pointing
         mounted = target.uses_mounted_attitude()
-        telescope = target.science_telescope()
         end = collection_end + self.ctx.post_collection_for(int(target.obsid))
+        # A moving target's entry points where the target is when the slew
+        # ends, where the executor takes up its track.
+        ra, dec = target.position_at(float(slew.slewend))
         entry = PlanEntry(
             config=self.config,
             name=target.name,
-            instrument_name=telescope.name if telescope is not None else None,
+            instrument_name=target.science_instrument_name(),
             instrument_modes=dict(target.instrument_modes),
             own_timing=target.own_timing,
+            track=list(target.track),
             science_data=target.science_data,
-            ra=target.ra,
-            dec=target.dec,
+            ra=ra,
+            dec=dec,
             roll=instrument_roll,
             spacecraft_attitude=attitude if mounted else None,
             begin=float(slew.slewstart),
