@@ -16,6 +16,7 @@ from conops.config import (
     WheelArray,
     wheel_array_capacity_n_m_s,
 )
+from conops.config import momentum as momentum_config
 from conops.schedulers.momentum import MomentumForecast
 from conops.simulation.momentum import StoredMomentumTracker, tracker_from_config
 
@@ -136,6 +137,61 @@ class TestWheelArrayCapacity:
 
 
 class TestStoredMomentumCapacity:
+    def test_wheel_geometry_is_built_once_across_capacity_reads(self, monkeypatch):
+        from unittest.mock import Mock
+
+        build = Mock(wraps=WheelArray)
+        monkeypatch.setattr(momentum_config, "WheelArray", build)
+        config = StoredMomentumConfig(wheels=_orthogonal())
+        array = config.wheel_array
+        for _ in range(10):
+            assert config.wheel_array is array
+            assert config.wheel_limits is array
+            assert config.wheel_capacity_n_m_s == pytest.approx(4.0)
+            assert config.total_capacity_n_m_s == pytest.approx(4.0)
+            assert not config.capacity_enabled
+        build.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "change", ["capacity", "axis", "append", "replace", "name"]
+    )
+    def test_wheel_cache_follows_nested_and_list_edits(self, change):
+        config = StoredMomentumConfig(wheels=_orthogonal())
+        before = config.wheel_array
+        if change == "capacity":
+            config.wheels[0].capacity_n_m_s = 1.0
+        elif change == "axis":
+            config.wheels[0].spin_axis = (1.0, 1.0, 0.0)
+        elif change == "append":
+            config.wheels.append(MomentumWheel(spin_axis=(1, 1, 1), capacity_n_m_s=8))
+        elif change == "replace":
+            config.wheels = _pyramid()
+        else:
+            config.wheels[0].name = "Renamed"
+        array = config.wheel_array
+        assert array is not None and array is not before
+        expected = WheelArray(config.wheels)
+        assert array.names == expected.names
+        assert array.distribution == pytest.approx(expected.distribution)
+        assert config.total_capacity_n_m_s == pytest.approx(expected.capacity_n_m_s)
+
+    def test_invalid_geometry_is_cached_and_recovers_after_an_edit(self, monkeypatch):
+        from unittest.mock import Mock
+
+        build = Mock(wraps=WheelArray)
+        monkeypatch.setattr(momentum_config, "WheelArray", build)
+        config = StoredMomentumConfig(wheels=_orthogonal()[:2], capacity_n_m_s=2)
+        for _ in range(10):
+            assert config.wheel_array is None
+            assert config.wheel_capacity_n_m_s == 0.0
+        build.assert_called_once()
+        config.wheels.append(_orthogonal()[2])
+        assert config.wheel_array is not None
+        assert build.call_count == 2
+        config.wheels.clear()
+        assert config.wheel_array is None
+        assert config.wheel_capacity_n_m_s is None
+
     def test_no_wheels_and_no_capacity_sets_none(self) -> None:
         config = StoredMomentumConfig()
         assert config.wheel_capacity_n_m_s is None

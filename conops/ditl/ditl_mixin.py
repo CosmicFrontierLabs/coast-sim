@@ -660,7 +660,14 @@ class DITLMixin:
         if stored < capacity:
             return False
         self.fault_management.report_momentum_capacity(
-            utime=utime, stored_n_m_s=stored, capacity_n_m_s=capacity, obsid=obsid
+            utime=utime,
+            stored_n_m_s=tracker.stored_momentum_norm_n_m_s,
+            capacity_n_m_s=capacity,
+            obsid=obsid,
+            wheel_utilisation=stored / capacity if tracker.limit_by_wheels else None,
+            actuator_n_m_s=tracker.actuator_momentum_norm_n_m_s
+            if self._slew_momentum_enabled()
+            else None,
         )
         return True
 

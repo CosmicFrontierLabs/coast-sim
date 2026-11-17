@@ -159,6 +159,17 @@ class MomentumBudget:
             first_violation=initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
+        # Share the initial coast's integration grid with speculative holds,
+        # as well as subsequent execution. Keep both path construction sites
+        # on the same signature, including any per-wheel limit rows.
+        path = _MomentumPath(
+            trajectory=None,
+            state_at=initial.coast,
+            signature=self._path_signature(),
+            nodes=[self.current.model_copy(update={"tracker": tracker.copy()})],
+            times=[initial.utime],
+        )
+        self.current = self.current.model_copy(update={"path": path})
         slowest_fraction = settings.slew_rate_fractions[-1]
         slow_limits = acs.model_copy(
             update={
@@ -173,6 +184,15 @@ class MomentumBudget:
         self.idle_escape_duration = Slew.duration_upper_bound(slow_limits)
         self.idle_escape_momentum = float(np.linalg.norm(self.inertia, 2)) * np.deg2rad(
             fastest * slowest_fraction
+        )
+
+    def _path_signature(self) -> tuple[float, float, bytes, bytes | None]:
+        """All limits that must match before reusing an integration path."""
+        return (
+            self.capacity,
+            self.step,
+            self.inertia.tobytes(),
+            None if self.wheel_limit_rows is None else self.wheel_limit_rows.tobytes(),
         )
 
     def adopt(self, tracker: StoredMomentumTracker, state: AttitudeState) -> None:
@@ -398,12 +418,7 @@ class MomentumBudget:
             raise ValueError("Momentum forecast time must be finite and monotonic")
         if not self.times[0] <= end <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        signature = (
-            self.capacity,
-            self.step,
-            self.inertia.tobytes(),
-            None if self.wheel_limit_rows is None else self.wheel_limit_rows.tobytes(),
-        )
+        signature = self._path_signature()
         path = base.path
         if (
             path is None

@@ -3,7 +3,7 @@ from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ._base import ConfigModel
 
@@ -211,6 +211,13 @@ class AtmosphereConfig(ConfigModel):
 class StoredMomentumConfig(ConfigModel):
     """Configuration for planning-level stored-momentum tracking."""
 
+    _wheel_array_cache: (
+        tuple[
+            tuple[tuple[str, tuple[float, float, float], float], ...], WheelArray | None
+        ]
+        | None
+    ) = PrivateAttr(default=None)
+
     @property
     def capacity_enabled(self) -> bool:
         """Whether the capacity is enforced as a hard limit on the executed
@@ -223,7 +230,8 @@ class StoredMomentumConfig(ConfigModel):
         ``wheel_array_capacity_n_m_s``); None where no wheels are configured."""
         if not self.wheels:
             return None
-        return wheel_array_capacity_n_m_s(self.wheels)
+        array = self.wheel_array
+        return array.capacity_n_m_s if array is not None else 0.0
 
     @property
     def wheel_array(self) -> WheelArray | None:
@@ -231,10 +239,18 @@ class StoredMomentumConfig(ConfigModel):
         wheels or their spin axes do not span three dimensions."""
         if not self.wheels:
             return None
+        # Nested wheel edits and in-place list changes bypass this model's
+        # assignment validators. Key the cache by values to notice them too.
+        key = tuple((w.name, w.spin_axis, w.capacity_n_m_s) for w in self.wheels)
+        cached = self._wheel_array_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         try:
-            return WheelArray(self.wheels)
+            array = WheelArray(self.wheels)
         except ValueError:
-            return None
+            array = None
+        self._wheel_array_cache = (key, array)
+        return array
 
     @property
     def wheel_limits(self) -> WheelArray | None:
@@ -455,11 +471,7 @@ class StoredMomentumConfig(ConfigModel):
 
     @model_validator(mode="after")
     def _dumps_need_a_capacity(self) -> "StoredMomentumConfig":
-        if (
-            self.wheels
-            and self.capacity_n_m_s is None
-            and not wheel_array_capacity_n_m_s(self.wheels)
-        ):
+        if self.wheels and self.capacity_n_m_s is None and self.wheel_array is None:
             raise ValueError(
                 "the wheels' spin axes do not span three dimensions, so they "
                 "hold no momentum about some axis: add wheels or set "

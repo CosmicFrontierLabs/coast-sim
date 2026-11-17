@@ -1266,12 +1266,21 @@ class QueueDITL(DITLMixin, DITLStats):
         obsid = self.ppt.obsid if observing and self.ppt is not None else None
         if self._momentum_at_capacity(utime, obsid):
             demand = self._momentum_demand_n_m_s(tracker)
+            reached = (
+                f"Fullest wheel at {demand / capacity:.1%} of its capacity "
+                f"(stored momentum {tracker.stored_momentum_norm_n_m_s:.3f} N m s)"
+                if tracker.limit_by_wheels
+                else (
+                    f"{'Actuator' if self._slew_momentum_enabled() else 'Stored'} "
+                    f"momentum {demand:.3f} N m s has reached the "
+                    f"{capacity} N m s capacity"
+                )
+            )
             self.log.log_event(
                 utime=utime,
                 event_type="MOMENTUM",
                 description=(
-                    f"Stored momentum {demand:.3f} N m s has reached the "
-                    f"{capacity} N m s capacity: emergency thruster dump"
+                    f"{reached}: emergency thruster dump"
                     + (f" interrupts observation {obsid}" if obsid is not None else "")
                 ),
                 obsid=obsid,
@@ -1282,12 +1291,21 @@ class QueueDITL(DITLMixin, DITLStats):
             return
         if stored >= level and not self._dump_pending:
             self._dump_pending = True
+            reached = (
+                f"Fullest wheel at {stored / capacity:.1%} of its capacity "
+                f"has reached the planning level {level / capacity:.1%} "
+                f"(stored momentum {tracker.stored_momentum_norm_n_m_s:.3f} N m s)"
+                if tracker.limit_by_wheels
+                else (
+                    f"Stored momentum {stored:.3f} N m s has reached the planning "
+                    f"level {level:.3f} of the {capacity} N m s capacity"
+                )
+            )
             self.log.log_event(
                 utime=utime,
                 event_type="MOMENTUM",
                 description=(
-                    f"Stored momentum {stored:.3f} N m s has reached the planning "
-                    f"level {level:.3f} of the {capacity} N m s capacity: thruster dump"
+                    f"{reached}: thruster dump"
                     + (f" after observation {obsid}" if obsid is not None else "")
                 ),
                 obsid=obsid,
@@ -1370,10 +1388,16 @@ class QueueDITL(DITLMixin, DITLStats):
             else slew_end
         )
         if at_level <= collects:
-            reason = (
-                f"Stored momentum {norms[0]:.3f} N m s reaches the planning level "
-                f"{level:.3f} before {name} collects: thruster dump first"
+            reached = (
+                f"Fullest wheel at {norms[0] / capacity:.1%} of its capacity "
+                f"reaches the planning level {level / capacity:.1%}"
+                if tracker.limit_by_wheels
+                else (
+                    f"Stored momentum {norms[0]:.3f} N m s reaches the planning level "
+                    f"{level:.3f}"
+                )
             )
+            reason = f"{reached} before {name} collects: thruster dump first"
         elif norms.max() < capacity:
             return True
         elif not visit:

@@ -19,7 +19,14 @@ from conops.config import (
 from conops.simulation.attitude import AttitudeExecutor
 from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 
-from .test_momentum_dumps import BEGIN, END, _capacity_faults, _config, _held
+from .test_momentum_dumps import (
+    BEGIN,
+    END,
+    _capacity_faults,
+    _config,
+    _held,
+    _momentum_events,
+)
 
 
 def _wheels(capacity: float = 1.0) -> list[MomentumWheel]:
@@ -68,6 +75,64 @@ class TestWheelTelemetry:
 
 
 class TestWheelLimitsInARun:
+    def test_planning_message_reports_utilisation_and_actual_stored_norm(self):
+        ditl = _run(wheels=_wheels(1.0))
+        events = [
+            e for e in ditl.log.events if "has reached the planning" in e.description
+        ]
+        assert events
+        for event in events:
+            assert event.description.startswith("Fullest wheel at ")
+            assert "planning level 80.0%" in event.description
+            # Dispatch reads the tracker before this tick's housekeeping update.
+            sample = next(
+                hk
+                for hk in ditl.telemetry.housekeeping
+                if hk.timestamp.timestamp() == event.time - ditl.step_size
+            )
+            norm = sample.stored_momentum_norm_n_m_s
+            assert f"stored momentum {norm:.3f} N m s" in event.description
+
+    @pytest.mark.parametrize("slew_momentum", [False, True])
+    def test_emergency_reports_real_norm_and_wheel_utilisation(self, slew_momentum):
+        # Distinct components make the norm differ from the fullest wheel.
+        config = _config(
+            wheels=_wheels(),
+            thruster_dump=ThrusterDumpConfig(),
+            slew_momentum_enabled=slew_momentum,
+        )
+        ditl = create_ditl(config, [_held(config)], BEGIN, END)
+        tracker = ditl._stored_momentum_tracker
+        assert tracker is not None
+        tracker.update(
+            utime=BEGIN.timestamp(),
+            position_eci_km=(7000, 0, 0),
+            attitude_quaternion_eci_to_body=(1, 0, 0, 0),
+        )
+        tracker.start_from_eci((1.1, 0.9, 0.0))
+        tracker.update(
+            utime=BEGIN.timestamp(),
+            position_eci_km=(7000, 0, 0),
+            attitude_quaternion_eci_to_body=(1, 0, 0, 0),
+            angular_velocity_body_rad_s=(0.0001, 0, 0),
+        )
+        stored = tracker.stored_momentum_norm_n_m_s
+        demand = ditl._momentum_demand_n_m_s(tracker)
+        assert stored != pytest.approx(demand)
+        ditl._call_for_desaturation(BEGIN.timestamp())
+        fault = _capacity_faults(ditl)[0]
+        assert fault.metadata["stored_n_m_s"] == pytest.approx(stored)
+        assert fault.metadata["wheel_utilisation"] == pytest.approx(demand)
+        if slew_momentum:
+            assert fault.metadata["actuator_n_m_s"] == pytest.approx(
+                tracker.actuator_momentum_norm_n_m_s
+            )
+        assert f"Fullest wheel at {demand:.1%}" in fault.cause
+        assert f"stored momentum {stored:.3f} N m s" in fault.cause
+        emergency = next(e for e in _momentum_events(ditl) if "emergency" in e)
+        assert f"Fullest wheel at {demand:.1%}" in emergency
+        assert f"stored momentum {stored:.3f} N m s" in emergency
+
     def test_dumps_keep_every_wheel_under_its_capacity(self) -> None:
         ditl = _run(wheels=_wheels(1.0))
         assert _dumps(ditl) >= 1
@@ -139,6 +204,28 @@ def _budget(initial: tuple[float, float, float], **momentum: object) -> Momentum
 
 
 class TestEnforcementBudgetWheelLimits:
+    @pytest.mark.parametrize("wheel_limits", [False, True])
+    def test_initial_coast_and_forecasts_share_the_complete_signature(
+        self, wheel_limits
+    ):
+        settings = {"wheels": _wheels()} if wheel_limits else {"capacity_n_m_s": 1.0}
+        budget = _budget((0.3, 0.4, 0.0), **settings)
+        path = budget.current.path
+        assert path is not None
+        assert len(path.signature) == 4
+        assert (path.signature[3] is not None) is wheel_limits
+        forecast = budget.forecast(
+            path.state_at, budget.current.utime + 7, trajectory=None
+        )
+        assert forecast.path is path
+        assert budget.current.utime == BEGIN.timestamp()
+        # A change to the wheel rows alone must invalidate the cached proof.
+        if wheel_limits:
+            budget.wheel_limit_rows = budget.wheel_limit_rows.copy() * 1.01
+            changed = budget.forecast(path.state_at, forecast.utime, trajectory=None)
+            assert changed.path is not path
+            assert changed.path.signature[3] == budget.wheel_limit_rows.tobytes()
+
     def test_the_budget_takes_its_limits_from_the_wheels(self) -> None:
         budget = _budget((0.0, 0.0, 0.0), wheels=_wheels(1.0))
         assert budget.capacity == pytest.approx(1.0)
