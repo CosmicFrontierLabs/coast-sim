@@ -132,8 +132,12 @@ Under ``spacecraft_bus.attitude_control.stored_momentum``:
 * ``residual_dipole_body_a_m2`` (three floats or None): the spacecraft's dipole.
 * ``initial_momentum_body_n_m_s`` (three floats): the wheels' momentum at the start.
 * ``max_attitude_step_deg`` (default 5): the attitude step along slews.
-* ``capacity_n_m_s`` (float or None): the wheels' capacity, taken as the same about
-  every axis; None sets none.
+* ``capacity_n_m_s`` (float or None): the wheels' total capacity, taken as the same
+  about every axis. None takes the limit from ``wheels`` (see `Wheels`_), each held
+  within its own capacity, and sets none where there are no wheels.
+* ``wheels`` (list of :class:`~conops.config.MomentumWheel`, default empty): the
+  momentum wheels, each with its ``spin_axis``, ``capacity_n_m_s`` and place in the
+  body. The momentum is shared among them and each limits it (see `Wheels`_).
 * ``planning_level`` (default 0.8): the fraction of the capacity at which a thruster
   dump is called for, the rest being margin.
 * ``thruster_dump`` (:class:`~conops.config.ThrusterDumpConfig` or None):
@@ -174,6 +178,66 @@ A minimal configuration that tracks gravity gradient and drag with thruster dump
          capacity_n_m_s: 4.0
          planning_level: 0.8
          thruster_dump: {duration_seconds: 180, residual_fraction: 0.05}
+
+Wheels
+------
+
+``wheels`` describes the momentum wheels themselves. Each
+:class:`~conops.config.MomentumWheel` has:
+
+* ``name`` (default ``Wheel``).
+* ``spin_axis`` (three floats): the axis it spins about, in body coordinates,
+  normalised to a unit vector.
+* ``capacity_n_m_s`` (float): the greatest momentum it holds along that axis, in
+  either sense.
+* ``position_m`` (three floats or None), ``radius_m`` (default 0.15) and
+  ``thickness_m`` (default 0.06): where it sits and its size, for the
+  :doc:`3-D spacecraft plot <spacecraft_3d_visualization>`. None places it inside
+  the bus along its spin axis.
+
+What the wheels hold together is shared among them, and each is held within its
+own capacity. The sharing is the capacity-weighted minimum-norm law
+(:class:`~conops.config.WheelArray`): of all the ways to make the momentum up
+along the spin axes, the one with the least sum of squared fractions of each
+wheel's capacity. Three wheels have only one way; with more, a larger wheel takes
+more. Each wheel's share is in the telemetry as ``wheel_momentum_n_m_s``, in the
+order the wheels are configured.
+
+The limit therefore depends on where the momentum points in the body. Three
+orthogonal wheels of 4 N m s hold 4 N m s along any one spin axis, and 6.9 N m s
+along the diagonal between all three, where each takes a third. As the spacecraft
+turns, the same stored momentum moves between the wheels.
+
+Everything on this page still works in one figure, ``total_capacity_n_m_s``: the
+momentum the wheels hold whichever way it points, their weakest direction. What
+is checked against it, and against the planning level, is the fullest wheel's
+fraction of its own capacity as that fraction of the total: the norm along the
+weakest direction and less along any other. So a dump is called for when a wheel
+reaches the planning level of its own capacity, the capacity fault is a wheel at
+its capacity, and slew momentum and ``enforce_capacity`` admit and certify motion
+against each wheel. With several wheels a single figure would dump earlier than
+the wheels need.
+
+``capacity_n_m_s`` given alongside ``wheels`` replaces their limits with that one
+figure, the same about every axis, as with no wheels; their shares are still
+reported. Wheels whose spin axes do not span three dimensions cannot share a
+momentum in every direction, so they need ``capacity_n_m_s`` and report no shares.
+
+A four-wheel pyramid about the boresight, each wheel held within 4 N m s, with a
+total of 5.3 N m s for the planning level:
+
+.. code-block:: yaml
+
+   spacecraft_bus:
+     attitude_control:
+       stored_momentum:
+         gravity_gradient_enabled: true
+         wheels:
+           - {name: RW1, spin_axis: [0.577,  0.577,  0.577], capacity_n_m_s: 4.0}
+           - {name: RW2, spin_axis: [0.577, -0.577,  0.577], capacity_n_m_s: 4.0}
+           - {name: RW3, spin_axis: [0.577, -0.577, -0.577], capacity_n_m_s: 4.0}
+           - {name: RW4, spin_axis: [0.577,  0.577, -0.577], capacity_n_m_s: 4.0}
+         thruster_dump: {duration_seconds: 180}
 
 Dumps
 -----
@@ -286,7 +350,8 @@ Housekeeping telemetry carries, at every step, each source's torque by name
 the stored momentum in body coordinates and its norm (``stored_momentum_body_n_m_s``,
 ``stored_momentum_norm_n_m_s``), what the wheels hold, the stored momentum less the
 body's own while it turns (``actuator_momentum_body_n_m_s``,
-``actuator_momentum_norm_n_m_s``), the geomagnetic field in body coordinates where a
+``actuator_momentum_norm_n_m_s``), each configured wheel's share of it
+(``wheel_momentum_n_m_s``), the geomagnetic field in body coordinates where a
 source uses one (``geomagnetic_field_body_t``) and the atmosphere's density where
 drag is tracked (``atmosphere_density_kg_m3``). The event log carries ``MOMENTUM``
 events for each dump called for, each unload, each slew flown slower and each
@@ -301,6 +366,13 @@ What is left out
   ``max_attitude_step_deg`` of motion, so a peak between samples is read a sample
   late; the attitude step is the convergence control.
 * Self-shadowing between plates, for sunlight and drag alike.
+* Redistributing momentum among redundant wheels: more than three wheels share
+  by the one fixed law, so they are full a little before the most any sharing
+  could hold. Wheel speeds, zero crossings, friction and a failed wheel are not
+  modelled.
+* The wheels' limits where the planners bound an idle hold's escape: there the
+  stored momentum's norm stands in for the fullest wheel's share, which it is
+  never less than.
 * A thruster firing attitude: a dump holds the attitude the spacecraft has.
 * Propellant accounting for dumps.
 * The accuracy of the environment: the built-in atmosphere table and the dipole

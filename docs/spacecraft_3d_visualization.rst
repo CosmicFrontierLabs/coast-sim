@@ -21,6 +21,11 @@ Features
   ``orientation.normal``, sized by ``width_m`` × ``height_m``.
 * **Star trackers** — small prism bodies with a coloured aperture face, one
   per configured tracker.  Each gets a distinct boresight-arrow colour.
+* **Momentum wheels** — a copper disc per wheel in
+  ``spacecraft_bus.attitude_control.stored_momentum.wheels``, turned to its spin
+  axis and labelled with its capacity.  Drawn at ``position_m`` when configured,
+  otherwise inside the bus along the spin axis; the bus is drawn translucent so
+  the wheels show through it.
 * **Body-frame axes** — +X / +Y / +Z triad with labelled arrows (red, green,
   blue).
 * **Normal / boresight arrows** — outward-normal arrows for solar panels and
@@ -124,6 +129,26 @@ Hiding normal vectors or axes
    fig = plot_spacecraft_3d(config, show_normals=False, show_axes=False)
    fig.show()
 
+Momentum wheels
+^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+   from conops.config import MomentumWheel
+
+   momentum = config.spacecraft_bus.attitude_control.stored_momentum
+   momentum.wheels = [
+       MomentumWheel(name="RW1", spin_axis=(1, 0, 0), capacity_n_m_s=4.0),
+       MomentumWheel(name="RW2", spin_axis=(0, 1, 0), capacity_n_m_s=4.0),
+       MomentumWheel(name="RW3", spin_axis=(0, 0, 1), capacity_n_m_s=4.0,
+                     position_m=(-0.4, 0.0, 0.2)),
+   ]
+   fig = plot_spacecraft_3d(config)
+   fig.show()
+
+   # The wheels hidden, and the bus solid again
+   fig = plot_spacecraft_3d(config, show_wheels=False)
+
 Embedding in a Jupyter notebook
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -172,6 +197,9 @@ Visual elements reference
    * - Star tracker body
      - Dark gray
      - ``spacecraft_bus.star_trackers.star_trackers[*]``
+   * - Momentum wheels
+     - Copper
+     - ``spacecraft_bus.attitude_control.stored_momentum.wheels[*]``
    * - Star tracker aperture
      - Per-tracker colour
      - One of orange / hotpink / cyan / limegreen / gold / violet

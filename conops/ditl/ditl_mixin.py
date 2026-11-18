@@ -479,6 +479,8 @@ class DITLMixin:
             inertia_tensor_body_kg_m2=inertia,
             initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
             sources=build_torque_sources(self.config),
+            wheels=getattr(momentum_config, "wheel_array", None),
+            limit_by_wheels=getattr(momentum_config, "wheel_limits", None) is not None,
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
@@ -605,10 +607,11 @@ class DITLMixin:
 
     def _momentum_demand_n_m_s(self, tracker: StoredMomentumTracker) -> float:
         """What is checked against the capacity: what the wheels hold where
-        the momentum of slews counts, the stored momentum otherwise."""
+        the momentum of slews counts, the stored momentum otherwise; with
+        wheel limits, the fullest wheel's share of it."""
         if self._slew_momentum_enabled():
-            return tracker.actuator_momentum_norm_n_m_s
-        return tracker.stored_momentum_norm_n_m_s
+            return tracker.actuator_momentum_load_n_m_s
+        return tracker.stored_momentum_load_n_m_s
 
     def _dump_level_n_m_s(self) -> float | None:
         """The stored momentum at which a thruster dump is called for, if
@@ -650,16 +653,21 @@ class DITLMixin:
         the observation under way if any: an emergency dump interrupting an
         observation is what the planning level exists to prevent."""
         tracker = self._stored_momentum_tracker
-        capacity = (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         if tracker is None or capacity is None:
             return False
         stored = self._momentum_demand_n_m_s(tracker)
         if stored < capacity:
             return False
         self.fault_management.report_momentum_capacity(
-            utime=utime, stored_n_m_s=stored, capacity_n_m_s=capacity, obsid=obsid
+            utime=utime,
+            stored_n_m_s=tracker.stored_momentum_norm_n_m_s,
+            capacity_n_m_s=capacity,
+            obsid=obsid,
+            wheel_utilisation=stored / capacity if tracker.limit_by_wheels else None,
+            actuator_n_m_s=tracker.actuator_momentum_norm_n_m_s
+            if self._slew_momentum_enabled()
+            else None,
         )
         return True
 
@@ -686,7 +694,9 @@ class DITLMixin:
         """Forecast the stored momentum from ``begin`` to ``end`` at the
         attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
         wheels where None: the sample times, the norm at each, what the
-        wheels hold at each, and the momentum at the end in inertial
+        wheels hold at each (both as checked against the capacity: with
+        wheel limits, the fullest wheel's share), and the momentum at the
+        end in inertial
         coordinates. Held attitudes are sampled at the run's step and
         ``slew`` at the configured attitude step, with the orbit interpolated
         between ephemeris samples, as the run integrates; where the momentum
@@ -768,11 +778,11 @@ class DITLMixin:
                 ),
                 angular_velocity_body_rad_s=(rate_at(float(at)) if rates else None),
             )
-            norms.append(sample.stored_momentum_norm_n_m_s)
+            norms.append(sample.stored_momentum_load_n_m_s)
             demands.append(
-                sample.actuator_momentum_norm_n_m_s
-                if sample.actuator_momentum_norm_n_m_s is not None
-                else sample.stored_momentum_norm_n_m_s
+                sample.actuator_momentum_load_n_m_s
+                if sample.actuator_momentum_load_n_m_s is not None
+                else sample.stored_momentum_load_n_m_s
             )
         return MomentumProfile(
             np.asarray(samples, dtype=np.float64),

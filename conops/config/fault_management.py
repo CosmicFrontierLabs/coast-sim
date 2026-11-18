@@ -522,6 +522,8 @@ class FaultManagementRun(FaultManagement):
         stored_n_m_s: float,
         capacity_n_m_s: float,
         obsid: int | None,
+        wheel_utilisation: float | None = None,
+        actuator_n_m_s: float | None = None,
     ) -> None:
         """Latch the reaction wheels at their capacity: the ``stored_momentum``
         state goes red and an event records it, saying whether an observation
@@ -538,21 +540,39 @@ class FaultManagementRun(FaultManagement):
             if obsid is not None
             else "; emergency thruster dump"
         )
+        metadata: dict[str, FaultEventMetadataValue] = {
+            "stored_n_m_s": stored_n_m_s,
+            "capacity_n_m_s": capacity_n_m_s,
+            "obsid": obsid,
+            "during_observation": int(obsid is not None),
+        }
+        if actuator_n_m_s is not None:
+            metadata["actuator_n_m_s"] = actuator_n_m_s
+        if wheel_utilisation is not None:
+            metadata["wheel_utilisation"] = wheel_utilisation
+            cause = (
+                f"Fullest wheel at {wheel_utilisation:.1%} of its capacity "
+                f"(stored momentum {stored_n_m_s:.3f} N m s"
+                + (
+                    f"; actuator momentum {actuator_n_m_s:.3f} N m s"
+                    if actuator_n_m_s is not None
+                    else ""
+                )
+                + ")"
+            )
+        else:
+            cause = (
+                f"Actuator momentum {actuator_n_m_s:.3f}"
+                if actuator_n_m_s is not None
+                else f"Stored momentum {stored_n_m_s:.3f}"
+            ) + f" N m s reached the {capacity_n_m_s} N m s capacity"
         self.events.append(
             FaultEvent(
                 utime=utime,
                 event_type="momentum_capacity",
                 name="stored_momentum",
-                cause=(
-                    f"Stored momentum {stored_n_m_s:.3f} N m s reached the "
-                    f"{capacity_n_m_s} N m s capacity{during}"
-                ),
-                metadata={
-                    "stored_n_m_s": stored_n_m_s,
-                    "capacity_n_m_s": capacity_n_m_s,
-                    "obsid": obsid,
-                    "during_observation": int(obsid is not None),
-                },
+                cause=cause + during,
+                metadata=metadata,
             )
         )
 
