@@ -222,6 +222,30 @@ class TestGroups:
                 assert T0 + 2 * HOUR <= float(entry.collection_begin) <= T0 + 3 * HOUR
         assert any(int(e.obsid) in MEMBERS for e in science)
 
+    def test_dispatch_holds_collection_to_the_group_deadline(self) -> None:
+        """A member that cannot begin collecting by the deadline is passed
+        over whether the deadline is its own or its group's: selected just
+        before it, the member would collect after it, once it had slewed."""
+        deadline = T0 + 60.0
+
+        def member_science(config, **own):  # type: ignore[no-untyped-def]
+            member = _target(
+                config, 1, *PATCH[1], merit=90, minutes=20, snapshot=20, **own
+            )
+            other = _target(config, 100, *PATCH[4], merit=10, minutes=300, snapshot=20)
+            plan = _dispatch(config, [member, other]).plan
+            return [e for e in _at(plan) if int(e.obsid) == 1]
+
+        own = member_science(_config(HOURS), deadline=deadline)
+        grouped = member_science(
+            _grouped(
+                _config(HOURS),
+                ObservationGroup(name="bin", members=[1], window_deadline=deadline),
+            )
+        )
+        assert own == []
+        assert grouped == []
+
     def test_contiguity_keeps_the_group_together_in_dispatch(self) -> None:
         """The filler outranks the second and third members, so without the
         bonus it follows the first member; with it the group is observed

@@ -197,6 +197,10 @@ class RollingHorizonDITL(DITL):
             raise ValueError("give allocator or allocation, not both")
         if commit_lead_time < timedelta(0):
             raise ValueError("commit_lead_time must not be negative")
+        if start_plan is not None and not issubclass(scheduler, LocalSearchScheduler):
+            # As a planned run refuses it: a seed silently dropped looks
+            # like a seeded run.
+            raise ValueError("only the local-search schedulers take a start plan")
         super().__init__(
             config=config,
             ephem=ephem,
@@ -220,8 +224,7 @@ class RollingHorizonDITL(DITL):
         """The interval's ground passes, predicted once for every plan in it."""
         self.start_plan = start_plan
         """A plan each replan starts from, such as a dispatch run's: the
-        entries of it inside the replan's horizon seed the scheduler, for a
-        scheduler that takes a start plan."""
+        entries of it inside the replan's horizon seed the scheduler."""
         self._last_seed_entries = 0
         self.allocator = allocator
         self.allocation_bonus = allocation_bonus
@@ -784,11 +787,7 @@ class RollingHorizonDITL(DITL):
                 )
             )
         self._last_seed_entries = 0
-        if (
-            self.start_plan is not None
-            and "start_plan" not in options
-            and issubclass(self.scheduler, LocalSearchScheduler)
-        ):
+        if self.start_plan is not None and "start_plan" not in options:
             # The start plan's entries overlapping this horizon.
             seed = Plan(
                 entries=[

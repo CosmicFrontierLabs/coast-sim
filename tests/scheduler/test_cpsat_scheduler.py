@@ -451,6 +451,32 @@ class TestHint:
         assert all(scheduler.solver_chunks_used)
         assert scheduler.solver_score == scheduler.start_score
 
+    def test_the_model_holds_a_remainder_the_priority_plan_placed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fifty minutes in twenty-minute snapshots: the priority-first plan
+        ends the target with a ten-minute remainder, shorter than ss_min,
+        placed in the same chunk as the snapshots before it. The model takes
+        it as the hint gives it, so the chunk is not thrown away."""
+        _hinted_only(monkeypatch)
+        config = _config(3)
+        targets = [
+            _target(config, 1, *PATCH[0], merit=90, minutes=50, snapshot=20),
+            _target(config, 2, *PATCH[4], merit=40, minutes=120, snapshot=20),
+        ]
+        scheduler = _scheduler(targets, 3)
+
+        plan = scheduler.schedule()
+
+        assert set(scheduler.solver_statuses) == {"OPTIMAL"}
+        assert scheduler.solver_chunks_used == [True]
+        assert scheduler.solver_score == scheduler.start_score
+        assert sorted(e.exposure for e in plan if int(e.obsid) == 1) == [
+            10 * MIN,
+            20 * MIN,
+            20 * MIN,
+        ]
+
     def test_hint_is_feasible_where_snapshots_were_moved_into_gaps(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

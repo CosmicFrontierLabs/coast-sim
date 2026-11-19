@@ -45,6 +45,21 @@ class TestSnapshotMinimum:
         assert snapshot_min_seconds(leftover) == 1.0
         assert snapshot_min_seconds(leftover, 60.0) == 1200.0
 
+    def test_most_of_a_short_request_is_not_rounding(self) -> None:
+        """A 100 s request cut after 45 s at a 60 s step still owes 55 s:
+        shorter than the step, but more than it has collected. Cut after 70 s,
+        the 30 s left is rounding."""
+        config = _config(HOURS)
+        target = _target(config, 1, 105.0, 10.0, minutes=50, snapshot=20)
+        target.exptime = 100.0
+        target.record_collection(T0 + 45, 45.0, step=60.0)
+        assert target.exptime == 55.0
+        assert not target.done
+        assert target.collected_seconds == 45.0
+        target.record_collection(T0 + 70, 25.0, step=60.0)
+        assert target.exptime == 0
+        assert target.done
+
     def test_an_open_ended_target_keeps_its_minimum(self) -> None:
         config = _config(HOURS)
         target = _target(config, 1, 105.0, 10.0, minutes=50, snapshot=20)

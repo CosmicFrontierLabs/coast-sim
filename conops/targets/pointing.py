@@ -348,24 +348,36 @@ class Pointing(PlanEntry):
         if self._visit_parent is not None:
             self._visit_parent.record_calibration(utime, seconds)
 
-    def record_interruption(self, utime: float) -> None:
+    def record_interruption(self, utime: float, *, visit: int | None = None) -> None:
         """A visit cut short is taken again, whole, while its window is
         open: the window counts as visited only once one attempt has
         collected a whole visit's science in it, uninterrupted. The science
         every attempt collected still counts. Follow the visit credited by
-        collection, including when it runs past the next window's opening."""
+        collection, including when it runs past the next window's opening.
+
+        ``visit`` is the visit flown where the caller knows it (a visit
+        copy knows its own): an attempt cut before it collected anything
+        leaves every earlier visit as it was."""
         super().record_interruption(utime)
+        flown = visit if visit is not None else self.visit
         if self._visit_parent is not None:
-            self._visit_parent.record_interruption(utime)
+            self._visit_parent.record_interruption(utime, visit=flown)
         if self.visit_windows:
             index = self._collecting_visit
-            self._collecting_visit = None
-            if index is not None:
+            self.end_visit_attempt()
+            if index is not None and (flown is None or flown == index):
                 attempt = self._visit_attempt_seconds.pop(index, 0.0)
                 if attempt < self.per_visit_seconds - 1e-6:
                     self._visits_done.discard(index)
                     self.done = False
                     self._exposure_is_the_visits_left()
+
+    def end_visit_attempt(self) -> None:
+        """The observation under way has ended: a later interruption is not
+        of the visit it collected."""
+        self._collecting_visit = None
+        if self._visit_parent is not None:
+            self._visit_parent.end_visit_attempt()
 
     def visit_complete(self, index: int) -> bool:
         """Whether a whole visit's science has been collected in window ``index``."""
