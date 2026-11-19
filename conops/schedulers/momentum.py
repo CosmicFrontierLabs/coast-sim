@@ -18,7 +18,7 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..common.ephemeris import OrbitSampler
+from ..common.ephemeris import orbit_at
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.attitude import Attitude, slew_angular_velocity
@@ -136,7 +136,7 @@ class MomentumForecast:
         self._times = np.array(
             [t.timestamp() for t in ephem.timestamp], dtype=np.float64
         )
-        self._orbit = OrbitSampler(ephem)
+        self._ephem = ephem
 
     @property
     def active(self) -> bool:
@@ -309,18 +309,13 @@ class MomentumForecast:
                 else None
             )
             for utime in samples:
-                orbit = self._orbit.at(float(utime))
-                position = orbit.position_eci_km
+                orbit = orbit_at(self._ephem, float(utime))
                 attitude = self._attitude_at(span, float(utime))
                 sample = tracker.update(
                     utime=float(utime),
-                    position_eci_km=position,
+                    position_eci_km=orbit.position_eci_km,
                     attitude_quaternion_eci_to_body=attitude_to_quat(*attitude),
-                    sun_eci_km=(
-                        orbit.sun_position_eci_km - position
-                        if orbit.sun_position_eci_km is not None
-                        else None
-                    ),
+                    sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                     sunlit=self._sunlit(float(utime)),
                     velocity_eci_km_s=orbit.velocity_eci_km_s,
                     position_ecef_km=orbit.position_ecef_km,

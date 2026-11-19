@@ -8,11 +8,7 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops.common.ephemeris import (
-    OrbitSampler,
-    _position_snapshot,
-    position_vectors,
-)
+from conops.common.ephemeris import _position_snapshot, orbit_at, position_vectors
 from conops.simulation.momentum import OrbitTables
 
 
@@ -110,20 +106,10 @@ def _orbit(step_size: int) -> rust_ephem.TLEEphemeris:
     )
 
 
-def _tables_only(ephem: rust_ephem.TLEEphemeris) -> SimpleNamespace:
-    """An ephemeris the sampler does not know: its tables and nothing else."""
-    return SimpleNamespace(
-        timestamp=ephem.timestamp,
-        gcrs_pv=ephem.gcrs_pv,
-        sun_pv=ephem.sun_pv,
-        itrs_pv=ephem.itrs_pv,
-    )
-
-
-class TestOrbitSampler:
+class TestOrbitAt:
     def test_a_sample_time_gives_the_stored_orbit(self):
         ephem = _orbit(60)
-        orbit = OrbitSampler(ephem).at(ephem.timestamp[7].timestamp())
+        orbit = orbit_at(ephem, ephem.timestamp[7].timestamp())
         np.testing.assert_array_equal(orbit.position_eci_km, ephem.gcrs_pv.position[7])
         np.testing.assert_array_equal(
             orbit.velocity_eci_km_s, ephem.gcrs_pv.velocity[7]
@@ -133,43 +119,21 @@ class TestOrbitSampler:
         )
         np.testing.assert_array_equal(orbit.position_ecef_km, ephem.itrs_pv.position[7])
 
-    def test_between_samples_a_rust_ephemeris_follows_the_orbit(self):
+    def test_between_samples_it_follows_the_orbit(self):
         """Midway between 60 s samples, against the orbit propagated there:
-        the ephemeris's own interpolation is within a metre, while the chord
-        between the samples cuts kilometres inside it."""
+        within a metre, where the chord between the samples cuts kilometres
+        inside it."""
         coarse, fine = _orbit(60), _orbit(30)
-        utime = fine.timestamp[11].timestamp()
         truth = fine.gcrs_pv.position[11]
-        sampler = OrbitSampler(coarse)
-        assert sampler.hermite
-        orbit = sampler.at(utime)
+        orbit = orbit_at(coarse, fine.timestamp[11].timestamp())
         assert np.linalg.norm(orbit.position_eci_km - truth) < 1e-3
         velocity_error = orbit.velocity_eci_km_s - fine.gcrs_pv.velocity[11]
         assert np.linalg.norm(velocity_error) < 1e-4
         assert np.linalg.norm(orbit.position_ecef_km - fine.itrs_pv.position[11]) < 1e-3
-        linear = OrbitSampler(_tables_only(coarse))
-        assert not linear.hermite
-        chord = linear.at(utime).position_eci_km
+        chord = (coarse.gcrs_pv.position[5] + coarse.gcrs_pv.position[6]) / 2.0
         assert np.linalg.norm(chord) < np.linalg.norm(truth) - 1.0
 
-    def test_outside_the_ephemeris_the_orbit_is_held_at_its_ends(self):
+    def test_outside_the_ephemeris_it_raises(self):
         ephem = _orbit(60)
-        first = ephem.timestamp[0].timestamp()
-        last = ephem.timestamp[-1].timestamp()
-        for sampler in (OrbitSampler(ephem), OrbitSampler(_tables_only(ephem))):
-            np.testing.assert_array_equal(
-                sampler.at(first - 5.0).position_eci_km, ephem.gcrs_pv.position[0]
-            )
-            np.testing.assert_array_equal(
-                sampler.at(last + 5.0).position_eci_km, ephem.gcrs_pv.position[-1]
-            )
-
-    def test_a_double_with_positions_alone_gives_them_alone(self):
-        ephem = _orbit(60)
-        double = SimpleNamespace(timestamp=ephem.timestamp, gcrs_pv=ephem.gcrs_pv)
-        double.gcrs_pv = SimpleNamespace(position=ephem.gcrs_pv.position)
-        orbit = OrbitSampler(double).at(ephem.timestamp[3].timestamp() + 30.0)
-        assert orbit.position_eci_km.shape == (3,)
-        assert orbit.velocity_eci_km_s is None
-        assert orbit.sun_position_eci_km is None
-        assert orbit.position_ecef_km is None
+        with pytest.raises(ValueError, match="outside ephemeris range"):
+            orbit_at(ephem, ephem.timestamp[-1].timestamp() + 5.0)

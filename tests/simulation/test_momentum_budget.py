@@ -17,6 +17,21 @@ from conops.simulation.momentum import StoredMomentumTracker
 from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 
 
+def _fixed_orbit(timestamp, position=(7000.0, 0.0, 0.0)):
+    """An ephemeris double at rest at ``position``, with the Sun along +x."""
+    at_rest = SimpleNamespace(
+        position=np.array([position], dtype=float), velocity=np.zeros((1, 3))
+    )
+    sun = SimpleNamespace(position=np.array([[1.5e8, 0.0, 0.0]]))
+    return SimpleNamespace(
+        timestamp=timestamp,
+        gcrs_pv=SimpleNamespace(position=np.tile(position, (len(timestamp), 1))),
+        gcrs_pv_at=lambda time: at_rest,
+        itrs_pv_at=lambda time: at_rest,
+        sun_pv_at=lambda time: sun,
+    )
+
+
 def setup_budget(
     *,
     capacity=20.0,
@@ -26,12 +41,7 @@ def setup_budget(
     step=2,
 ):
     epoch = datetime(2027, 1, 1, tzinfo=timezone.utc)
-    ephem = SimpleNamespace(
-        timestamp=[epoch + timedelta(seconds=i) for i in range(0, 3601, step)],
-        gcrs_pv=SimpleNamespace(
-            position=np.tile([7000.0, 0.0, 0.0], (3600 // step + 1, 1))
-        ),
-    )
+    ephem = _fixed_orbit([epoch + timedelta(seconds=i) for i in range(0, 3601, step)])
     config = MissionConfig(
         spacecraft_bus=SpacecraftBus(
             inertia_tensor_body_kg_m2=np.diag(inertia),

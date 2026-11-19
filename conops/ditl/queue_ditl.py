@@ -1506,8 +1506,8 @@ class QueueDITL(DITLMixin, DITLStats):
     def _momentum_forecast_begin(self, utime: float) -> float:
         """Where a forecast from the wheels as they are starts: the tracker's
         last sample, a step ago, or now before the first."""
-        previous = getattr(self, "_momentum_previous", None)
-        return min(utime, previous.utime) if previous is not None else utime
+        previous = getattr(self, "_momentum_previous_utime", None)
+        return min(utime, previous) if previous is not None else utime
 
     def _momentum_forecast_state(
         self, attitude: tuple[float, float, float]

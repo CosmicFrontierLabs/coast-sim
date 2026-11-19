@@ -19,7 +19,7 @@ import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
-from ..common.ephemeris import OrbitSampler
+from ..common.ephemeris import orbit_at
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
 from .attitude import AttitudeExecutionError, AttitudeState, AttitudeTrajectory
@@ -109,7 +109,7 @@ class MomentumBudget:
             settings.max_sample_interval_s, settings.max_attitude_step_deg / fastest
         )
         self.orbit = OrbitTables.from_ephem(ephem)
-        self.sampler = OrbitSampler(ephem)
+        self.ephem = ephem
         self.times = self.orbit.times
         self.positions = self.orbit.positions_eci_km
         if (
@@ -245,17 +245,12 @@ class MomentumBudget:
     ) -> MomentumSample:
         if not self.times[0] <= state.utime <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        orbit = self.sampler.at(state.utime)
-        position = orbit.position_eci_km
+        orbit = orbit_at(self.ephem, state.utime)
         return tracker.update(
             utime=state.utime,
-            position_eci_km=position,
+            position_eci_km=orbit.position_eci_km,
             attitude_quaternion_eci_to_body=state.quaternion,
-            sun_eci_km=(
-                orbit.sun_position_eci_km - position
-                if orbit.sun_position_eci_km is not None
-                else None
-            ),
+            sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
             sunlit=self._sunlit(state.utime),
             velocity_eci_km_s=orbit.velocity_eci_km_s,
             position_ecef_km=orbit.position_ecef_km,

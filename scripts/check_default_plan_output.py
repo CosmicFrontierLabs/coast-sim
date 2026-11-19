@@ -108,6 +108,29 @@ class DeterministicEphemeris:
             position=np.tile(np.array([1.5e8, 1.0e7, 2.0e7]), (sample_count, 1))
         )
 
+    def _at(self, table: SimpleNamespace, time: datetime) -> SimpleNamespace:
+        """One row of ``table`` at ``time``, linear between the samples."""
+        seconds = (time - self.begin).total_seconds()
+        grid = self.step_size * np.arange(len(self.timestamp))
+        return SimpleNamespace(
+            **{
+                name: np.array(
+                    [[np.interp(seconds, grid, column) for column in rows.T]]
+                )
+                for name, rows in vars(table).items()
+            }
+        )
+
+    def gcrs_pv_at(self, time: datetime) -> SimpleNamespace:
+        return self._at(self.gcrs_pv, time)
+
+    def sun_pv_at(self, time: datetime) -> SimpleNamespace:
+        return self._at(self.sun_pv, time)
+
+    def itrs_pv_at(self, time: datetime) -> SimpleNamespace:
+        """As ``gcrs_pv_at``: the adapter's Earth does not rotate."""
+        return self._at(self.gcrs_pv, time)
+
     def index(self, time: datetime | float) -> int:
         if isinstance(time, (int, float)):
             seconds = float(time) - self.begin.timestamp()

@@ -3,9 +3,9 @@
 stored-momentum tracking.
 
 The momentum integrators sample the orbit between ephemeris samples: along a
-slew, and wherever a motion's boundary falls. ``OrbitSampler`` asks a Rust
-ephemeris for its own cubic Hermite interpolation there; the alternative, and
-what a test double gets, is linear interpolation of each table.
+slew, and wherever a motion's boundary falls. ``orbit_at`` asks the ephemeris
+for its own cubic Hermite interpolation there; the alternative, as COASTSim
+did before rust-ephem 0.17, is linear interpolation of each table.
 
 This holds one inertial attitude for a few orbits, sampling the orbit every
 10 s from an ephemeris at a coarser step, and compares each interpolation
@@ -32,7 +32,7 @@ from rust_ephem import TLEEphemeris
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from conops.common.ephemeris import OrbitSampler, OrbitState  # noqa: E402
+from conops.common.ephemeris import OrbitState, orbit_at  # noqa: E402
 from conops.common.vector import attitude_to_quat  # noqa: E402
 from conops.config import (  # noqa: E402
     AttitudeControlSystem,
@@ -47,15 +47,25 @@ BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
 SAMPLE_S = 10
 
 
-class _LinearEphemeris:
-    """An ephemeris ``OrbitSampler`` does not know, so that it interpolates
-    its tables linearly."""
+def _linear(ephem: TLEEphemeris) -> Callable[[float], OrbitState]:
+    """The orbit by linear interpolation of each of the ephemeris's tables."""
+    times = np.array([t.timestamp() for t in ephem.timestamp], dtype=np.float64)
+    tables = (
+        ephem.gcrs_pv.position,
+        ephem.gcrs_pv.velocity,
+        ephem.sun_pv.position,
+        ephem.itrs_pv.position,
+    )
 
-    def __init__(self, ephem: TLEEphemeris) -> None:
-        self.timestamp = ephem.timestamp
-        self.gcrs_pv = ephem.gcrs_pv
-        self.sun_pv = ephem.sun_pv
-        self.itrs_pv = ephem.itrs_pv
+    def at(utime: float) -> OrbitState:
+        return OrbitState(
+            *(
+                np.array([np.interp(utime, times, table[:, k]) for k in range(3)])
+                for table in tables
+            )
+        )
+
+    return at
 
 
 def _config(ephem: TLEEphemeris) -> MissionConfig:
@@ -95,7 +105,6 @@ def _integrate(
         began = time.perf_counter()
         orbit = orbit_at(float(utime))
         spent += time.perf_counter() - began
-        assert orbit.sun_position_eci_km is not None
         sample = tracker.update(
             utime=float(utime),
             position_eci_km=orbit.position_eci_km,
@@ -131,12 +140,11 @@ def main() -> None:
     utimes = np.array([t.timestamp() for t in fine.timestamp], dtype=np.float64)
     config = _config(coarse)
 
-    reference = _integrate(config, utimes, OrbitSampler(fine).at)
-    contenders = {
-        "linear": OrbitSampler(_LinearEphemeris(coarse)),  # type: ignore[arg-type]
-        "hermite": OrbitSampler(coarse),
+    reference = _integrate(config, utimes, lambda utime: orbit_at(fine, utime))
+    contenders: dict[str, Callable[[float], OrbitState]] = {
+        "linear": _linear(coarse),
+        "hermite": lambda utime: orbit_at(coarse, utime),
     }
-    assert contenders["hermite"].hermite and not contenders["linear"].hermite
 
     print(
         f"{args.hours:g} h held attitude, ephemeris every {args.step} s, "
@@ -152,8 +160,8 @@ def main() -> None:
         + f"{'error at end':>20}{'us':>12}"
     )
     stored = float(np.linalg.norm(reference[2][-1]))
-    for name, sampler in contenders.items():
-        positions, torques, momentum, spent = _integrate(config, utimes, sampler.at)
+    for name, sample in contenders.items():
+        positions, torques, momentum, spent = _integrate(config, utimes, sample)
         row = f"{name:10}{np.linalg.norm(positions - reference[0], axis=1).max():12.4f}"
         for source in names:
             error = np.linalg.norm(torques[source] - reference[1][source], axis=1)

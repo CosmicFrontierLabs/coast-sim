@@ -241,13 +241,19 @@ class OrbitTables(BaseModel):
     def from_ephem(cls, ephem: rust_ephem.Ephemeris) -> OrbitTables:
         """The tables of ``ephem``; a test double may lack all but the
         positions."""
-        from ..common.ephemeris import (
-            position_vectors,
-            sample_times,
-            velocity_vectors,
-        )
+        from ..common.ephemeris import position_vectors, velocity_vectors
 
-        times = sample_times(ephem)
+        times = np.array(
+            [
+                float(
+                    (t - np.datetime64("1970-01-01T00:00:00")) / np.timedelta64(1, "s")
+                )
+                if isinstance(t, np.datetime64)
+                else t.timestamp()
+                for t in ephem.timestamp
+            ],
+            dtype=np.float64,
+        )
         positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)
         sun = getattr(getattr(ephem, "sun_pv", None), "position", None)
         ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
