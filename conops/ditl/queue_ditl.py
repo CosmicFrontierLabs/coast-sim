@@ -1758,10 +1758,23 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _ppt_deadline(self, target: Pointing | None = None) -> float | None:
         """The latest time the observation may begin collecting: its visit
-        window's deadline for a visit, else the target's deadline."""
+        window's deadline for a visit, else the target's deadline, and no
+        later than its group's."""
         ppt = self.ppt if target is None else target
         if ppt is None:
             return None
+        deadline = self._own_deadline(ppt)
+        group = self.merit_model.group(ppt)
+        if group is not None and group.window_deadline is not None:
+            deadline = (
+                group.window_deadline
+                if deadline is None
+                else min(deadline, group.window_deadline)
+            )
+        return deadline
+
+    def _own_deadline(self, ppt: Pointing) -> float | None:
+        """:meth:`_ppt_deadline` without the target's group."""
         if (
             self._sequence is not None
             and self._sequence.index == 0
@@ -3867,6 +3880,8 @@ class QueueDITL(DITLMixin, DITLStats):
         if interrupted:
             self.ppt.record_interruption(utime)
             self._log_cut_visit(utime)
+        else:
+            self.ppt.end_visit_attempt()
         if mark_done:
             self.ppt.done = True
 

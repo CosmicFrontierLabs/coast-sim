@@ -94,10 +94,7 @@ class TestSeeding:
         # The whole plan was not handed over: a later replan sees fewer entries.
         assert _Recording.seeds[-1] is None or len(_Recording.seeds[-1]) < len(plan)
 
-    @pytest.mark.parametrize("scheduler", [_Recording, PriorityScheduler])
-    def test_nothing_is_seeded_without_a_plan_or_a_seedable_scheduler(
-        self, scheduler: type, dispatch_plan: Plan
-    ) -> None:
+    def test_nothing_is_seeded_without_a_plan(self) -> None:
         config = _config(HOURS)
         rolling = RollingHorizonDITL(
             config,
@@ -106,18 +103,32 @@ class TestSeeding:
             end=END,
             horizon=timedelta(hours=6),
             replan_interval=timedelta(hours=6),
-            scheduler=scheduler,
-            # The local-search run gets no start plan; the priority one ignores it.
-            **(
-                {"scheduler_options": {"time_limit": 0.5}}
-                if scheduler is _Recording
-                else {"start_plan": dispatch_plan}
-            ),
+            scheduler=_Recording,
+            scheduler_options={"time_limit": 0.5},
         )
         rolling.step_size = STEP
         assert rolling.calc()
         assert all(s is None for s in _Recording.seeds)
         assert all(r.seed_entries == 0 for r in rolling.replans)
+
+    def test_a_scheduler_that_takes_no_start_plan_refuses_it(
+        self, dispatch_plan: Plan
+    ) -> None:
+        """As a planned run does: the seed is not silently dropped."""
+        config = _config(HOURS)
+        with pytest.raises(ValueError, match="only the local-search schedulers"):
+            RollingHorizonDITL(
+                config,
+                _targets(config),
+                begin=BEGIN,
+                end=END,
+                scheduler=PriorityScheduler,
+                start_plan=dispatch_plan,
+            )
+        config.scheduler.mode = SchedulerMode.ROLLING
+        config.scheduler.kind = SchedulerKind.PRIORITY
+        with pytest.raises(ValueError, match="only the local-search schedulers"):
+            create_ditl(config, _targets(config), BEGIN, END, start_plan=dispatch_plan)
 
 
 class TestFactory:

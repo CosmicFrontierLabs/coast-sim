@@ -520,10 +520,28 @@ class TargetQueue:
         if estimate.slewpath is not None:
             target.slewpath = estimate.slewpath
 
-    @staticmethod
-    def _bounds(target: Pointing, utime: float) -> tuple[float | None, float | None]:
+    def _bounds(
+        self, target: Pointing, utime: float
+    ) -> tuple[float | None, float | None]:
         """When ``target`` may begin collecting if selected at ``utime``: its
-        next visit window's bounds, or its own earliest start and deadline."""
+        next visit window's bounds, or its own earliest start and deadline,
+        narrowed by its group's window."""
+        start, deadline = self._own_bounds(target, utime)
+        group = self.merit_model.group(target)
+        group_start, group_deadline = group.bounds if group else (None, None)
+        if group_start is not None:
+            start = group_start if start is None else max(start, group_start)
+        if group_deadline is not None:
+            deadline = (
+                group_deadline if deadline is None else min(deadline, group_deadline)
+            )
+        return start, deadline
+
+    @staticmethod
+    def _own_bounds(
+        target: Pointing, utime: float
+    ) -> tuple[float | None, float | None]:
+        """:meth:`_bounds` without the target's group."""
         windows = getattr(target, "visit_windows", None)
         # A test double's target has no windows.
         if isinstance(windows, list) and windows:
@@ -540,19 +558,15 @@ class TargetQueue:
         earliest start and by its deadline, or within an unvisited visit
         window, and, with cadence counting, a cadence after its last visit;
         a target whose windows are all past or visited is not."""
-        start, deadline = self._bounds(target, utime)
         windows = getattr(target, "visit_windows", None)
-        if isinstance(windows, list) and windows and deadline is None:
+        if (
+            isinstance(windows, list)
+            and windows
+            and self._own_bounds(target, utime)[1] is None
+        ):
             return False
         # Its group's window narrows its own.
-        group = self.merit_model.group(target)
-        group_start, group_deadline = group.bounds if group else (None, None)
-        if group_start is not None:
-            start = group_start if start is None else max(start, group_start)
-        if group_deadline is not None:
-            deadline = (
-                group_deadline if deadline is None else min(deadline, group_deadline)
-            )
+        start, deadline = self._bounds(target, utime)
         if deadline is not None and utime > deadline:
             return False
         if not self._cadence_due(target, utime):
@@ -584,7 +598,9 @@ class TargetQueue:
         return left >= need
 
     def _cadence_due(self, target: Pointing, utime: float) -> bool:
-        """Whether a cadence target's next visit is due."""
+        """Whether a cadence target's next visit is due: a cadence after its
+        last visit, or at once while a visit cut short is still owed, as
+        the planners take it again."""
         merit_model = self.merit_model
         if merit_model.cadence_weight <= 0.0:
             return True
@@ -592,7 +608,25 @@ class TargetQueue:
         last = getattr(target, "last_collection_time", None)
         if interval is None or not isinstance(last, (int, float)):
             return True
+        if self._cut_visit_owed(target, float(last)):
+            return True
         return utime >= float(last) + float(interval)
+
+    @staticmethod
+    def _cut_visit_owed(target: Pointing, last: float) -> bool:
+        """Whether the visit ``target`` last collected in, at ``last``, was
+        cut short and is still to be taken again: its window not yet
+        visited whole, or, without windows, an interruption since."""
+        windows = getattr(target, "visit_windows", None)
+        if isinstance(windows, list) and windows:
+            index = target.visit_index_at(last)
+            return index is not None and not target.visit_complete(index)
+        interruptions = getattr(target, "interruptions", None)
+        return (
+            isinstance(interruptions, tuple)
+            and bool(interruptions)
+            and interruptions[-1] >= last
+        )
 
     def _slew_allowance(self) -> float | None:
         """The time to allow for reaching any request once its protected

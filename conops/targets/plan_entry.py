@@ -530,6 +530,9 @@ class PlanEntry(BaseModel):
         Reduces the remaining exposure time and records when the target was
         last observed. A remainder shorter than ``step``, the step the
         simulation runs at, ends the target: it is rounding, not science.
+        Not so while the remainder is more than the target has collected: a
+        request shorter than two steps, cut short before half of it, still
+        owes the rest.
 
         Args:
             utime: Time the collection ended.
@@ -538,12 +541,13 @@ class PlanEntry(BaseModel):
         """
         if seconds <= 0:
             return
+        self._collected_seconds += seconds
         if self.exptime is not None:
             self.exptime = max(0, self.exptime - seconds)
-            if 0 < self.exptime < step:
-                # A remainder shorter than a simulation step is rounding.
+            if 0 < self.exptime < min(step, self._collected_seconds):
+                # A remainder shorter than a simulation step is rounding,
+                # unless it is most of the request.
                 self.exptime = 0
-        self._collected_seconds += seconds
         self._last_collection_time = utime
 
     @property
@@ -579,6 +583,10 @@ class PlanEntry(BaseModel):
     def record_interruption(self, utime: float) -> None:
         """Record that an observation of this target was cut short at ``utime``."""
         self._interruptions.append(utime)
+
+    def end_visit_attempt(self) -> None:
+        """The observation under way has ended. Nothing to do without visit
+        windows; see :meth:`Pointing.end_visit_attempt`."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property

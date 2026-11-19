@@ -289,6 +289,7 @@ class _Task:
         overhead: int = 0,
         setup: int = 0,
         collection: tuple[int, int] = (0, 0),
+        remainder: int | None = None,
         window: tuple[int, int] = (0, 0),
         rate: float = 0.0,
         earliness: float = 0.0,
@@ -323,6 +324,13 @@ class _Task:
         its data in a recorder segment."""
         self.collection = collection
         """Shortest and longest collection of a candidate snapshot, in seconds."""
+        self.least = (
+            collection[0] if remainder is None else min(collection[0], remainder)
+        )
+        """The least the snapshot may collect: below ``collection[0]`` only
+        for a snapshot that finishes its request's exposure after another
+        snapshot of it in the chunk, as the priority-first scheduler places
+        a remainder shorter than ``ss_min`` once a target has a snapshot."""
         self.window = window
         """The candidate's visibility window, in which its slew starts."""
         self.rate = rate
@@ -365,7 +373,7 @@ class _Task:
     @property
     def shortest(self) -> int:
         """Seconds from arrival to the end, at the shortest collection."""
-        return self.duration + self.overhead + self.collection[0]
+        return self.duration + self.overhead + self.least
 
 
 class _ChunkModel:
@@ -420,7 +428,7 @@ class _ChunkModel:
             for k, task in enumerate(tasks)
         ]
         self.collection = [
-            model.new_int_var(*task.collection, f"collection{k}")
+            model.new_int_var(task.least, task.collection[1], f"collection{k}")
             for k, task in enumerate(tasks)
         ]
         # The step each task's slew starts on; chunks start on a step.
@@ -640,6 +648,25 @@ class _ChunkModel:
                 objective.append(-task.late * product)
         for obsid, counted_list in totals.items():
             model.add(sum(counted_list) <= int(budget[obsid]))
+        self.remainder: dict[int, cp_model.IntVar] = {}
+        """Whether a candidate is its request's remainder: shorter than its
+        least full snapshot, which it may be only where it finishes the
+        request's exposure after every other snapshot of it in the chunk."""
+        for k, task in enumerate(self.tasks):
+            if task.obsid is None or task.least >= task.collection[0]:
+                continue
+            short = self.remainder[k] = model.new_bool_var(f"remainder{k}")
+            model.add(self.collection[k] >= task.collection[0]).only_enforce_if(~short)
+            model.add_implication(short, present[k])
+            model.add(
+                sum(totals[task.obsid]) >= int(budget[task.obsid])
+            ).only_enforce_if(short)
+            for j, other in enumerate(self.tasks):
+                if j != k and other.obsid == task.obsid:
+                    model.add(
+                        self.arrival[j] + other.overhead + self.collection[j]
+                        <= self.arrival[k]
+                    ).only_enforce_if([short, present[j]])
         for cap, members in self.category_caps:
             # A category's time budget: its candidates share what is left.
             model.add(sum(self.counted[k] for k in members) <= cap)
@@ -921,6 +948,11 @@ class _ChunkModel:
             if task.optional:
                 model.add_hint(self.present[k], k in hint)
                 model.add_hint(self.counted[k], collection if k in hint else 0)
+                if k in self.remainder:
+                    model.add_hint(
+                        self.remainder[k],
+                        k in hint and collection < task.collection[0],
+                    )
                 if k in self.collection_arrival:
                     model.add_hint(
                         self.collection_arrival[k],
@@ -1740,6 +1772,13 @@ class CpSatScheduler(LocalSearchScheduler):
             longest = int(np.floor(min(float(target.ss_max), remaining)))
             if longest < shortest:
                 continue
+            # A remainder that finishes the exposure after another snapshot
+            # in the chunk may also be shorter than ss_min, as the
+            # priority-first plan places one: the hint must be reproducible.
+            remainder = None
+            if not request.timed and target.sequence is None:
+                remainder = min(shortest, max(1, int(np.ceil(request.step))))
+            least = shortest if remainder is None else remainder
             slews_from, opens = self._opens(request, state, origin_time)
             spacing = cadence = None
             if request.cadence is not None:
@@ -1781,7 +1820,7 @@ class CpSatScheduler(LocalSearchScheduler):
                     earliest = int(np.ceil(max(w0, slot_opens) - origin_time))
                     # The slew must start in the chunk (see _ChunkModel); the
                     # snapshot may arrive after it ends.
-                    latest = window[1] - overhead - shortest
+                    latest = window[1] - overhead - least
                     if slot_deadline is not None:
                         latest = min(latest, int(slot_deadline - origin_time - setup))
                     if latest < earliest or window[0] >= chunk_end - origin_time:
@@ -1860,6 +1899,7 @@ class CpSatScheduler(LocalSearchScheduler):
                             overhead=task_overhead,
                             setup=int(np.ceil(setup)),
                             collection=(shortest, longest),
+                            remainder=remainder,
                             window=window,
                             rate=rate,
                             earliness=earliness,
@@ -2028,15 +2068,24 @@ class CpSatScheduler(LocalSearchScheduler):
                 # The pass's slew starts on a step after this snapshot ends.
                 latest_slew = tasks[next_pass].arrival[0] - int(slews[k, next_pass])
                 ends_by = min(ends_by, latest_slew - latest_slew % step)
+            least = task.collection[0]
+            want = int(wanted[k].seconds)
+            if (
+                task.least <= want < least
+                and want == exposure_left[obsid]
+                and any(tasks[h].obsid == obsid for h in hint)
+            ):
+                # The request's remainder, after a snapshot of it: whole or not at all.
+                least = want
             seconds = min(
-                max(int(wanted[k].seconds), task.collection[0]),
+                max(want, least),
                 task.collection[1],
                 exposure_left[obsid],
                 ends_by - arrival - task.overhead,
             )
             if (
                 arrival > task.arrival[1]
-                or seconds < task.collection[0]
+                or seconds < least
                 or slew_start >= chunk_seconds
             ):
                 continue

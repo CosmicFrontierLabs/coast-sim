@@ -7,7 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from conops import DITL, QueueDITL, create_ditl
-from conops.config import MissionConfig, ObservationTiming, TargetConfig
+from conops.config import (
+    MissionConfig,
+    ObservationCategory,
+    ObservationTiming,
+    TargetConfig,
+)
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import (
@@ -406,12 +411,32 @@ class TestDispatch:
         assert not VisitWindow(start=T0, deadline=T0 + SLACK).own_request
         assert VisitWindow(start=T0, deadline=T0 + SLACK, roll_deg=10.0).own_request
 
-    def test_a_visit_cut_short_is_taken_again_in_its_window(self) -> None:
+    @pytest.mark.parametrize("cadence", [False, True])
+    def test_a_visit_cut_short_is_taken_again_in_its_window(
+        self, cadence: bool
+    ) -> None:
         """A target of opportunity cuts the first visit: the window counts
         as unvisited, the visit is taken again whole while the window is
         open, the cut science still counts, and the retries do not end the
-        target before its last window."""
-        config = _config(HOURS)
+        target before its last window.
+        The same with cadence counting for the target: the cut visit does
+        not wait a cadence, which would outlast its window."""
+        config = (
+            _config(
+                HOURS,
+                weights=TargetConfig(cadence_weight=1.0),
+                categories=[
+                    ObservationCategory(
+                        name="Monitor",
+                        obsid_min=900,
+                        obsid_max=901,
+                        cadence_seconds=2 * HOUR,
+                    )
+                ],
+            )
+            if cadence
+            else _config(HOURS)
+        )
         target = _timed_target(config)
         ditl = create_ditl(config, [target, *_fillers(config)], BEGIN, END)
         assert isinstance(ditl, QueueDITL)
@@ -529,6 +554,61 @@ class TestDispatch:
         target.record_collection(begin + 960.0, VISIT * MIN)
         assert target.visits_done == {0}
         assert target.collected_seconds == 960.0
+
+    def test_a_later_interruption_leaves_a_visit_that_ended_itself(self) -> None:
+        """Visit 0 ends short without an interruption, as when its target
+        becomes constrained; visit 1 is later cut before it collects
+        anything. The cut is of visit 1: visit 0 stays as it was."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        first = target.visit_pointing(0)
+        first.record_collection(STARTS[0] + 4 * MIN, 3 * MIN, visit=0)
+        first.end_visit_attempt()
+        assert target.visits_done == {0}
+        exposure = target.exptime
+        second = target.visit_pointing(1)
+        second.record_interruption(STARTS[1] + 60.0)
+        assert target.visits_done == {0}
+        assert target.exptime == exposure
+        # Known by its number alone, without the attempt having been ended.
+        other = _timed_target(config)
+        other.record_collection(STARTS[0] + 4 * MIN, 3 * MIN, visit=0)
+        other.record_interruption(STARTS[1] + 60.0, visit=1)
+        assert other.visits_done == {0}
+
+    def test_the_cadence_gate_lets_a_cut_visit_be_taken_again(self) -> None:
+        """With cadence counting, a visit cut short is due again at once,
+        inside its own window, as the planners take it; a whole visit
+        waits a cadence. Likewise a remainder cut short without windows."""
+        monitor = ObservationCategory(
+            name="Monitor", obsid_min=900, obsid_max=902, cadence_seconds=2 * HOUR
+        )
+        config = _config(
+            HOURS, weights=TargetConfig(cadence_weight=1.0), categories=[monitor]
+        )
+        queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        target = _timed_target(config)
+        queue.append(target)
+        cut = STARTS[0] + 6 * MIN
+        target.record_collection(cut, 198.0, visit=0)
+        target.record_interruption(cut, visit=0)
+        assert target.visits_done == set()
+        assert queue._open_at(target, cut + 2 * MIN)
+        whole = cut + 2 * MIN + VISIT * MIN
+        target.record_collection(whole, VISIT * MIN, visit=0)
+        target.end_visit_attempt()
+        assert target.visits_done == {0}
+        assert not queue._cadence_due(target, whole + MIN)
+        assert queue._cadence_due(target, whole + 2 * HOUR)
+
+        plain = _target(config, 901, *PATCH[1], minutes=40, snapshot=20)
+        queue.append(plain)
+        plain.record_collection(T0 + 5 * MIN, 5 * MIN)
+        assert not queue._cadence_due(plain, T0 + 10 * MIN)
+        plain.record_interruption(T0 + 5 * MIN)
+        assert queue._cadence_due(plain, T0 + 10 * MIN)
+        plain.record_collection(T0 + 30 * MIN, 20 * MIN)
+        assert not queue._cadence_due(plain, T0 + 35 * MIN)
 
     def test_a_window_is_done_only_by_one_uninterrupted_attempt(self) -> None:
         """Two cut attempts that together exceed a visit do not complete
