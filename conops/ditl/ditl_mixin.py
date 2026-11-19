@@ -13,7 +13,12 @@ from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
-from ..common.ephemeris import position_vectors, velocity_vectors
+from ..common.ephemeris import (
+    OrbitSampler,
+    OrbitState,
+    position_vectors,
+    velocity_vectors,
+)
 from ..config import (
     FaultManagementRun,
     MissionConfig,
@@ -61,6 +66,18 @@ class _MomentumInputs:
         self.sun_eci_km = sun_eci_km
         self.position_ecef_km = position_ecef_km
         self.velocity_eci_km_s = velocity_eci_km_s
+
+    @classmethod
+    def from_orbit(cls, utime: float, orbit: OrbitState) -> "_MomentumInputs":
+        """The inputs at ``utime`` from the orbit there."""
+        sun = orbit.sun_position_eci_km
+        return cls(
+            utime,
+            orbit.position_eci_km,
+            sun - orbit.position_eci_km if sun is not None else None,
+            orbit.position_ecef_km,
+            orbit.velocity_eci_km_s,
+        )
 
     def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
         """The orbit ``fraction`` of the way from this sample to ``later``."""
@@ -559,9 +576,17 @@ class DITLMixin:
             and self.acs.attitude_moved(previous.utime, utime)
         ):
             count = math.ceil(elapsed / self._momentum_slew_sample_s)
+            sampler = self._orbit_sampler()
+            hermite = index is not None and sampler.hermite
             for k in range(1, count):
                 fraction = k / count
                 between = previous.between(inputs, fraction)
+                if hermite:
+                    # The ephemeris's own interpolation, not the chord
+                    # between the step's ends.
+                    between = _MomentumInputs.from_orbit(
+                        between.utime, sampler.at(between.utime)
+                    )
                 ra, dec, roll = self.acs.executed_attitude(between.utime)
                 tracker.update(
                     utime=between.utime,
@@ -682,6 +707,15 @@ class DITLMixin:
         self._momentum_utimes_cache = (timestamps, utimes)
         return utimes
 
+    def _orbit_sampler(self) -> OrbitSampler:
+        """The orbit between ephemeris samples, cached per ephemeris."""
+        cached = getattr(self, "_orbit_sampler_cache", None)
+        if cached is None or cached.ephem is not self.ephem:
+            cached = OrbitSampler(self.ephem)
+            self._orbit_sampler_cache = cached
+        sampler: OrbitSampler = cached
+        return sampler
+
     def _forecast_momentum(
         self,
         begin: float,
@@ -735,23 +769,13 @@ class DITLMixin:
             return np.zeros(3, dtype=np.float64)
 
         utimes = self._momentum_ephem_utimes()
-        positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
-        suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
-        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
-        ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
-        velocities = velocity_vectors(self.ephem)
-
-        def interpolate(
-            table: npt.NDArray[np.float64], at: float
-        ) -> npt.NDArray[np.float64]:
-            return np.array(
-                [np.interp(at, utimes, table[:, k]) for k in range(3)], dtype=np.float64
-            )
+        sampler = self._orbit_sampler()
 
         norms: list[float] = []
         demands: list[float] = []
         for at in samples:
-            position = interpolate(positions, float(at))
+            orbit = sampler.at(float(at))
+            position = orbit.position_eci_km
             # Eclipse is known at the ephemeris samples: the nearest one.
             nearest = int(np.clip(np.searchsorted(utimes, at), 0, len(utimes) - 1))
             if nearest > 0 and abs(utimes[nearest - 1] - at) < abs(
@@ -764,18 +788,16 @@ class DITLMixin:
                 attitude_quaternion_eci_to_body=attitude_to_quat(
                     *attitude_at(float(at))
                 ),
-                sun_eci_km=interpolate(suns, float(at)) - position,
+                sun_eci_km=(
+                    orbit.sun_position_eci_km - position
+                    if orbit.sun_position_eci_km is not None
+                    else None
+                ),
                 sunlit=not self.config.constraint.in_eclipse(
                     0.0, 0.0, float(utimes[nearest])
                 ),
-                velocity_eci_km_s=(
-                    interpolate(velocities, float(at))
-                    if velocities is not None
-                    else None
-                ),
-                position_ecef_km=(
-                    interpolate(ecefs, float(at)) if ecefs is not None else None
-                ),
+                velocity_eci_km_s=orbit.velocity_eci_km_s,
+                position_ecef_km=orbit.position_ecef_km,
                 angular_velocity_body_rad_s=(rate_at(float(at)) if rates else None),
             )
             norms.append(sample.stored_momentum_load_n_m_s)

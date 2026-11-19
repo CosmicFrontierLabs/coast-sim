@@ -18,7 +18,7 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..common.ephemeris import position_vectors, velocity_vectors
+from ..common.ephemeris import OrbitSampler
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
 from ..simulation.attitude import Attitude, slew_angular_velocity
@@ -136,11 +136,7 @@ class MomentumForecast:
         self._times = np.array(
             [t.timestamp() for t in ephem.timestamp], dtype=np.float64
         )
-        self._positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)
-        self._sun = np.asarray(position_vectors(ephem, "sun"), dtype=np.float64)
-        ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
-        self._ecef = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
-        self._velocities = velocity_vectors(ephem)
+        self._orbit = OrbitSampler(ephem)
 
     @property
     def active(self) -> bool:
@@ -219,14 +215,6 @@ class MomentumForecast:
         return self.ctx.initial_attitude(utime)
 
     # ── Integration ───────────────────────────────────────────────────────
-
-    def _interpolate(
-        self, table: npt.NDArray[np.float64], utime: float
-    ) -> npt.NDArray[np.float64]:
-        return np.array(
-            [np.interp(utime, self._times, table[:, k]) for k in range(3)],
-            dtype=np.float64,
-        )
 
     def _sunlit(self, utime: float) -> bool:
         index = int(
@@ -321,24 +309,21 @@ class MomentumForecast:
                 else None
             )
             for utime in samples:
-                position = self._interpolate(self._positions, float(utime))
+                orbit = self._orbit.at(float(utime))
+                position = orbit.position_eci_km
                 attitude = self._attitude_at(span, float(utime))
                 sample = tracker.update(
                     utime=float(utime),
                     position_eci_km=position,
                     attitude_quaternion_eci_to_body=attitude_to_quat(*attitude),
-                    sun_eci_km=self._interpolate(self._sun, float(utime)) - position,
+                    sun_eci_km=(
+                        orbit.sun_position_eci_km - position
+                        if orbit.sun_position_eci_km is not None
+                        else None
+                    ),
                     sunlit=self._sunlit(float(utime)),
-                    velocity_eci_km_s=(
-                        self._interpolate(self._velocities, float(utime))
-                        if self._velocities is not None
-                        else None
-                    ),
-                    position_ecef_km=(
-                        self._interpolate(self._ecef, float(utime))
-                        if self._ecef is not None
-                        else None
-                    ),
+                    velocity_eci_km_s=orbit.velocity_eci_km_s,
+                    position_ecef_km=orbit.position_ecef_km,
                     angular_velocity_body_rad_s=(
                         rate_at(float(utime)) if rate_at is not None else None
                     ),

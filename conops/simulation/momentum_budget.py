@@ -19,6 +19,7 @@ import numpy.typing as npt
 import rust_ephem
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
+from ..common.ephemeris import OrbitSampler
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
 from .attitude import AttitudeExecutionError, AttitudeState, AttitudeTrajectory
@@ -108,6 +109,7 @@ class MomentumBudget:
             settings.max_sample_interval_s, settings.max_attitude_step_deg / fastest
         )
         self.orbit = OrbitTables.from_ephem(ephem)
+        self.sampler = OrbitSampler(ephem)
         self.times = self.orbit.times
         self.positions = self.orbit.positions_eci_km
         if (
@@ -220,11 +222,6 @@ class MomentumBudget:
         self.live.assign(tracker)
         return self.current
 
-    def _interpolate(self, table: np.ndarray, utime: float) -> np.ndarray:
-        return np.array(
-            [np.interp(utime, self.times, table[:, i]) for i in range(3)], dtype=float
-        )
-
     def _sunlit(self, utime: float) -> bool:
         """Whether the Sun shines on the spacecraft at the nearest ephemeris
         sample; it does where the configuration cannot say."""
@@ -248,28 +245,20 @@ class MomentumBudget:
     ) -> MomentumSample:
         if not self.times[0] <= state.utime <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        position = self._interpolate(self.positions, state.utime)
-        orbit = self.orbit
+        orbit = self.sampler.at(state.utime)
+        position = orbit.position_eci_km
         return tracker.update(
             utime=state.utime,
             position_eci_km=position,
             attitude_quaternion_eci_to_body=state.quaternion,
             sun_eci_km=(
-                self._interpolate(orbit.sun_positions_eci_km, state.utime) - position
-                if orbit.sun_positions_eci_km is not None
+                orbit.sun_position_eci_km - position
+                if orbit.sun_position_eci_km is not None
                 else None
             ),
             sunlit=self._sunlit(state.utime),
-            velocity_eci_km_s=(
-                self._interpolate(orbit.velocities_eci_km_s, state.utime)
-                if orbit.velocities_eci_km_s is not None
-                else None
-            ),
-            position_ecef_km=(
-                self._interpolate(orbit.positions_ecef_km, state.utime)
-                if orbit.positions_ecef_km is not None
-                else None
-            ),
+            velocity_eci_km_s=orbit.velocity_eci_km_s,
+            position_ecef_km=orbit.position_ecef_km,
             angular_velocity_body_rad_s=np.deg2rad(state.angular_velocity_body),
             torque_eci_n_m=torque,
         )

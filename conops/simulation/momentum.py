@@ -241,19 +241,13 @@ class OrbitTables(BaseModel):
     def from_ephem(cls, ephem: rust_ephem.Ephemeris) -> OrbitTables:
         """The tables of ``ephem``; a test double may lack all but the
         positions."""
-        from ..common.ephemeris import position_vectors, velocity_vectors
-
-        times = np.array(
-            [
-                float(
-                    (t - np.datetime64("1970-01-01T00:00:00")) / np.timedelta64(1, "s")
-                )
-                if isinstance(t, np.datetime64)
-                else t.timestamp()
-                for t in ephem.timestamp
-            ],
-            dtype=np.float64,
+        from ..common.ephemeris import (
+            position_vectors,
+            sample_times,
+            velocity_vectors,
         )
+
+        times = sample_times(ephem)
         positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)
         sun = getattr(getattr(ephem, "sun_pv", None), "position", None)
         ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
@@ -271,8 +265,10 @@ class OrbitTables(BaseModel):
         )
 
     def min_radius_km(self) -> float:
-        """The least distance from the Earth's centre along the orbit,
-        inside each linearly interpolated segment, not only at the samples."""
+        """The least distance from the Earth's centre along the orbit, on
+        the chord between each pair of samples, not only at the samples: a
+        chord lies inside the orbit's arc, so this is no more than the least
+        radius of the orbit as interpolated between them."""
         first, delta = (
             self.positions_eci_km[:-1],
             np.diff(self.positions_eci_km, axis=0),
