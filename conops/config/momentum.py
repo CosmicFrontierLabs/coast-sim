@@ -7,6 +7,10 @@ from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from ._base import ConfigModel
 
+_AXIS_TOLERANCE = 1e-9
+_DIMENSIONS = 3
+_RANK_TOLERANCE = 1e-9
+
 
 class ThrusterDumpConfig(ConfigModel):
     """A thruster momentum dump: a hold during which the wheels are unloaded."""
@@ -79,7 +83,7 @@ class MomentumWheel(ConfigModel):
     ) -> tuple[float, float, float]:
         axis = np.asarray(value, dtype=float)
         norm = float(np.linalg.norm(axis))
-        if not np.isfinite(norm) or norm < 1e-9:
+        if not np.isfinite(norm) or norm < _AXIS_TOLERANCE:
             raise ValueError("spin_axis must be a finite, non-zero vector")
         axis = axis / norm
         return float(axis[0]), float(axis[1]), float(axis[2])
@@ -109,11 +113,12 @@ class WheelArray:
     def __init__(self, wheels: Sequence[MomentumWheel]) -> None:
         axes = np.array([wheel.spin_axis for wheel in wheels], dtype=float)
         capacities = np.array([wheel.capacity_n_m_s for wheel in wheels], dtype=float)
-        if axes.shape[0] < 3:
+        if axes.shape[0] < _DIMENSIONS:
             raise ValueError("the wheels' spin axes do not span three dimensions")
         weighted = axes.T * capacities**2
         gram = weighted @ axes
-        if np.linalg.matrix_rank(gram, tol=1e-9 * float(np.trace(gram))) < 3:
+        rank = np.linalg.matrix_rank(gram, tol=_RANK_TOLERANCE * float(np.trace(gram)))
+        if rank < _DIMENSIONS:
             raise ValueError("the wheels' spin axes do not span three dimensions")
         self.names: tuple[str, ...] = tuple(wheel.name for wheel in wheels)
         self.capacities_n_m_s: npt.NDArray[np.float64] = capacities

@@ -38,6 +38,8 @@ from ...common.numerics import ROUNDOFF
 if TYPE_CHECKING:
     from ...config import MissionConfig
 
+_AXIS_COMPONENT_TOLERANCE = 1e-9
+
 # ---------------------------------------------------------------------------
 # Visual palette (dark-themed to match the rest of the codebase)
 # ---------------------------------------------------------------------------
@@ -409,7 +411,7 @@ def _wheel_centers(
             continue
         axis = _unit(np.asarray(wheel.spin_axis, dtype=float))
         # One key for an axis and its opposite.
-        lead = next((x for x in axis if abs(x) > 1e-9), 1.0)
+        lead = next((x for x in axis if abs(x) > _AXIS_COMPONENT_TOLERANCE), 1.0)
         canonical = axis if lead > 0 else -axis
         key = (
             round(float(canonical[0]), 6),
