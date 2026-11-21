@@ -142,6 +142,16 @@ class TargetAttitudeSchema(BaseModel):
     pointing: AttitudePointingSchema
 
 
+class ActivityInterruption(BaseModel):
+    """An emergency override and the disposition of unexecuted activity time."""
+
+    model_config = ConfigDict(frozen=True)
+    time: float
+    reason: Literal["emergency_recharge"] = "emergency_recharge"
+    remaining_seconds: float = Field(ge=0)
+    disposition: Literal["resume", "restart"]
+
+
 class PlanEntry(BaseModel):
     """Class to define a entry in the Plan"""
 
@@ -241,6 +251,10 @@ class PlanEntry(BaseModel):
         description="Full activity hold start, including any part before this run",
     )
     safe_hold: bool = Field(default=False, exclude_if=lambda v: v is False)
+    activity_resumed: bool = Field(default=False, exclude_if=lambda v: v is False)
+    activity_interruption: ActivityInterruption | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     activity_hold_end: float | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
@@ -500,11 +514,16 @@ class PlanEntry(BaseModel):
     def activity_partial(self) -> bool:
         """Whether this entry covers only part of its full activity hold."""
         return (
-            self.activity_hold_begin is not None
-            and float(self.begin) > self.activity_hold_begin
-        ) or (
-            self.activity_hold_end is not None
-            and float(self.end) < self.activity_hold_end
+            self.activity_resumed
+            or self.activity_interruption is not None
+            or (
+                self.activity_hold_begin is not None
+                and float(self.begin) > self.activity_hold_begin
+            )
+            or (
+                self.activity_hold_end is not None
+                and float(self.end) < self.activity_hold_end
+            )
         )
 
     @property
@@ -519,8 +538,12 @@ class PlanEntry(BaseModel):
 
     @property
     def activity_finishes(self) -> bool:
-        """Whether the reserved interval reaches the full hold's end."""
-        return (
+        """Whether the activity reached the full hold's end without interruption.
+
+        Legacy entries without hold metadata retain their original meaning:
+        their entry end is the activity's completion time.
+        """
+        return self.activity_interruption is None and (
             self.activity_hold_end is None or float(self.end) >= self.activity_hold_end
         )
 
