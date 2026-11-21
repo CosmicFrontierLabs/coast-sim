@@ -670,7 +670,7 @@ class TestSearchBudgetReporting:
         scheduler = self._scheduler(time_limit=seconds, max_iterations=limit)
         monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
         self._clock(monkeypatch, ticks)
-        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0, owed=frozenset()))
         assert scheduler._search(start) is start
         assert scheduler.search_iterations == [count]
         assert scheduler.search_limits == [ending]
@@ -678,7 +678,7 @@ class TestSearchBudgetReporting:
     def test_a_later_completed_pass_does_not_hide_an_earlier_timeout(self, monkeypatch):
         scheduler = self._scheduler(time_limit=1, max_iterations=3)
         monkeypatch.setattr(scheduler, "_random_move", lambda *args: None)
-        start = SimpleNamespace(final=SimpleNamespace(score=1.0))
+        start = SimpleNamespace(final=SimpleNamespace(score=1.0, owed=frozenset()))
         self._clock(monkeypatch, [0, 0, 2])
         scheduler._search(start)
         self._clock(monkeypatch, [0])
@@ -707,6 +707,7 @@ class TestSearchBudgetReporting:
         class State(BaseModel):
             score: float
             timeline: list[object] = Field(default_factory=list)
+            owed: frozenset[int] = frozenset()
 
         class Candidate(BaseModel):
             final: State

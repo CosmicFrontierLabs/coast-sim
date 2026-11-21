@@ -1091,7 +1091,11 @@ class TestSolverSearchReporting:
     def _mock_chunk_inputs(monkeypatch, scheduler):
         pose = (0.0, 0.0, 0.0)
         state = SimpleNamespace(
-            remaining={100: 60}, score=0.0, timeline=[], allocated_left={}
+            remaining={100: 60},
+            score=0.0,
+            timeline=[],
+            allocated_left={},
+            owed=frozenset(),
         )
         scheduler._by_obsid = {}
         monkeypatch.setattr(
