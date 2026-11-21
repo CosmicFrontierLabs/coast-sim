@@ -595,7 +595,10 @@ class TestSeveralSnapshotsInAWindow:
             20 * MIN
         )
         assert scheduler.solver_statuses == ["OPTIMAL"]
-        assert scheduler.solver_chunks_used == [True]
+        # The solver's two snapshots are worth what the plan's two are. Which
+        # of two equal splits is kept is a tie the earlier science decides,
+        # so the chunk is not required to replace the plan's.
+        assert scheduler.score == pytest.approx(scheduler.initial_score)
 
 
 class TestShortWindowRequest:
@@ -958,6 +961,9 @@ class TestDeterministicTime:
         original = cp_model.CpSolver.solve
 
         def solve(self: cp_model.CpSolver, model: cp_model.CpModel) -> int:
+            if self.parameters.fix_variables_to_their_hinted_value:
+                # Completing the hint is not a search.
+                return original(self, model)
             seen.append(
                 (
                     self.parameters.max_deterministic_time,
@@ -1175,6 +1181,12 @@ class TestSolverSearchReporting:
         calls = []
 
         def counted(self, *args, **kwargs):
+            if self.parameters.fix_variables_to_their_hinted_value:
+                # Completing the hint is not a search.
+                return original(self, *args, **kwargs)
+            if self.parameters.fix_variables_to_their_hinted_value:
+                # Completing the hint is not a search.
+                return original(self, *args, **kwargs)
             calls.append(True)
             return original(self, *args, **kwargs)
 

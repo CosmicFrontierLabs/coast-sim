@@ -310,14 +310,20 @@ class RollingHorizonDITL(DITL):
         assert entry is not None
         interrupted = self._pending_interruptions.pop(id(entry), None)
         super()._finish_active_entry(utime)
+        target = self._target_for(int(entry.obsid))
         if interrupted is not None:
             at = min(interrupted, utime)
-            target = self._target_for(int(entry.obsid))
             if target is not None:
-                target.record_interruption(at)
+                # The visit this entry flew: a cut before it collected
+                # anything leaves the target's earlier visits as they were.
+                target.record_interruption(at, visit=entry.visit)
             if entry is not target:
                 # Record this entry without a Pointing's parent delegation.
                 PlanEntry.record_interruption(entry, at)
+        elif target is not None:
+            # Ended without an interruption: a later one is not of the visit
+            # this entry collected.
+            target.end_visit_attempt()
 
     # ── Replanning ───────────────────────────────────────────────────────
 

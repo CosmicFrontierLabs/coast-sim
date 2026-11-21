@@ -61,6 +61,9 @@ def native_calls(monkeypatch):
     original = cp_model.CpSolver.solve
 
     def counted(self, *args, **kwargs):
+        if self.parameters.fix_variables_to_their_hinted_value:
+            # Completing the hint is not a search.
+            return original(self, *args, **kwargs)
         calls.append(True)
         return original(self, *args, **kwargs)
 
