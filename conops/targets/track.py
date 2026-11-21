@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from ..common import unixtime_from
+from ..common.numerics import MIN_SAMPLES
 
 if TYPE_CHECKING:
     import rust_ephem
@@ -67,9 +69,44 @@ def validate_track(track: Sequence[TrackPoint]) -> list[TrackPoint]:
     return list(ordered)
 
 
-def _unwrapped_ra(track: Sequence[TrackPoint]) -> np.ndarray:
+def _unwrapped_ra(track: Sequence[TrackPoint]) -> npt.NDArray[np.float64]:
     """Right ascensions continuous across the 0/360 degree seam."""
     return np.degrees(np.unwrap(np.radians([p.ra for p in track])))
+
+
+_ARRAYS: dict[
+    int,
+    tuple[
+        Sequence[TrackPoint],
+        int,
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+    ],
+] = {}
+"""Each track's times, unwrapped right ascensions and declinations as arrays,
+by the track's identity: a position along a track is asked for at every
+step of a placement, and unwrapping the whole track each time cost more
+than the lookup. The track is held with its arrays, so its identity stays
+its own while they are kept."""
+
+_ARRAYS_KEPT = 64
+
+
+def _track_arrays(
+    track: Sequence[TrackPoint],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """The track's sample times, unwrapped right ascensions and declinations."""
+    cached = _ARRAYS.get(id(track))
+    if cached is not None and cached[0] is track and cached[1] == len(track):
+        return cached[2], cached[3], cached[4]
+    times = np.array([p.utime for p in track], dtype=np.float64)
+    ras = _unwrapped_ra(track)
+    decs = np.array([p.dec for p in track], dtype=np.float64)
+    if len(_ARRAYS) >= _ARRAYS_KEPT:
+        _ARRAYS.clear()
+    _ARRAYS[id(track)] = (track, len(track), times, ras, decs)
+    return times, ras, decs
 
 
 def position_along(track: Sequence[TrackPoint], utime: float) -> tuple[float, float]:
@@ -80,9 +117,7 @@ def position_along(track: Sequence[TrackPoint], utime: float) -> tuple[float, fl
         raise ValueError("an empty track has no position")
     if len(track) == 1:
         return track[0].ra, track[0].dec
-    times = np.array([p.utime for p in track], dtype=np.float64)
-    ras = _unwrapped_ra(track)
-    decs = np.array([p.dec for p in track], dtype=np.float64)
+    times, ras, decs = _track_arrays(track)
     t = float(np.clip(utime, times[0], times[-1]))
     ra = float(np.interp(t, times, ras)) % 360.0
     dec = float(np.interp(t, times, decs))
@@ -91,7 +126,7 @@ def position_along(track: Sequence[TrackPoint], utime: float) -> tuple[float, fl
 
 def positions_along(
     track: Sequence[TrackPoint], utimes: Sequence[float]
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """:func:`position_along` at each of ``utimes`` together: the right
     ascensions and declinations, in degrees."""
     if not track:
@@ -99,9 +134,7 @@ def positions_along(
     wanted = np.asarray(utimes, dtype=np.float64)
     if len(track) == 1:
         return np.full(len(wanted), track[0].ra), np.full(len(wanted), track[0].dec)
-    times = np.array([p.utime for p in track], dtype=np.float64)
-    ras = _unwrapped_ra(track)
-    decs = np.array([p.dec for p in track], dtype=np.float64)
+    times, ras, decs = _track_arrays(track)
     clipped = np.clip(wanted, times[0], times[-1])
     return np.interp(clipped, times, ras) % 360.0, np.interp(clipped, times, decs)
 
@@ -110,7 +143,7 @@ def rate_along(track: Sequence[TrackPoint], utime: float) -> float:
     """The track's angular rate at ``utime``, in degrees per second: that
     of the interval the time falls in; zero outside the track or for a
     single sample."""
-    if len(track) < 2:
+    if len(track) < MIN_SAMPLES:
         return 0.0
     times = [p.utime for p in track]
     if utime < times[0] or utime > times[-1]:

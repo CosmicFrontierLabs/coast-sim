@@ -1,5 +1,6 @@
 """Time ordering of concurrent collection and downlink."""
 
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,8 @@ from conops.ditl import RollingHorizonDITL
 from conops.schedulers.recorder import RecorderLedger, amount_total
 from conops.simulation import ContactSpan, StationCoverage
 from conops.targets import PlanEntry
+
+from .planning_scenario import BEGIN, MIN, T0, make_config
 
 
 def _ledger(begin, end, rate, *, start=0.0, horizon=600, contacts=None, coverage=None):
@@ -244,3 +247,42 @@ def test_activity_frames_use_only_downlink_after_the_activity_begins(begin, expe
     rolling.step_size = 60
     rolling.ustart = 0
     assert rolling._recorder_volume_at(0, 600, entries) == pytest.approx(expected)
+
+
+def test_activity_frames_arrive_when_the_hold_starts():
+    ledger = _ledger(0, 60, 100, horizon=600)
+    activity = PlanEntry(
+        obstype=ObsType.ACTIVITY,
+        obsid=998000,
+        begin=0,
+        end=300,
+        slewtime=120,
+        fixed_data_gb=4,
+    )
+    science = _science(0, fixed=17, begin=360, end=420)
+    # The link ends during ingress. It cannot transmit the calibration's
+    # four Gb, which are generated only when its later stationary hold starts.
+    volumes = ledger.initial_volumes([activity, science])
+    assert not ledger.fits_all(volumes, [])
+
+
+def test_committed_activity_forecast_includes_frames_after_ingress():
+    config = make_config(3)
+    config.recorder = OnboardRecorder(capacity_gb=20)
+    config.spacecraft_bus.data_generation = HousekeepingData(rate_gbps=0)
+    run = RollingHorizonDITL(
+        config, [], begin=BEGIN, end=BEGIN + timedelta(hours=3), include_passes=False
+    )
+    run.step_size = 60
+    entry = PlanEntry(
+        obstype=ObsType.ACTIVITY,
+        obsid=998000,
+        begin=T0 + 30 * MIN,
+        end=T0 + 90 * MIN,
+        slewtime=30 * MIN,
+        fixed_data_gb=4,
+    )
+    # The replan begins mid-ingress. The activity's frames are still future,
+    # and belong in the forecast only once the hold has begun.
+    assert run._recorder_volume_at(T0 + 45 * MIN, T0 + 50 * MIN, [entry]) == 0
+    assert run._recorder_volume_at(T0 + 45 * MIN, T0 + 75 * MIN, [entry]) == 4

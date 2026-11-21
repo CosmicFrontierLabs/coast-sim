@@ -494,11 +494,11 @@ class TestTrackerWheelLoads:
 class TestTrackingCurveWheelLimits:
     def _curve(self) -> QuaternionHermite:
         return QuaternionHermite(
-            tuple(attitude_to_quat(0, 0, 0)),
-            tuple(attitude_to_quat(0.005, 0, 0)),
-            (0, 0, 0),
-            (0, 0, 0),
-            0.2,
+            first=tuple(attitude_to_quat(0, 0, 0)),
+            last=tuple(attitude_to_quat(0.005, 0, 0)),
+            first_rate=(0, 0, 0),
+            last_rate=(0, 0, 0),
+            duration=0.2,
         )
 
     def test_wheel_limits_admit_what_the_norm_rejects(self) -> None:

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import (
     Field,
@@ -23,6 +24,7 @@ from .visits import VisitWindow
 class Pointing(PlanEntry):
     """Define the basic parameters of an observing target with visibility checking."""
 
+    kind: Literal["pointing"] = Field(default="pointing")  # type: ignore[assignment]
     obsid: int = 0
     name: str = "FakeTarget"
     merit: float = 100.0
@@ -114,6 +116,7 @@ class Pointing(PlanEntry):
     _visits_done: set[int] = PrivateAttr(default_factory=set)
     _visit_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
     _visit_attempt_seconds: dict[int, float] = PrivateAttr(default_factory=dict)
+    _collecting_visit: int | None = PrivateAttr(default=None)
     _visit_parent: "Pointing | None" = PrivateAttr(default=None)
 
     @field_validator("deadline", "earliest_start", mode="before")
@@ -297,16 +300,25 @@ class Pointing(PlanEntry):
         return self.deadline
 
     def record_collection(
-        self, utime: float, seconds: float, *, visit: int | None = None
+        self,
+        utime: float,
+        seconds: float,
+        *,
+        visit: int | None = None,
+        step: float = 0.0,
     ) -> None:
         """Credit ``seconds`` of science collected up to ``utime``, to the
         window of ``visit`` where given, else to the window the collection
         began in: a visit that runs past the next window's start is still
-        its own window's."""
-        super().record_collection(utime, seconds)
+        its own window's. A remainder shorter than ``step`` ends the target
+        (see :meth:`PlanEntry.record_collection`)."""
+        super().record_collection(utime, seconds, step=step)
         if self._visit_parent is not None:
             self._visit_parent.record_collection(
-                utime, seconds, visit=visit if visit is not None else self.visit
+                utime,
+                seconds,
+                visit=visit if visit is not None else self.visit,
+                step=step,
             )
         if seconds > 0 and self.visit_windows:
             index = (
@@ -315,6 +327,7 @@ class Pointing(PlanEntry):
                 else self.visit_index_at(utime - seconds)
             )
             if index is not None:
+                self._collecting_visit = index
                 self._visit_seconds[index] = (
                     self._visit_seconds.get(index, 0.0) + seconds
                 )
@@ -335,21 +348,36 @@ class Pointing(PlanEntry):
         if self._visit_parent is not None:
             self._visit_parent.record_calibration(utime, seconds)
 
-    def record_interruption(self, utime: float) -> None:
+    def record_interruption(self, utime: float, *, visit: int | None = None) -> None:
         """A visit cut short is taken again, whole, while its window is
         open: the window counts as visited only once one attempt has
         collected a whole visit's science in it, uninterrupted. The science
-        every attempt collected still counts."""
+        every attempt collected still counts. Follow the visit credited by
+        collection, including when it runs past the next window's opening.
+
+        ``visit`` is the visit flown where the caller knows it (a visit
+        copy knows its own): an attempt cut before it collected anything
+        leaves every earlier visit as it was."""
         super().record_interruption(utime)
+        flown = visit if visit is not None else self.visit
         if self._visit_parent is not None:
-            self._visit_parent.record_interruption(utime)
+            self._visit_parent.record_interruption(utime, visit=flown)
         if self.visit_windows:
-            index = self.visit_index_at(utime)
-            if index is not None:
+            index = self._collecting_visit
+            self.end_visit_attempt()
+            if index is not None and (flown is None or flown == index):
                 attempt = self._visit_attempt_seconds.pop(index, 0.0)
                 if attempt < self.per_visit_seconds - 1e-6:
                     self._visits_done.discard(index)
+                    self.done = False
                     self._exposure_is_the_visits_left()
+
+    def end_visit_attempt(self) -> None:
+        """The observation under way has ended: a later interruption is not
+        of the visit it collected."""
+        self._collecting_visit = None
+        if self._visit_parent is not None:
+            self._visit_parent.end_visit_attempt()
 
     def visit_complete(self, index: int) -> bool:
         """Whether a whole visit's science has been collected in window ``index``."""
@@ -624,6 +652,7 @@ class Pointing(PlanEntry):
         self._visits_done = set()
         self._visit_seconds = {}
         self._visit_attempt_seconds = {}  # Retries must start with no prior progress.
+        self._collecting_visit = None
         self.visit = None
         self.begin = 0
         self.end = 0
@@ -641,6 +670,7 @@ class MovingPointing(Pointing):
     ephemeris, from JPL Horizons or a SPICE kernel, when its visibility is
     first computed."""
 
+    kind: Literal["moving_pointing"] = Field(default="moving_pointing")  # type: ignore[assignment]
     body: str | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
@@ -702,9 +732,20 @@ class MovingPointing(Pointing):
             return "given"
         return "looked up"
 
-    def visibility(self, *args: object, **kwargs: object) -> int:
+    def visibility(self) -> int:
         """As :meth:`PlanEntry.visibility`, after the body's track is looked
         up when none was given."""
         if not self.track and self.body is not None:
             self.fetch_track()
-        return super().visibility(*args, **kwargs)
+        return super().visibility()
+
+    def visibility_in(
+        self,
+        begin: float | int | str | datetime,
+        end: float | int | str | datetime,
+    ) -> list[list[float]]:
+        """As :meth:`PlanEntry.visibility_in`, after the body's track is looked
+        up when none was given."""
+        if not self.track and self.body is not None:
+            self.fetch_track()
+        return super().visibility_in(begin, end)

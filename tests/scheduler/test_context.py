@@ -1,11 +1,14 @@
 """SchedulingContext answers planning questions with the models DITL executes."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
+import numpy as np
 import pytest
 from rust_ephem import SunConstraint, TLEEphemeris
 
 from conops.common import ACSMode
+from conops.common.enums import SlewAlgorithm
 from conops.config import (
     AttitudeControlSystem,
     Constraint,
@@ -19,7 +22,10 @@ from conops.config import (
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.simulation.acs import ACS
 from conops.simulation.passes import PassTimes
+from conops.simulation.slew import Slew
 from conops.targets import Pointing
+
+from .planning_scenario import MIN, PATCH, make_config
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
 END = BEGIN + timedelta(hours=2)
@@ -140,6 +146,107 @@ class TestSlews:
         assert retimed.attitude(T0 + 650) == pytest.approx(fresh.attitude(T0 + 650))
         assert first.slewstart == T0
 
+    def test_a_constraint_avoiding_path_is_reused_within_an_ephemeris_step(
+        self, config: MissionConfig
+    ) -> None:
+        """A constraint-avoiding path is decided at the start rounded to the
+        ephemeris step, so two starts that round to the same step share one
+        predicted path, retimed, and each equals a fresh slew at its start;
+        a start in another step is predicted again."""
+        config.spacecraft_bus.attitude_control.slew_algorithm = (
+            SlewAlgorithm.CONSTRAINT_AVOIDING
+        )
+        ctx = SchedulingContext(config, BEGIN, END)
+        start, finish = (10.0, 20.0, 30.0), (200.0, -10.0, 120.0)
+        step = float(config.constraint.ephem.step_size)
+        predicted = 0
+        original = Slew.predict_slew
+
+        def counting(self: Slew) -> None:
+            nonlocal predicted
+            predicted += 1
+            original(self)
+
+        with patch.object(Slew, "predict_slew", counting):
+            first = ctx.slew(start, finish, T0 + 600.0)
+            same_step = ctx.slew(start, finish, T0 + 600.0 + step * 0.25)
+            next_step = ctx.slew(start, finish, T0 + 600.0 + step)
+        assert predicted == 2
+        for slew in (first, same_step, next_step):
+            fresh = SchedulingContext(config, BEGIN, END).slew(
+                start, finish, float(slew.slewstart)
+            )
+            assert slew.slewtime == fresh.slewtime
+            assert slew.slewend == fresh.slewend
+            assert slew.slewdist == pytest.approx(fresh.slewdist)
+            assert slew.attitude(float(slew.slewstart) + 100.0) == pytest.approx(
+                fresh.attitude(float(fresh.slewstart) + 100.0)
+            )
+
+    def test_a_held_attitude_checked_over_a_span_matches_the_checks_one_by_one(
+        self, config: MissionConfig
+    ) -> None:
+        """A scan of a held attitude evaluates each constraint over the
+        span's steps in one call; the violations found are the ones found
+        checking each step on its own."""
+        from contextlib import nullcontext
+
+        from conops.common.ephemeris import sun_direction
+        from conops.common.vector import vec2radec
+        from conops.config import Constraint
+
+        rng = np.random.default_rng(9)
+        cases = [
+            (
+                (
+                    float(rng.uniform(0, 360)),
+                    float(rng.uniform(-60, 60)),
+                    float(rng.uniform(0, 360)),
+                ),
+                T0 + 600.0 * k,
+                T0 + 600.0 * k + 5400.0,
+                mode,
+            )
+            for k, mode in enumerate(
+                [ACSMode.IDLE, ACSMode.SCIENCE, ACSMode.SLEWING] * 3
+            )
+        ]
+        # Pointing at the Sun, and near it, in science: the Sun constraint
+        # is violated at every step.
+        sun = sun_direction(config.constraint.ephem, T0)
+        sun_ra, sun_dec = (
+            float(np.degrees(v)) for v in vec2radec(sun / np.linalg.norm(sun))
+        )
+        cases += [
+            ((sun_ra % 360.0, sun_dec, 0.0), T0, T0 + 5400.0, ACSMode.SCIENCE),
+            (
+                ((sun_ra + 30.0) % 360.0, sun_dec, 90.0),
+                T0,
+                T0 + 5400.0,
+                ACSMode.SCIENCE,
+            ),
+        ]
+        batched = SchedulingContext(config, BEGIN, END)
+        together = [batched.first_hold_violation(*case) for case in cases]
+        with patch.object(Constraint, "held_over", lambda self, utimes: nullcontext()):
+            single = SchedulingContext(config, BEGIN, END)
+            one_by_one = [single.first_hold_violation(*case) for case in cases]
+        assert together == one_by_one
+        assert any(v is not None for v in together)
+        assert any(v is None for v in together)
+
+    def test_a_hold_check_is_made_once_per_span(self, ctx: SchedulingContext) -> None:
+        """A gap is searched for many requests from the attitude held
+        before it, so where that attitude first violates a mode over the
+        gap is remembered by the span."""
+        attitude = (10.0, 20.0, 30.0)
+        first = ctx.first_hold_violation(attitude, T0, T0 + 1800, ACSMode.IDLE)
+        with patch.object(
+            SchedulingContext, "attitude_violation", side_effect=AssertionError
+        ):
+            again = ctx.first_hold_violation(attitude, T0, T0 + 1800, ACSMode.IDLE)
+        assert again == first
+
     def test_initial_attitude_matches_a_fresh_acs(
         self, ctx: SchedulingContext, config: MissionConfig
     ) -> None:
@@ -168,6 +275,20 @@ class TestSlews:
         ctx.initial_attitude(T0 + 120)
 
         assert "replay event" not in capsys.readouterr().out
+
+    def test_initial_pose_does_not_execute_a_hypothetical_faulted_flight(
+        self, ctx: SchedulingContext, config: MissionConfig
+    ) -> None:
+        acs = ACS(config=config)
+        expected = acs._advance_attitude(T0).state.attitude
+        with patch.object(
+            ACS, "pointing", side_effect=AssertionError("synthetic flight")
+        ):
+            assert ctx.initial_attitude(T0 + 4 * 86400) == pytest.approx(expected)
+            assert ctx.initial_attitude(T0 + 60) == pytest.approx(expected)
+        # Candidate generation must not disable the physical safety checks.
+        sun = (float(ctx.ephem.sun_ra_deg[0]), float(ctx.ephem.sun_dec_deg[0]), 0.0)
+        assert ctx.first_hold_violation(sun, T0, T0 + 60, ACSMode.SCIENCE) == T0
 
 
 class TestConstraints:
@@ -239,3 +360,40 @@ class TestPasses:
 
         midnight = (BEGIN + timedelta(days=1)).timestamp()
         assert any(p.begin >= midnight for p in passes)
+
+
+class TestEphemerisEnd:
+    def test_the_context_ends_with_the_ephemeris(self) -> None:
+        """A horizon reaching past the ephemeris ends at its last sample,
+        and the step grid never samples beyond it."""
+        config, ephem_end = make_config(6), T0 + 6 * 3600
+        ctx = SchedulingContext(config, BEGIN, BEGIN + timedelta(hours=8), step_size=60)
+        assert ctx.ephem_end == ephem_end
+        assert ctx.uend == ephem_end
+        assert ctx.end.timestamp() == ephem_end
+        steps = ctx.steps(ephem_end - 5 * MIN, ephem_end + 10 * MIN)
+        assert len(steps) == 6 and steps[-1] == ephem_end
+        assert len(ctx.steps(ephem_end + 60, ephem_end + 10 * MIN)) == 0
+        within = SchedulingContext(
+            config, BEGIN, BEGIN + timedelta(hours=2), step_size=60
+        )
+        assert within.uend == T0 + 2 * 3600
+
+    def test_a_slew_reaching_past_the_ephemeris_is_checked_up_to_it(self) -> None:
+        config, ephem_end = make_config(6), T0 + 6 * 3600
+        ctx = SchedulingContext(config, BEGIN, BEGIN + timedelta(hours=6))
+        slew = Slew(config=config, slewstart=ephem_end - 2 * MIN)
+        slew.startra, slew.startdec, slew.startroll = PATCH[0][0], PATCH[0][1], 0.0
+        slew.endra, slew.enddec, slew.endroll = PATCH[3][0], PATCH[3][1], 0.0
+        slew.slewtime = 10 * MIN
+        slew.slewend = slew.slewstart + slew.slewtime
+        assert ctx.first_slew_violation(slew, ACSMode.SLEWING) is None
+        assert (
+            ctx.first_hold_violation(
+                (PATCH[0][0], PATCH[0][1], 0.0),
+                ephem_end - 2 * MIN,
+                ephem_end + 10 * MIN,
+                ACSMode.IDLE,
+            )
+            is None
+        )

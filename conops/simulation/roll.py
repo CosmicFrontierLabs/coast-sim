@@ -206,8 +206,9 @@ def optimum_body_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     drive_state: SolarArrayDriveState | None = None,
+    science_attitude: bool = True,
 ) -> float:
-    """Return the power-optimal physical body roll at the current array state."""
+    """Return the power-optimal body roll, keeping a roll-dependent science constraint clear."""
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
     sun_at_zero = _sun_at_zero_roll(ra, dec, utime, ephem)
     candidate_mask = _roll_valid_mask(ra, dec, utime, ephem, constraint)
@@ -218,11 +219,20 @@ def optimum_body_roll(
         if not candidate_mask.any():
             assert reference is not None
             return reference
+    # The constraint to test roll by roll; a test double has no science constraint.
+    science_filter = (
+        constraint
+        if science_attitude
+        and isinstance(constraint, Constraint)
+        and constraint.science_constraint_roll_dependent
+        else None
+    )
 
     if (
         (solar_panel is None or not solar_panel.panels)
         and candidate_mask is None
         and reference is None
+        and science_filter is None
     ):
         sun = sun_at_zero / np.linalg.norm(sun_at_zero)
         return float((np.arctan2(sun[2], sun[1]) / DTOR) % 360.0)
@@ -232,6 +242,12 @@ def optimum_body_roll(
     )
     if candidate_mask is not None:
         scores = np.where(candidate_mask, scores, -np.inf)
+    if science_filter is not None:
+        # The best-power roll that keeps the science constraint clear.
+        for candidate in _power_score_order(scores, reference):
+            roll = float(_ROLL_DEGREES[candidate])
+            if not science_filter.in_explicit_science(ra, dec, utime, target_roll=roll):
+                return roll
     return _best_power_roll(scores, reference)
 
 
@@ -264,6 +280,7 @@ def optimum_instrument_roll(
             reference_roll,
             max_roll_delta,
             drive_state,
+            science_attitude=science_attitude,
         )
 
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
