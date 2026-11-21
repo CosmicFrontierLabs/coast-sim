@@ -623,6 +623,23 @@ class TestWithEnforcement:
         assert sum(e.startswith("Thruster dump unloads") for e in events) == len(dumps)
 
 
+class TestOneDumpAnswersACall:
+    def test_no_dump_follows_another_at_once(self) -> None:
+        config = _config(
+            capacity_n_m_s=CAPACITY,
+            planning_level=0.6,
+            thruster_dump=ThrusterDumpConfig(duration_seconds=120.0),
+        )
+        ditl = _dispatch(config)
+        dumps = sorted(
+            (e for e in ditl.plan if e.obstype == ObsType.ACTIVITY and e.desaturation),
+            key=lambda e: float(e.begin),
+        )
+        assert len(dumps) >= 2
+        for earlier, later in zip(dumps, dumps[1:], strict=False):
+            assert float(later.begin) > float(earlier.end) + STEP
+
+
 @pytest.mark.parametrize("pending_dump", [False, True])
 def test_capacity_fault_is_recorded_without_an_available_dump(
     pending_dump: bool,

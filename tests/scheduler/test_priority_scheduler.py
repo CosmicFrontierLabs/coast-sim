@@ -22,7 +22,7 @@ from conops.config.observation_categories import ObservationCategory
 from conops.schedulers import PriorityScheduler, SchedulingContext
 from conops.schedulers.priority_scheduler import _Move
 from conops.simulation import Pass
-from conops.targets import Plan, PlanEntry, Pointing
+from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity
 
 from .planning_scenario import (
     BEGIN,
@@ -216,7 +216,11 @@ class TestSnapshots:
         assert len(snapshots) == 2
         assert all(entry.exposure == 20 * MIN for entry in snapshots)
 
-    def test_remainder_below_minimum_snapshot_is_dropped(self) -> None:
+    def test_remainder_below_minimum_snapshot_follows_a_full_one(self) -> None:
+        """Twenty-five minutes in snapshots of twenty with a minimum of ten:
+        the five-minute remainder is placed too, as dispatch finishes a
+        target that has collected anything; a first snapshot is never
+        shorter than the minimum."""
         config = _config(2)
         target = _target(config, 1, 105.0, 10.0, minutes=25, snapshot=20, ss_min=10)
 
@@ -225,8 +229,29 @@ class TestSnapshots:
         )
         plan = scheduler.schedule()
 
+        assert [entry.exposure for entry in _science(plan)] == [20 * MIN, 5 * MIN]
+        assert scheduler.unplaced == []
+        short = _target(config, 2, 105.0, 10.0, minutes=5, snapshot=20, ss_min=10)
+        scheduler = PriorityScheduler(
+            config, [short], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        assert _science(scheduler.schedule()) == []
+
+    def test_a_remainder_shorter_than_the_step_is_not_placed(self) -> None:
+        """An exposure a second over its twenty-minute snapshot: the second
+        is rounding, so one snapshot is placed and the request is met."""
+        config = _config(2)
+        target = _target(config, 1, 105.0, 10.0, minutes=20, snapshot=20, ss_min=10)
+        target.exptime = 20 * MIN + 1.0
+
+        scheduler = PriorityScheduler(
+            config, [target], BEGIN, BEGIN + timedelta(hours=2)
+        )
+        plan = scheduler.schedule()
+
         assert [entry.exposure for entry in _science(plan)] == [20 * MIN]
         assert scheduler.unplaced == []
+        assert not any("unplanned" in e.description for e in scheduler.log.events)
 
     def test_zero_minimum_snapshot_stops_when_the_request_is_met(self) -> None:
         config = _config(2)
@@ -1063,3 +1088,79 @@ class TestWorthCutting:
 
         assert PriorityScheduler._worth_cutting(new, 900.0, [self._move(300.0)])
         assert not PriorityScheduler._worth_cutting(new, 300.0, [self._move(300.0)])
+
+
+class TestFillingTimeBeforeAFollowingActivity:
+    """An activity holds the attitude of whatever precedes it, so science
+    placed before it changes where the science after it slews from. Under
+    long settling times that can leave the later science unreachable, and
+    the time before the activity empty; the later science moves instead."""
+
+    HOURS = 10
+
+    @staticmethod
+    def _config() -> MissionConfig:
+        config = _config(10)
+        acs = config.spacecraft_bus.attitude_control
+        acs.settle_time = 1200.0
+        return config
+
+    def _plan(self) -> PriorityScheduler:
+        config = self._config()
+        # The short target is worth more and can start only after the
+        # maintenance, so it is placed first, right after it, with a slew
+        # from the attitude the maintenance holds before anything is placed.
+        short = _target(config, 1, *PATCH[0], merit=100, minutes=20, snapshot=20)
+        short.earliest_start = T0 + 5 * HOUR + 20 * MIN
+        # The long target is far from it; every slew settles for 1200 s.
+        far = (PATCH[0][0] + 180.0, 0.0)
+        long = _target(config, 2, *far, merit=50, minutes=180, snapshot=60, ss_min=20)
+        maintenance = ScheduledActivity(
+            name="Maintenance", begin=T0 + 4 * HOUR, duration_seconds=HOUR, fixed=True
+        )
+        scheduler = PriorityScheduler(
+            config,
+            [short, long],
+            BEGIN,
+            BEGIN + timedelta(hours=self.HOURS),
+            activities=[maintenance],
+        )
+        scheduler.schedule()
+        return scheduler
+
+    def test_the_later_science_moves_and_the_time_before_is_filled(self) -> None:
+        scheduler = self._plan()
+        science = _science(scheduler.plan)
+        before = [e for e in science if float(e.end) <= T0 + 4 * HOUR]
+        assert [int(e.obsid) for e in before] == [2, 2, 2]
+        assert 120 * MIN < sum(e.exposure for e in before) < 180 * MIN
+        assert sum(e.exposure for e in science if int(e.obsid) == 2) == 180 * MIN
+        maintenance = next(e for e in scheduler.plan if e.name == "Maintenance")
+        last = max(before, key=lambda e: float(e.end))
+        assert float(last.end) == float(maintenance.begin)
+        # The maintenance holds the long target's attitude.
+        assert (float(maintenance.ra), float(maintenance.dec)) == pytest.approx(
+            (float(last.ra), float(last.dec))
+        )
+        short = next(e for e in science if int(e.obsid) == 1)
+        assert float(short.begin) >= float(maintenance.end)
+        assert (
+            float(short.slewtime)
+            >= scheduler.config.spacecraft_bus.attitude_control.settle_time
+        )
+        assert any(
+            e.description.startswith("Moved 1 ")
+            and "to fit 2 before it" in e.description
+            for e in scheduler.log.events
+        )
+        ditl = _execute(self._config(), scheduler.plan, self.HOURS, 60)
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_without_the_move_the_time_before_stays_empty(self) -> None:
+        with patch.object(
+            PriorityScheduler, "_fit_delaying_successors", return_value=None
+        ):
+            scheduler = self._plan()
+        science = _science(scheduler.plan)
+        assert not [e for e in science if float(e.end) <= T0 + 4 * HOUR]
+        assert [int(e.obsid) for e in science if int(e.obsid) in (1, 2)][:1] == [1]

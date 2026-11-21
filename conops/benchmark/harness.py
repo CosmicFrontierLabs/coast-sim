@@ -10,7 +10,7 @@ from ..common import ACSMode
 from ..config import MissionConfig
 from ..ditl.ditl_mixin import DITLMixin
 from ..ditl.plan_validator import PLAN_SCIENCE_OBSTYPES, entry_obstype
-from ..targets import Pointing
+from ..targets import Pointing, ScheduledActivity
 from .metrics import Collection, cadence_error, program_shares, visit_starts
 
 
@@ -48,6 +48,9 @@ class BenchmarkScenario(BaseModel):
     make_targets: Callable[[MissionConfig], list[Pointing]]
     """Return new targets bound to the given configuration."""
     toos: list[TOOSpec] = Field(default_factory=list)
+    activities: list[ScheduledActivity] = Field(default_factory=list)
+    """Scheduled activities every contender executes, such as calibration
+    blocks and a maintenance window."""
 
 
 class Run(BaseModel):
@@ -73,6 +76,8 @@ class BenchmarkResult(BaseModel):
 
     contender: str
     scenario: str
+    calibration_hours: float = 0.0
+    """Executed collection in calibration steps, excluded from science metrics."""
     science_hours: float = 0.0
     """Science collected, to the second."""
     weighted_science: float = 0.0
@@ -154,10 +159,13 @@ def _measure(
 
     records: list[Collection] = []
     collected: dict[int, float] = {}
-    science = weighted = 0.0
+    science = calibration = weighted = 0.0
     for record in simulation.telemetry.housekeeping:
         seconds = record.collection_seconds or 0.0
         if seconds <= 0 or record.obsid is None:
+            continue
+        if record.calibration:
+            calibration += seconds
             continue
         obsid = int(record.obsid)
         science += seconds
@@ -198,6 +206,7 @@ def _measure(
         contender=name,
         scenario=scenario.name,
         science_hours=science / 3600.0,
+        calibration_hours=calibration / 3600.0,
         weighted_science=weighted,
         slewing_hours=modes.count(ACSMode.SLEWING) * step_hours,
         idle_hours=modes.count(ACSMode.IDLE) * step_hours,
@@ -205,7 +214,7 @@ def _measure(
         observations=sum(
             1
             for entry in simulation.plan
-            if entry_obstype(entry) in PLAN_SCIENCE_OBSTYPES
+            if entry_obstype(entry) in PLAN_SCIENCE_OBSTYPES and not entry.calibration
         ),
         too_response_seconds=responses,
         too_on_time=on_time,

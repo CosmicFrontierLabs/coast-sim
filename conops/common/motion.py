@@ -1,23 +1,27 @@
 """Shared analytic rest-to-rest kinematics for planning and execution."""
 
-from dataclasses import dataclass
 from functools import cached_property
 from math import isfinite, sqrt
 
+from pydantic import BaseModel, ConfigDict, model_validator
 
-@dataclass(frozen=True)
-class RestToRestMotion:
+
+class RestToRestMotion(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     angle: float
     acceleration: float
     rate: float
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_state(self) -> "RestToRestMotion":
         if not isfinite(self.angle) or self.angle < 0:
             raise ValueError("Motion angle must be finite and nonnegative")
         if not all(
             isfinite(value) and value > 0 for value in (self.acceleration, self.rate)
         ):
             raise ValueError("Motion limits must be finite and positive")
+        return self
 
     @cached_property
     def ramp(self) -> float:

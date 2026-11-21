@@ -17,7 +17,7 @@ from math import floor
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..common.ephemeris import orbit_at
 from ..common.vector import quaternion_to_rotation_matrix
@@ -60,9 +60,8 @@ class _MomentumPath(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Trajectories are validated by the executor and retained by identity.
-    # Their protocol-based internals are not another record-validation boundary.
-    trajectory: SkipValidation[AttitudeTrajectory | None]
+    # Typed trajectory records retain the executor's physical command checks.
+    trajectory: AttitudeTrajectory | None
     state_at: Callable[[float], AttitudeState]
     signature: tuple[float, float, bytes, bytes | None]
     nodes: list[MomentumForecast]

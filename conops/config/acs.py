@@ -6,6 +6,7 @@ from rust_ephem.constraints import ConstraintConfig
 from ..common import separation
 from ..common.enums import SlewAlgorithm
 from ..common.motion import RestToRestMotion
+from ..common.numerics import ROUNDOFF
 from ._base import ConfigModel
 from .constants import DTOR
 from .momentum import StoredMomentumConfig
@@ -141,7 +142,7 @@ class AttitudeControlSystem(ConfigModel):
         if axis.shape != (3,) or not np.all(np.isfinite(axis)):
             raise ValueError("rotation_axis_body must contain three finite values")
         norm = float(np.linalg.norm(axis))
-        if norm < 1e-12:
+        if norm < ROUNDOFF:
             raise ValueError("rotation_axis_body must have nonzero magnitude")
         unit_axis = axis / norm
         limits = np.asarray(body_limits, dtype=np.float64)
@@ -212,7 +213,7 @@ class AttitudeControlSystem(ConfigModel):
         if self.max_slew_rate_body is None:
             return np.full(axes.shape[:-1], float(self.max_slew_rate))
         norms = np.linalg.norm(axes, axis=-1)
-        still = norms < 1e-12
+        still = norms < ROUNDOFF
         unit_axes = axes / np.where(still, 1.0, norms)[..., None]
         limits = np.asarray(self.max_slew_rate_body, dtype=np.float64)
         with np.errstate(divide="ignore"):
@@ -233,7 +234,7 @@ class AttitudeControlSystem(ConfigModel):
         vmax = self.effective_max_slew_rate(rotation_axis_body)
         if a <= 0 or vmax <= 0:
             return 0.0
-        return RestToRestMotion(angle_deg, a, vmax).duration
+        return RestToRestMotion(angle=angle_deg, acceleration=a, rate=vmax).duration
 
     def max_motion_angle(
         self,
@@ -274,7 +275,7 @@ class AttitudeControlSystem(ConfigModel):
         if a <= 0 or vmax <= 0:
             return min(max(0.0, t * vmax), angle_deg)  # best-effort fallback
 
-        return RestToRestMotion(angle_deg, a, vmax).at(t)[0]
+        return RestToRestMotion(angle=angle_deg, acceleration=a, rate=vmax).at(t)[0]
 
     def slew_time(
         self,

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops import QueueDITL
+from conops import QueueDITL, create_ditl
 from conops.common import ObsType
 from conops.config import (
     AttitudeControlSystem,
@@ -31,6 +31,7 @@ from scripts.check_default_plan_output import (
     DeterministicConstraint,
     DeterministicEphemeris,
 )
+from tests.scheduler.planning_scenario import PATCH, make_config, make_target
 
 BEGIN = SCENARIO_BEGIN.timestamp()
 HOUR = 3600
@@ -277,6 +278,39 @@ class TestCadenceDispatch:
         )
 
         assert _science_order(ditl)[:6] == [10, 11, 10, 11, 10, 11]
+
+    @pytest.mark.parametrize("cadence_weight", [0.0, 40.0])
+    def test_cadence_weight_spaces_an_outranking_targets_visits(
+        self, cadence_weight: float
+    ) -> None:
+        """On the real orbit, cadence counting spaces three visits a cadence
+        apart; without it they run back to back."""
+        cadence = 2 * HOUR
+        config = make_config(
+            6,
+            weights=TargetConfig(cadence_weight=cadence_weight),
+            categories=[
+                ObservationCategory(
+                    name="Monitoring", obsid_min=1, obsid_max=2, cadence_seconds=cadence
+                )
+            ],
+        )
+        target = make_target(config, 1, *PATCH[0], merit=100, minutes=30, snapshot=10)
+        filler = make_target(config, 100, *PATCH[1], merit=10, minutes=300, snapshot=20)
+        run = create_ditl(config, [target, filler])
+        assert run.calc()
+        visits = sorted(
+            float(e.collection_begin)
+            for e in run.plan
+            if int(e.obsid) == 1 and e.collection_begin is not None
+        )
+        assert len(visits) == 3
+        gaps = [b - a for a, b in zip(visits, visits[1:])]
+        if cadence_weight:
+            assert all(gap >= cadence - 60 for gap in gaps)
+            assert any("Searching" in e.description for e in run.log.events)
+        else:
+            assert all(gap < cadence / 2 for gap in gaps)
 
 
 def _saa_from_start(saa_end: float) -> Callable[[QueueDITL], None]:

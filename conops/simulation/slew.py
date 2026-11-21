@@ -1,4 +1,5 @@
 from bisect import bisect_right
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -8,12 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from ..common import roll_over_angle, separation, unixtime2date
 from ..common.enums import ObsType, SlewAlgorithm
+from ..common.numerics import ATTITUDE_TOLERANCE_DEG
 from ..common.vector import (
+    _batch_quat_to_attitudes,
     _quat_mul,
     _quaternion_delta,
     angular_separation,
     attitude_to_quat,
     quat_slerp,
+    quat_slerp_at,
     quat_to_attitude,
     quaternion_attitude_delta,
     quaternion_slew_path,
@@ -201,7 +205,7 @@ class Slew(BaseModel):
             ]
         else:
             distance, _ = quaternion_attitude_delta(*start, *end)
-            if distance > 1e-8:
+            if distance > ATTITUDE_TOLERANCE_DEG:
                 raise ValueError(
                     "Physical execution requires an analytic slew trajectory"
                 )
@@ -211,8 +215,7 @@ class Slew(BaseModel):
     @property
     def great_circle_deg(self) -> float:
         """The great-circle angle between the pointings the slew joins, in
-        degrees: what a slew requirement is written in, where ``slewdist`` is
-        the rotation flown, which the roll lengthens."""
+        degrees; ``slewdist`` measures the rotation flown, including roll."""
         start = (self.startra, self.startdec, self.startroll)
         end = (self.endra, self.enddec, self.endroll)
         frame = getattr(getattr(self.config, "spacecraft_bus", None), "frame", None)
@@ -244,6 +247,37 @@ class Slew(BaseModel):
         # quaternion segment metadata.
         ra, dec = self.slew_ra_dec(utime)
         return ra, dec, self.slew_roll(utime)
+
+    def attitudes(self, times: Sequence[float]) -> list[tuple[float, float, float]]:
+        """The attitude at each of ``times`` along a direct quaternion slew."""
+        if len(self._slew_segments) != 1 or self.slewdist <= 0:
+            return [self.attitude(float(utime)) for utime in times]
+        segment = self._slew_segments[0]
+        start = (self.startra, self.startdec, self.startroll)
+        elapsed = [float(utime) - self.slewstart for utime in times]
+        moving = [k for k, t in enumerate(elapsed) if t > 0]
+        result: list[tuple[float, float, float]] = [start] * len(elapsed)
+        if not moving:
+            return result
+        fractions = np.array(
+            [self._slew_fraction(elapsed[k]) for k in moving], dtype=np.float64
+        )
+        if segment.distance_deg <= 0.0:
+            fractions = np.zeros_like(fractions)
+        else:
+            fractions = np.clip(
+                fractions * float(self.slewdist) / segment.distance_deg, 0.0, 1.0
+            )
+        ra, dec, roll = _batch_quat_to_attitudes(
+            quat_slerp_at(segment.start_quat, segment.end_quat, fractions)
+        )
+        for k, index in enumerate(moving):
+            result[index] = (
+                float(ra[k]) % 360.0,
+                float(dec[k]),
+                float(roll[k]) % 360.0,
+            )
+        return result
 
     def _slew_fraction(self, t: float) -> float:
         """Return progress fraction [0,1] along the bang-bang profile at elapsed time t."""
