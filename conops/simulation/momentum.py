@@ -271,8 +271,10 @@ class OrbitTables(BaseModel):
         )
 
     def min_radius_km(self) -> float:
-        """The least distance from the Earth's centre along the orbit,
-        inside each linearly interpolated segment, not only at the samples."""
+        """The least distance from the Earth's centre along the orbit, on
+        the chord between each pair of samples, not only at the samples: a
+        chord lies inside the orbit's arc, so this is no more than the least
+        radius of the orbit as interpolated between them."""
         first, delta = (
             self.positions_eci_km[:-1],
             np.diff(self.positions_eci_km, axis=0),

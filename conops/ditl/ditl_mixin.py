@@ -13,7 +13,7 @@ from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
-from ..common.ephemeris import position_vectors, velocity_vectors
+from ..common.ephemeris import orbit_at, position_vectors, velocity_vectors
 from ..config import (
     FaultManagementRun,
     MissionConfig,
@@ -42,43 +42,6 @@ from .ditl_log import DITLLog
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
-
-
-class _MomentumInputs:
-    """The orbit at one momentum sample: what the tracker was given at a
-    step, kept so the orbit can be interpolated along a slew within the next."""
-
-    def __init__(
-        self,
-        utime: float,
-        position_eci_km: npt.NDArray[np.float64],
-        sun_eci_km: npt.NDArray[np.float64] | None,
-        position_ecef_km: npt.NDArray[np.float64] | None,
-        velocity_eci_km_s: npt.NDArray[np.float64] | None = None,
-    ) -> None:
-        self.utime = float(utime)
-        self.position_eci_km = position_eci_km
-        self.sun_eci_km = sun_eci_km
-        self.position_ecef_km = position_ecef_km
-        self.velocity_eci_km_s = velocity_eci_km_s
-
-    def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
-        """The orbit ``fraction`` of the way from this sample to ``later``."""
-
-        def lerp(
-            a: npt.NDArray[np.float64] | None, b: npt.NDArray[np.float64] | None
-        ) -> npt.NDArray[np.float64] | None:
-            if a is None or b is None:
-                return None
-            return a + fraction * (b - a)
-
-        return _MomentumInputs(
-            self.utime + fraction * (later.utime - self.utime),
-            np.asarray(lerp(self.position_eci_km, later.position_eci_km)),
-            lerp(self.sun_eci_km, later.sun_eci_km),
-            lerp(self.position_ecef_km, later.position_ecef_km),
-            lerp(self.velocity_eci_km_s, later.velocity_eci_km_s),
-        )
 
 
 class MomentumProfile(NamedTuple):
@@ -489,7 +452,7 @@ class DITLMixin:
         it before the budget exists, or the budget adopts it."""
         tracker = self._build_stored_momentum_tracker()
         self._stored_momentum_tracker = tracker
-        self._momentum_previous: _MomentumInputs | None = None
+        self._momentum_previous_utime: float | None = None
         acs = getattr(self, "acs", None)
         if acs is None:
             return
@@ -547,31 +510,28 @@ class DITLMixin:
             ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
             if ecef is not None and index < len(ecef):
                 position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
-        inputs = _MomentumInputs(
-            utime, position_eci_km, sun_eci_km, position_ecef_km, velocity_eci_km_s
-        )
-        previous = getattr(self, "_momentum_previous", None)
-        self._momentum_previous = inputs
-        elapsed = utime - previous.utime if previous is not None else 0.0
+        previous = getattr(self, "_momentum_previous_utime", None)
+        self._momentum_previous_utime = utime
+        elapsed = utime - previous if previous is not None else 0.0
         if (
             previous is not None
             and elapsed > self._momentum_slew_sample_s
-            and self.acs.attitude_moved(previous.utime, utime)
+            and self.acs.attitude_moved(previous, utime)
         ):
             count = math.ceil(elapsed / self._momentum_slew_sample_s)
             for k in range(1, count):
-                fraction = k / count
-                between = previous.between(inputs, fraction)
-                ra, dec, roll = self.acs.executed_attitude(between.utime)
+                at = previous + k / count * elapsed
+                orbit = orbit_at(self.ephem, at)
+                ra, dec, roll = self.acs.executed_attitude(at)
                 tracker.update(
-                    utime=between.utime,
-                    position_eci_km=between.position_eci_km,
+                    utime=at,
+                    position_eci_km=orbit.position_eci_km,
                     attitude_quaternion_eci_to_body=attitude_to_quat(ra, dec, roll),
-                    sun_eci_km=between.sun_eci_km,
+                    sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                     sunlit=sunlit,
-                    velocity_eci_km_s=between.velocity_eci_km_s,
-                    position_ecef_km=between.position_ecef_km,
-                    angular_velocity_body_rad_s=self._body_rate_rad_s(between.utime),
+                    velocity_eci_km_s=orbit.velocity_eci_km_s,
+                    position_ecef_km=orbit.position_ecef_km,
+                    angular_velocity_body_rad_s=self._body_rate_rad_s(at),
                 )
         return tracker.update(
             utime=utime,
@@ -735,23 +695,10 @@ class DITLMixin:
             return np.zeros(3, dtype=np.float64)
 
         utimes = self._momentum_ephem_utimes()
-        positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
-        suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
-        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
-        ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
-        velocities = velocity_vectors(self.ephem)
-
-        def interpolate(
-            table: npt.NDArray[np.float64], at: float
-        ) -> npt.NDArray[np.float64]:
-            return np.array(
-                [np.interp(at, utimes, table[:, k]) for k in range(3)], dtype=np.float64
-            )
-
         norms: list[float] = []
         demands: list[float] = []
         for at in samples:
-            position = interpolate(positions, float(at))
+            orbit = orbit_at(self.ephem, float(at))
             # Eclipse is known at the ephemeris samples: the nearest one.
             nearest = int(np.clip(np.searchsorted(utimes, at), 0, len(utimes) - 1))
             if nearest > 0 and abs(utimes[nearest - 1] - at) < abs(
@@ -760,22 +707,16 @@ class DITLMixin:
                 nearest -= 1
             sample = forecast.update(
                 utime=float(at),
-                position_eci_km=position,
+                position_eci_km=orbit.position_eci_km,
                 attitude_quaternion_eci_to_body=attitude_to_quat(
                     *attitude_at(float(at))
                 ),
-                sun_eci_km=interpolate(suns, float(at)) - position,
+                sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                 sunlit=not self.config.constraint.in_eclipse(
                     0.0, 0.0, float(utimes[nearest])
                 ),
-                velocity_eci_km_s=(
-                    interpolate(velocities, float(at))
-                    if velocities is not None
-                    else None
-                ),
-                position_ecef_km=(
-                    interpolate(ecefs, float(at)) if ecefs is not None else None
-                ),
+                velocity_eci_km_s=orbit.velocity_eci_km_s,
+                position_ecef_km=orbit.position_ecef_km,
                 angular_velocity_body_rad_s=(rate_at(float(at)) if rates else None),
             )
             norms.append(sample.stored_momentum_load_n_m_s)

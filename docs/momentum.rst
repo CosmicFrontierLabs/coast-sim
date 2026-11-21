@@ -112,7 +112,9 @@ sampled at the simulation's step, the ephemeris resolution, which is enough sinc
 the torques then vary only with the orbit. A slew is sampled more finely wherever
 it falls: the simulations ask the ACS for the attitude flown at intermediate times
 within the step, every ``max_attitude_step_deg`` (5° by default) of motion at the
-fastest configured slew rate, with the orbit interpolated between the step's ends.
+fastest configured slew rate, with the orbit there taken from the ephemeris's own
+interpolation between its samples (cubic Hermite in position and velocity, as its
+constraints see the orbit at such a time).
 The planners' forecast samples the same way. Tracking therefore works at whatever
 resolution the ephemeris has; the attitude step is a convergence control, not an
 integration-error guarantee.

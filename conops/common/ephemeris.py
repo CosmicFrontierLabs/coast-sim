@@ -5,8 +5,9 @@ sample lookups instead of copying an entire day to read one position. This
 does not change the ephemeris or the public getter's independent-copy contract.
 """
 
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -71,3 +72,28 @@ def position_vectors(
         return _position_snapshot(ephem, body)
     # Test/custom adapters may be mutable; do not silently cache their values.
     return ephem.gcrs_pv.position if body == "gcrs" else ephem.sun_pv.position
+
+
+class OrbitState(NamedTuple):
+    """The orbit at one time."""
+
+    position_eci_km: npt.NDArray[np.float64]
+    velocity_eci_km_s: npt.NDArray[np.float64]
+    sun_position_eci_km: npt.NDArray[np.float64]
+    """The Sun from the Earth's centre, not from the spacecraft."""
+    position_ecef_km: npt.NDArray[np.float64]
+
+
+def orbit_at(ephem: rust_ephem.Ephemeris, utime: float) -> OrbitState:
+    """The orbit at ``utime``, in Unix seconds, from the ephemeris's own
+    interpolation between its samples: cubic Hermite in position and
+    velocity, as its constraints see the orbit at such a time, and exact at
+    a sample. Outside the ephemeris it raises ``ValueError``."""
+    when = datetime.fromtimestamp(utime, tz=timezone.utc)
+    orbit = ephem.gcrs_pv_at(when)
+    return OrbitState(
+        orbit.position[0],
+        orbit.velocity[0],
+        ephem.sun_pv_at(when).position[0],
+        ephem.itrs_pv_at(when).position[0],
+    )
