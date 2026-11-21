@@ -2875,8 +2875,9 @@ class TestPlanExecutionValidation:
 
         assert any("unplanned_science" in str(m) for m in mismatches)
 
-    def test_close_last_plan_entry_records_dropped_science_window(
-        self, queue_ditl: QueueDITL
+    @pytest.mark.parametrize("collection_seconds", [0, 100])
+    def test_close_last_plan_entry_records_only_empty_windows_as_dropped(
+        self, queue_ditl: QueueDITL, collection_seconds: int
     ) -> None:
         entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
@@ -2889,10 +2890,16 @@ class TestPlanExecutionValidation:
         queue_ditl.plan = Plan()
         queue_ditl.plan.append(entry)
 
-        queue_ditl._close_last_plan_entry(1200.0)
+        end = 1100.0 + collection_seconds
+        queue_ditl._close_last_plan_entry(end)
 
-        assert len(queue_ditl.plan) == 0
-        assert (1000.0, 1200.0, 42) in queue_ditl._dropped_science_windows
+        if collection_seconds:
+            assert list(queue_ditl.plan) == [entry]
+            assert entry.end == end
+            assert queue_ditl._dropped_science_windows == []
+        else:
+            assert len(queue_ditl.plan) == 0
+            assert queue_ditl._dropped_science_windows == [(1000.0, end, 42)]
 
     def test_validation_fails_for_science_constraint_violation(
         self, queue_ditl: QueueDITL
@@ -3694,7 +3701,7 @@ class TestCalcMethod:
         ]
         assert "START_BATTERY_CHARGE" in command_types
 
-    def test_initiate_charging_leaves_short_science_target_retryable(
+    def test_initiate_charging_preserves_short_science_and_leaves_target_retryable(
         self, queue_ditl
     ) -> None:
         science_ppt = Mock()
@@ -3741,9 +3748,10 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
 
         assert science_ppt.done is False
-        # The under-collected entry (50s collected < 300s required) is dropped.
-        assert plan_entry not in queue_ditl.plan
+        assert list(queue_ditl.plan) == [plan_entry]
+        assert plan_entry.end == 1250.0
         assert queue_ditl.ppt is charging_ppt
+        queue_ditl.acs.end_science_observation.assert_called_once_with(1250.0)
         queue_ditl.acs.enqueue_command.assert_called_once()
 
     def test_initiate_charging_rejects_constraint_unsafe_slew_path(
@@ -3780,6 +3788,7 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1000.0, 10.0, 20.0)
 
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        cast(Mock, queue_ditl.acs.end_science_observation).assert_not_called()
         assert queue_ditl.charging_ppt is None
         assert queue_ditl.ppt is science_ppt
         assert science_ppt.end == 5000.0
@@ -3788,7 +3797,7 @@ class TestCalcMethod:
         assert "Skipping emergency charge slew" in log_text
         assert "ST Hard" in log_text
 
-    def test_calc_drops_short_science_entry_when_charging_interrupts(
+    def test_calc_drops_empty_science_entry_when_charging_interrupts(
         self, queue_ditl
     ) -> None:
         from datetime import timedelta
@@ -4122,8 +4131,8 @@ class TestCalcMethod:
         assert "Dropping under-collected science entry 1001" in log_text
         assert "collected 0s" in log_text
 
-    def test_track_ppt_drops_science_entry_below_ss_min(self, queue_ditl) -> None:
-        """A science entry with less than ss_min collection is not kept as AT."""
+    def test_track_ppt_keeps_executed_science_below_ss_min(self, queue_ditl) -> None:
+        """Keep the time actually collected even when it falls below ss_min."""
         previous_ppt = Mock()
         previous_ppt.obstype = "AT"
         previous_ppt.begin = 1000.0
@@ -4145,10 +4154,9 @@ class TestCalcMethod:
 
         queue_ditl._track_ppt_in_timeline()
 
-        assert previous_ppt not in queue_ditl.plan
-        assert queue_ditl.plan == [current_ppt]
+        assert queue_ditl.plan == [previous_ppt, current_ppt]
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "Dropping under-collected science entry 1002" in log_text
+        assert "Keeping under-collected science entry 1002" in log_text
         assert "collected 250s of required 300s" in log_text
 
     def test_close_ppt_timeline_if_needed_closes_when_ppt_none(
@@ -6521,6 +6529,35 @@ class TestQueueDITLCoverage:
                 # Verify that PPT lifecycle management and fetching were NOT called
                 mock_manage_ppt.assert_not_called()
                 mock_fetch_ppt.assert_not_called()
+
+    @pytest.mark.parametrize("charging_started", [True, False])
+    def test_only_accepted_charging_preempts_science_bookkeeping(
+        self, queue_ditl: QueueDITL, charging_started: bool
+    ) -> None:
+        queue_ditl.ppt = Pointing()
+        queue_ditl.acs.current_slew = None
+
+        def initiate_charging(utime: float, ra: float, dec: float) -> None:
+            if charging_started:
+                queue_ditl.charging_ppt = Pointing(obstype=ObsType.CHARGE)
+
+        with (
+            patch.object(queue_ditl, "_should_initiate_charging", return_value=True),
+            patch.object(
+                queue_ditl, "_initiate_charging", side_effect=initiate_charging
+            ) as initiate,
+            patch.object(queue_ditl, "_check_too_interrupt", return_value=False) as too,
+            patch.object(queue_ditl, "_manage_ppt_lifecycle") as manage,
+        ):
+            queue_ditl._handle_science_mode(1000.0, 0.0, 0.0, ACSMode.SCIENCE)
+
+        initiate.assert_called_once_with(1000.0, 0.0, 0.0)
+        if charging_started:
+            too.assert_not_called()
+            manage.assert_not_called()
+        else:
+            too.assert_called_once_with(1000.0, 0.0, 0.0)
+            manage.assert_called_once_with(1000.0, ACSMode.SCIENCE)
 
     def test_pass_ending_logic_triggered(self, mock_config, mock_ephem) -> None:
         """Test pass ending logic when previous pass existed but current doesn't (lines 631-642)."""
