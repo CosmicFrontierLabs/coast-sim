@@ -2,8 +2,11 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from rust_ephem import EarthLimbConstraint, SunConstraint, TLEEphemeris
 
+from conops import DITL
+from conops.common import ObsType
 from conops.config import (
     AttitudeControlSystem,
     Battery,
@@ -20,7 +23,8 @@ from conops.config.observation_categories import (
     ObservationCategories,
     ObservationCategory,
 )
-from conops.targets import Pointing
+from conops.schedulers import CpSatScheduler, LocalSearchScheduler, PriorityScheduler
+from conops.targets import Plan, Pointing
 
 BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
 T0 = BEGIN.timestamp()
@@ -34,6 +38,7 @@ def make_config(
     stations: bool = False,
     weights: TargetConfig | None = None,
     categories: list[ObservationCategory] | None = None,
+    open_sky: bool = False,
 ) -> MissionConfig:
     ephem = TLEEphemeris(
         tle="examples/example.tle",
@@ -65,7 +70,25 @@ def make_config(
     )
     config.random_seed = 1234
     config.constraint.ephem = ephem
+    if open_sky:  # no sun or earth limits, so every target stays visible
+        config.constraint.sun_constraint = config.constraint.earth_constraint = None
     return config
+
+
+def planner(kind: str) -> tuple[type, dict]:
+    """The planner class for ``kind`` and fast, deterministic search options."""
+    if kind == "priority":
+        return PriorityScheduler, {}
+    if kind == "local_search":
+        return LocalSearchScheduler, {"time_limit": 0.0}
+    pytest.importorskip("ortools")
+    return CpSatScheduler, {
+        "time_limit": 0.0,
+        "solver_time_limit": 2.0,
+        "solver_deterministic_time": 0.05,
+        "workers": 1,
+        "seed": 1,
+    }
 
 
 def make_target(
@@ -103,3 +126,46 @@ def make_target(
 # constrained for part of every orbit.
 PATCH = [(105.0, 10.0), (110.0, 10.0), (115.0, 10.0), (105.0, 0.0), (110.0, 20.0)]
 CONSTRAINED = [(30.0, 40.0), (300.0, -50.0), (170.0, 60.0), (250.0, 10.0)]
+
+
+def patch_targets(
+    config: MissionConfig,
+    n: int = len(PATCH),
+    *,
+    obsid: int = 100,
+    merit: float = 90,
+    **kw,
+) -> list[Pointing]:
+    """``n`` targets on the visible patch, merit descending by one."""
+    return [
+        make_target(config, obsid + i, ra, dec, merit=merit - i, **kw)
+        for i, (ra, dec) in enumerate(PATCH[:n])
+    ]
+
+
+def science_entries(plan: Plan | list) -> list:
+    return [e for e in plan if e.obstype not in (ObsType.GSP, ObsType.ACTIVITY)]
+
+
+def activity_entries(plan: Plan | list) -> list:
+    return [e for e in plan if e.obstype == ObsType.ACTIVITY]
+
+
+def collected_seconds(run, obsid: int | None = None, *, science: bool = False) -> float:
+    """Seconds collected in a run, optionally for one obsid or excluding calibration."""
+    return sum(
+        h.collection_seconds or 0
+        for h in run.telemetry.housekeeping
+        if (obsid is None or h.obsid == obsid) and not (science and h.calibration)
+    )
+
+
+def replay(config, plan, begin=BEGIN, end=None, *, step=60, pose=None) -> DITL:
+    """Execute ``plan`` and check it flew exactly as planned."""
+    run = DITL(config, plan=plan, begin=begin, end=end or config.constraint.ephem.end)
+    run.step_size = step
+    if pose is not None:
+        run.acs.ra, run.acs.dec, run.acs.roll = pose
+    assert run.calc()
+    assert run.validate_plan_matches_execution() == []
+    return run

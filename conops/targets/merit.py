@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..config import MissionConfig
 from ..config.observation_categories import ObservationCategory
+from ..config.observation_groups import ObservationGroup, ObservationGroups
 
 if TYPE_CHECKING:
     from .pointing import Pointing
@@ -48,6 +49,8 @@ class MeritBreakdown(BaseModel):
     radiator: float = 0.0
     data: float = 0.0
     """The price of the data a snapshot puts on the recorder; zero or negative."""
+    group: float = 0.0
+    """Merit added for following another target of the same group."""
 
     @property
     def value(self) -> float:
@@ -70,6 +73,7 @@ class MeritBreakdown(BaseModel):
             + self.collection
             + self.radiator
             + self.data
+            + self.group
         )
 
     def describe(self) -> str:
@@ -85,6 +89,7 @@ class MeritBreakdown(BaseModel):
             "collection",
             "radiator",
             "data",
+            "group",
         ):
             amount = getattr(self, name)
             if amount != 0.0:
@@ -104,7 +109,16 @@ class MeritModel:
 
     def __init__(self, config: MissionConfig) -> None:
         self.categories = config.observation_categories
+        groups = getattr(config, "observation_groups", None)
+        # A test double's configuration has no groups.
+        self.groups = (
+            groups if isinstance(groups, ObservationGroups) else ObservationGroups()
+        )
         targets = config.targets
+        weight = getattr(targets, "group_contiguity_weight", 0.0)
+        self.group_contiguity_weight = (
+            float(weight) if isinstance(weight, (int, float)) else 0.0
+        )
         self.urgency_weight = targets.urgency_weight
         self.urgency_timescale_seconds = targets.urgency_timescale_seconds
         self.cadence_weight = targets.cadence_weight
@@ -129,6 +143,55 @@ class MeritModel:
     def category(self, target: "Pointing") -> ObservationCategory:
         """Return the observation category a target belongs to."""
         return self.categories.get_category(int(target.obsid))
+
+    def group(self, target: "Pointing") -> ObservationGroup | None:
+        """The observation group a target belongs to, if any."""
+        return self.groups.group_of(int(target.obsid))
+
+    def collected(
+        self, targets: Iterable["Pointing"]
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Science collected so far, by category name and by group name."""
+        by_category: dict[str, float] = defaultdict(float)
+        by_group: dict[str, float] = defaultdict(float)
+        for target in targets:
+            seconds = getattr(target, "collected_seconds", 0.0)
+            if not isinstance(seconds, (int, float)) or seconds <= 0.0:
+                continue
+            by_category[self.category(target).name] += float(seconds)
+            group = self.group(target)
+            if group is not None:
+                by_group[group.name] += float(seconds)
+        return dict(by_category), dict(by_group)
+
+    def budget_left(
+        self,
+        target: "Pointing",
+        by_category: Mapping[str, float],
+        by_group: Mapping[str, float],
+    ) -> float | None:
+        """Science the target may still collect within its category's and
+        group's time budgets, given what each has collected; None without one."""
+        category, group = self.category(target), self.group(target)
+        lefts = []
+        if category.time_budget_seconds is not None:
+            lefts.append(
+                category.time_budget_seconds - by_category.get(category.name, 0.0)
+            )
+        if group is not None and group.time_budget_seconds is not None:
+            lefts.append(group.time_budget_seconds - by_group.get(group.name, 0.0))
+        return max(0.0, min(lefts)) if lefts else None
+
+    def contiguity_bonus(self, target: "Pointing", previous_obsid: int | None) -> float:
+        """Merit for following ``previous_obsid`` in a group that prefers contiguity."""
+        if self.group_contiguity_weight <= 0.0 or previous_obsid is None:
+            return 0.0
+        if int(target.obsid) == previous_obsid:
+            return 0.0
+        group = self.group(target)
+        if group is None or not group.prefer_contiguous:
+            return 0.0
+        return self.group_contiguity_weight if previous_obsid in group.members else 0.0
 
     def delivered_shares(self, targets: Iterable["Pointing"]) -> dict[str, float]:
         """Return each program's fraction of the science collected so far."""

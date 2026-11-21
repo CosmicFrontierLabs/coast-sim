@@ -34,8 +34,10 @@ from .plan_metadata import (
 )
 from .plan_schema import PlanEntrySchema, PlanSchema
 from .pointing import MovingPointing, Pointing
+from .program import Program
 from .sequence import ObservationSequence, SequenceStep
 from .target_queue import Queue, TargetQueue, TargetSlewEstimate
+from .too import TOORequest
 from .track import TrackPoint, body_track, track_from_table
 from .visits import VisitWindow, cadence_windows, visit_windows
 
@@ -64,6 +66,8 @@ __all__ = [
     "OrbitStateTimeseriesSchema",
     "Pointing",
     "Plan",
+    "Program",
+    "TOORequest",
     "PlanSchema",
     "PlanEntrySchema",
     "TargetList",

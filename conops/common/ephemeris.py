@@ -7,11 +7,14 @@ does not change the ephemeris or the public getter's independent-copy contract.
 
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
+
+from .common import dtutcfromtimestamp
+from .numerics import VECTOR_COMPONENTS
 
 _IMMUTABLE_EPHEMERIDES = (
     rust_ephem.TLEEphemeris,
@@ -21,6 +24,10 @@ _IMMUTABLE_EPHEMERIDES = (
     rust_ephem.ParquetEphemeris,
     rust_ephem.SPICEEphemeris,
 )
+
+
+_ARRAY_DIMENSIONS = 2
+"""Velocities come as one row of three components per sample."""
 
 
 @lru_cache(maxsize=8)
@@ -59,7 +66,7 @@ def velocity_vectors(
     except (TypeError, ValueError):
         # A test double's ephemeris: no velocities to speak of.
         return None
-    if velocities.ndim != 2 or velocities.shape[1] != 3:
+    if velocities.ndim != _ARRAY_DIMENSIONS or velocities.shape[1] != VECTOR_COMPONENTS:
         return None
     return velocities
 
@@ -96,4 +103,13 @@ def orbit_at(ephem: rust_ephem.Ephemeris, utime: float) -> OrbitState:
         orbit.velocity[0],
         ephem.sun_pv_at(when).position[0],
         ephem.itrs_pv_at(when).position[0],
+    )
+
+
+def sun_direction(ephem: rust_ephem.Ephemeris, utime: float) -> npt.NDArray[np.float64]:
+    """The Sun's position from the spacecraft in the GCRS frame at ``utime``."""
+    index = ephem.index(dtutcfromtimestamp(float(utime)))
+    return cast(
+        npt.NDArray[np.float64],
+        position_vectors(ephem, "sun")[index] - position_vectors(ephem, "gcrs")[index],
     )

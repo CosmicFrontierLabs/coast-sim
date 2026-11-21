@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from conops import DITL, QueueDITL, create_ditl
 from conops.common import ObsType
@@ -15,12 +16,14 @@ from conops.schedulers import LocalSearchScheduler, PriorityScheduler, Schedulin
 from conops.targets import (
     ACTIVITY_OBSID,
     Plan,
+    PlanEntry,
     Pointing,
     ScheduledActivity,
     assign_obsids,
 )
+from conops.targets.activity import periodic_activities
 
-from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0
+from .planning_scenario import BEGIN, HOUR, MIN, PATCH, T0, patch_targets, replay
 from .planning_scenario import make_config as _config
 from .planning_scenario import make_target as _target
 
@@ -277,6 +280,70 @@ class TestPlanning:
             config, _targets(config), BEGIN, END, step_size=STEP, activities=[later]
         ).schedule()
         assert _activities(plan) == []
+
+    def test_a_sliding_activity_due_at_the_horizon_end_is_left_out(self) -> None:
+        """A sliding block is reserved from its latest start; at or past the
+        internal horizon's end that reservation would have no length. The
+        physical run and ephemeris continue, so a later plan can reserve it."""
+        config = _config(HOURS + 4)
+        at_the_end = ScheduledActivity(
+            name="Late calibration",
+            begin=T0 + (HOURS - 2) * HOUR,
+            duration_seconds=1800,
+            slide_seconds=3 * HOUR,
+        )
+        scheduler = PriorityScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
+        )
+        plan = scheduler.schedule()
+        assert _activities(plan) == []
+        assert any(
+            "at or past the end of the horizon" in e.description
+            for e in scheduler.log.events
+        )
+        # Within the horizon, the same block is reserved and settles early.
+        inside = at_the_end.model_copy(update={"slide_seconds": HOUR})
+        plan = PriorityScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[inside],
+        ).schedule()
+        [entry] = _activities(plan)
+        assert float(entry.end) - float(entry.begin) == 1800
+
+    def test_cpsat_leaves_the_block_at_the_horizon_end_out(self) -> None:
+        pytest.importorskip("ortools")
+        from conops.schedulers import CpSatScheduler
+
+        config = _config(HOURS + 4)
+        at_the_end = ScheduledActivity(
+            name="Late calibration",
+            begin=T0 + (HOURS - 2) * HOUR,
+            duration_seconds=1800,
+            slide_seconds=3 * HOUR,
+        )
+        scheduler = CpSatScheduler(
+            config,
+            _targets(config),
+            BEGIN,
+            END,
+            step_size=STEP,
+            activities=[at_the_end],
+            simulation_end=END + timedelta(hours=4),
+            time_limit=5.0,
+        )
+        plan = scheduler.schedule()
+        assert _activities(plan) == []
+        assert _science(plan)
 
     def test_without_activities_nothing_changes(self) -> None:
         config = _config(HOURS)
@@ -542,6 +609,8 @@ def test_candidate_copies_keep_the_sliding_activity_hold() -> None:
     assert float(original.entry.begin) == activity.begin
     candidate = original.model_copy(update={"entry": original.entry.model_copy()})
     # Candidate reconnection records the reserved latest start on the copy.
+    candidate.ready = activity.latest_start
+    candidate.end = activity.latest_start + activity.duration_seconds
     candidate.entry.begin = candidate.ready
     candidate.entry.end = candidate.end
     assert float(candidate.entry.begin) == activity.latest_start
@@ -550,3 +619,356 @@ def test_candidate_copies_keep_the_sliding_activity_hold() -> None:
     assert float(candidate.entry.end) == activity.end
     assert float(original.entry.begin) == activity.begin
     assert float(original.entry.end) == activity.end
+
+
+# Activities that may slide within a tolerance window.
+SLIDE_HOURS = 6
+SLIDE_END = BEGIN + timedelta(hours=SLIDE_HOURS)
+BLOCK_START = T0 + 2 * HOUR
+BLOCK = 20 * MIN
+
+
+def _long_targets(config) -> list[Pointing]:  # type: ignore[no-untyped-def]
+    """Targets observed in long snapshots, so one is always under way."""
+    return patch_targets(config, 3, minutes=300, snapshot=60)
+
+
+def _dispatch_long(activities: list[ScheduledActivity]) -> QueueDITL:
+    config = _config(SLIDE_HOURS)
+    ditl = create_ditl(
+        config, _long_targets(config), BEGIN, SLIDE_END, activities=activities
+    )
+    assert isinstance(ditl, QueueDITL)
+    ditl.step_size = STEP
+    assert ditl.calc()
+    return ditl
+
+
+class TestSlidingModel:
+    def test_a_slide_gives_a_latest_start_and_not_with_fixed(self) -> None:
+        block = ScheduledActivity(
+            name="Cal",
+            begin=BLOCK_START,
+            duration_seconds=BLOCK,
+            slide_seconds=30 * MIN,
+        )
+        assert block.slides and block.latest_start == BLOCK_START + 30 * MIN
+        plain = ScheduledActivity(name="Cal", begin=BLOCK_START, duration_seconds=BLOCK)
+        assert not plain.slides and plain.latest_start == plain.begin
+        with pytest.raises(ValidationError, match="cannot slide"):
+            ScheduledActivity(
+                name="Cal",
+                begin=BLOCK_START,
+                duration_seconds=BLOCK,
+                fixed=True,
+                slide_seconds=60.0,
+            )
+
+    def test_periodic_activities(self) -> None:
+        twice = periodic_activities(
+            "Lamp",
+            BEGIN,
+            12 * HOUR,
+            BLOCK,
+            count=4,
+            instrument_modes={},
+            data_gb=0.5,
+            slide_seconds=10 * MIN,
+        )
+        assert [a.begin for a in twice] == [T0 + k * 12 * HOUR for k in range(4)]
+        assert all(
+            (a.name, a.duration_seconds, a.data_gb, a.slide_seconds)
+            == ("Lamp", BLOCK, 0.5, 10 * MIN)
+            for a in twice
+        )
+        until = periodic_activities(
+            "Lamp", T0, 12 * HOUR, BLOCK, until=T0 + 2 * 24 * HOUR
+        )
+        assert len(until) == 5
+        with pytest.raises(ValueError, match="count or until"):
+            periodic_activities("Lamp", T0, 12 * HOUR, BLOCK)
+        with pytest.raises(ValueError, match="positive"):
+            periodic_activities("Lamp", T0, 0.0, BLOCK, count=1)
+
+
+class TestSlidingDispatch:
+    @pytest.mark.parametrize(
+        "slide",
+        [0, 5 * MIN, 45 * MIN],
+        ids=["no-window", "short-window", "long-window"],
+    )
+    def test_a_block_due_mid_observation_waits_within_its_window(
+        self, slide: float
+    ) -> None:
+        """A block due while an observation collects waits for it, within its
+        window, then runs its full length; without a window its start is the
+        deadline the science before it ends by."""
+        block = ScheduledActivity(
+            name="Cal", begin=BLOCK_START, duration_seconds=BLOCK, slide_seconds=slide
+        )
+        ditl = _dispatch_long([block])
+        (entry,) = _activities(ditl.plan)
+        assert float(entry.end) - float(entry.begin) == pytest.approx(BLOCK)
+        if not slide:
+            assert float(entry.begin) == BLOCK_START
+            assert all(
+                float(e.end) <= BLOCK_START or float(e.begin) >= block.end
+                for e in _science(ditl.plan)
+            )
+            return
+        under_way = [
+            e
+            for e in _science(ditl.plan)
+            if float(e.begin) < BLOCK_START < float(e.end)
+        ]
+        assert len(under_way) == 1
+        assert float(under_way[0].end) <= float(entry.begin) <= block.latest_start
+        assert float(entry.begin) > BLOCK_START
+        assert not under_way[0].interruptions
+        assert any(
+            "waits for observation" in e.description
+            and "at the latest" in e.description
+            for e in ditl.log.events
+        )
+        # Nothing starts while the block waits.
+        assert not any(
+            BLOCK_START <= float(e.begin) < float(entry.begin)
+            for e in _science(ditl.plan)
+        )
+
+    def test_a_target_of_opportunity_fits_before_a_sliding_block(self) -> None:
+        """A target of opportunity whose slew and collection would cross the
+        block's start is observed before the block, which slides after it;
+        with no window the block's start is a deadline the response cannot
+        meet before it."""
+        responses = {}
+        for slide in (0.0, 45 * MIN):
+            block = ScheduledActivity(
+                name="Cal",
+                begin=BLOCK_START,
+                duration_seconds=BLOCK,
+                slide_seconds=slide,
+            )
+            config = _config(SLIDE_HOURS)
+            ditl = create_ditl(
+                config, _long_targets(config), BEGIN, SLIDE_END, activities=[block]
+            )
+            assert isinstance(ditl, QueueDITL)
+            ditl.step_size = STEP
+            ditl.submit_too(
+                obsid=30001,
+                name="Urgent",
+                ra=PATCH[4][0],
+                dec=PATCH[4][1],
+                merit=1000.0,
+                exptime=15 * MIN,
+                submit_time=BLOCK_START - 5 * MIN,
+                deadline=BLOCK_START + 10 * MIN,
+            )
+            assert ditl.calc()
+            too = [e for e in ditl.plan if int(e.obsid) == 30001]
+            responses[slide] = too[0] if too else None
+        assert responses[45 * MIN] is not None
+        assert float(responses[45 * MIN].collection_begin) < BLOCK_START + 10 * MIN
+        assert (
+            responses[0.0] is None or float(responses[0.0].begin) >= BLOCK_START + BLOCK
+        )
+
+
+class TestSlidingPlanner:
+    def test_science_runs_into_the_window_and_the_block_follows(self) -> None:
+        """The planner lets a snapshot run into the block's window and begins
+        the block after it, within the window, keeping its length; the plan
+        replays without a mismatch."""
+        sliding = ScheduledActivity(
+            name="Cal",
+            begin=BLOCK_START,
+            duration_seconds=BLOCK,
+            slide_seconds=45 * MIN,
+        )
+        config = _config(SLIDE_HOURS)
+        scheduler = PriorityScheduler(
+            config,
+            _long_targets(config),
+            BEGIN,
+            SLIDE_END,
+            step_size=STEP,
+            activities=[sliding],
+        )
+        plan = scheduler.schedule()
+        (entry,) = _activities(plan)
+        # The entry begins where the hold before the block takes over, and
+        # ends the block's length after the hold begins, within the window.
+        held_from = float(entry.end) - BLOCK
+        assert sliding.begin <= held_from <= sliding.latest_start
+        before = [e for e in _science(plan) if float(e.end) <= held_from]
+        assert before and float(before[-1].end) > BLOCK_START
+        for e in _science(plan):
+            assert float(e.end) <= held_from or float(e.begin) >= float(entry.end)
+        replay(
+            config, Plan.model_validate_json(plan.model_dump_json()), BEGIN, SLIDE_END
+        )
+
+
+class TestActivityAfterActivity:
+    """A block due while another block is under way begins when that one
+    ends and keeps its length, as one delayed by a slew or an observation
+    does, in dispatch and in the plans."""
+
+    WINDOW = ScheduledActivity(
+        name="Maintenance", begin=BLOCK_START, duration_seconds=HOUR, fixed=True
+    )
+
+    def _due_inside_the_window(self, **fields: float) -> ScheduledActivity:
+        return ScheduledActivity(
+            name="Cal", begin=BLOCK_START + 30 * MIN, duration_seconds=BLOCK, **fields
+        )
+
+    def _check(self, plan: Plan | list, second: ScheduledActivity) -> None:
+        window, cal = _activities(plan)
+        assert float(window.begin) == BLOCK_START
+        assert float(window.end) == self.WINDOW.end
+        assert float(cal.begin) == self.WINDOW.end
+        assert float(cal.end) - float(cal.begin) == pytest.approx(BLOCK)
+        assert float(cal.end) > second.end
+
+    @pytest.mark.parametrize("slide", [0, 10 * MIN], ids=["plain", "sliding"])
+    def test_dispatch_begins_the_block_when_the_one_under_way_ends(
+        self, slide: float
+    ) -> None:
+        """Even where the window ends after a sliding block's latest start, the
+        block begins when the window ends, for its length."""
+        cal = self._due_inside_the_window(slide_seconds=slide)
+        ditl = _dispatch_long([self.WINDOW, cal])
+        self._check(ditl.plan, cal)
+        assert any(
+            e.description.startswith("Scheduled activity Cal begins, ")
+            and e.description.endswith("s after its start")
+            for e in ditl.log.events
+        )
+        assert ditl.validate_plan_matches_execution() == []
+
+    def test_dispatch_runs_a_fixed_block_after_the_one_under_way(self) -> None:
+        """A fixed block due during another block cannot begin at its start;
+        it begins when the block under way ends, for its length."""
+        short = ScheduledActivity(name="Cal", begin=BLOCK_START, duration_seconds=BLOCK)
+        window = ScheduledActivity(
+            name="Maintenance",
+            begin=BLOCK_START + 10 * MIN,
+            duration_seconds=HOUR,
+            fixed=True,
+        )
+        ditl = _dispatch_long([short, window])
+        cal, maintenance = _activities(ditl.plan)
+        assert float(cal.begin) == BLOCK_START and float(cal.end) == short.end
+        assert float(maintenance.begin) == short.end
+        assert float(maintenance.end) - float(maintenance.begin) == pytest.approx(HOUR)
+
+    def test_the_planner_reserves_the_block_after_the_one_under_way(self) -> None:
+        """The plan puts the block after the window, for its length, and
+        says so; the plan replays without a mismatch."""
+        cal = self._due_inside_the_window(slide_seconds=10 * MIN)
+        config = _config(SLIDE_HOURS)
+        scheduler = PriorityScheduler(
+            config,
+            _long_targets(config),
+            BEGIN,
+            SLIDE_END,
+            step_size=STEP,
+            activities=[self.WINDOW, cal],
+        )
+        plan = scheduler.schedule()
+        self._check(plan, cal)
+        assert any(
+            "Cal is due during another activity" in e.description
+            for e in scheduler.log.events
+        )
+        for e in _science(plan):
+            assert (
+                float(e.end) <= BLOCK_START or float(e.begin) >= self.WINDOW.end + BLOCK
+            )
+        replay(
+            config, Plan.model_validate_json(plan.model_dump_json()), BEGIN, SLIDE_END
+        )
+
+    def test_the_planner_settles_the_block_back_to_its_start(self) -> None:
+        """Where the block it waited for slides and ends before the block's
+        start, the block begins at its start."""
+        sliding = ScheduledActivity(
+            name="Cal",
+            begin=BLOCK_START,
+            duration_seconds=BLOCK,
+            slide_seconds=45 * MIN,
+        )
+        after = ScheduledActivity(
+            name="Lamp", begin=BLOCK_START + 30 * MIN, duration_seconds=BLOCK
+        )
+        config = _config(SLIDE_HOURS)
+        scheduler = PriorityScheduler(
+            config,
+            _long_targets(config),
+            BEGIN,
+            SLIDE_END,
+            step_size=STEP,
+            activities=[sliding, after],
+        )
+        plan = scheduler.schedule()
+        cal, lamp = _activities(plan)
+        assert float(cal.end) - float(cal.begin) == pytest.approx(BLOCK)
+        assert float(lamp.end) - float(lamp.begin) == pytest.approx(BLOCK)
+        assert float(lamp.begin) == max(after.begin, float(cal.end))
+        assert float(lamp.begin) <= sliding.latest_start + BLOCK
+
+
+class TestHeldBlock:
+    def test_a_held_block_begins_after_what_is_fixed_before_it(self) -> None:
+        """A seeded planner holds a sliding activity where its start plan held
+        it. Where an entry fixed before the activity, such as one committed
+        to run, ends after that time, the activity begins when the entry
+        ends: it is not held over the entry's collection, which a run then
+        executed as idle where its plan said science."""
+        sliding = ScheduledActivity(
+            name="Cal",
+            begin=BLOCK_START,
+            duration_seconds=BLOCK,
+            slide_seconds=3 * HOUR,
+            obsid=998000,
+        )
+        config = _config(SLIDE_HOURS)
+        locked_end = BLOCK_START + 50 * MIN
+        locked = PlanEntry(
+            config=config,
+            name="locked",
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            roll=0.0,
+            obsid=1,
+            obstype=ObsType.AT,
+            begin=BLOCK_START - 10 * MIN,
+            end=locked_end,
+            collection_begin=BLOCK_START,
+            collection_end=locked_end,
+            ss_min=60,
+        )
+        held = sliding.plan_entry(config, (PATCH[0][0], PATCH[0][1], 0.0))
+        held.begin, held.end = BLOCK_START + 20 * MIN, BLOCK_START + 20 * MIN + BLOCK
+        scheduler = LocalSearchScheduler(
+            config,
+            _long_targets(config),
+            BEGIN,
+            SLIDE_END,
+            step_size=STEP,
+            activities=[sliding],
+            locked=[locked],
+            start_plan=Plan(entries=[held]),
+            time_limit=0.0,
+            seed=1,
+        )
+        plan = scheduler.schedule()
+        (entry,) = _activities(plan)
+        assert float(entry.begin) >= locked_end
+        assert float(entry.end) - float(entry.begin) == BLOCK
+        for e in _science(plan):
+            assert float(e.end) <= float(entry.begin) or float(e.begin) >= float(
+                entry.end
+            )

@@ -14,11 +14,15 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from .._version import __version__
 from ..common import unixtime_from
+from ..config.frame import SpacecraftFrame
+from .entries import AnyEntry, with_kind
 from .plan_entry import AttitudeRotationConventionSchema, PlanEntry
+from .pointing import Pointing
 
 if TYPE_CHECKING:
     import rust_ephem
@@ -29,7 +33,14 @@ if TYPE_CHECKING:
 class TargetList(BaseModel):
     """List of potential targets for Spacecraft to observe"""
 
-    targets: list[PlanEntry] = Field(default_factory=list)
+    targets: list[SerializeAsAny[AnyEntry]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _targets_with_kinds(cls, data: object) -> object:
+        if isinstance(data, dict) and isinstance(data.get("targets"), list):
+            data = {**data, "targets": [with_kind(t) for t in data["targets"]]}
+        return data
 
     def __getitem__(self, number: int) -> PlanEntry:
         return self.targets[number]
@@ -58,6 +69,8 @@ class AttitudeSampleSchema(BaseModel):
     quat_x: float | None = None
     quat_y: float | None = None
     quat_z: float | None = None
+    sun_body_vector: tuple[float, float, float] | None = None
+    ut1_utc_seconds: float | None = None
 
 
 class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
@@ -74,6 +87,11 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     plan_end: float | None = None
     frame: Literal["GCRS"] = "GCRS"
     body_frame: Literal["COAST_BODY"] = "COAST_BODY"
+    spacecraft_frame: SpacecraftFrame = Field(default_factory=SpacecraftFrame)
+    origin_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    sample_source: Literal["telemetry", "executed_trajectory"] = "telemetry"
+    interval_seconds: float | None = None
+    pointing_parameterization: Literal["body_x_ra_dec_roll"] = "body_x_ra_dec_roll"
     roll_axis: Literal["+X"] = "+X"
     roll_convention: Literal["right_handed_body_rotation"] = (
         "right_handed_body_rotation"
@@ -81,6 +99,22 @@ class AttitudeTimeseriesSchema(AttitudeRotationConventionSchema):
     roll_reference_axis: Literal["+Z"] = "+Z"
     roll_reference: Literal["projected_celestial_north"] = "projected_celestial_north"
     samples: list[AttitudeSampleSchema] = Field(default_factory=list)
+
+    def save_stk(
+        self, path: str | Path, *, reference_frame: Literal["ICRF", "J2000"] = "J2000"
+    ) -> Path:
+        """Write scalar-first STK attitude data with an explicit frame conversion."""
+        from .attitude_export import save_stk
+
+        return save_stk(self, path, reference_frame=reference_frame)
+
+    def save_euler_csv(
+        self, path: str | Path, *, reference_frame: Literal["ICRF", "J2000"] = "J2000"
+    ) -> Path:
+        """Write intrinsic Euler 1-2-3 angles and body-axis Sun angles in degrees."""
+        from .attitude_export import save_euler_csv
+
+        return save_euler_csv(self, path, reference_frame=reference_frame)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -202,7 +236,7 @@ class Plan(BaseModel):
             "None predicts bookings; an empty list reserves no station time."
         ),
     )
-    entries: list[SerializeAsAny[PlanEntry]] = Field(default_factory=list)
+    entries: list[SerializeAsAny[AnyEntry]] = Field(default_factory=list)
     attitude_timeseries: AttitudeTimeseriesSchema | None = Field(
         default=None, exclude=True
     )
@@ -216,12 +250,28 @@ class Plan(BaseModel):
         return len(self.entries)
 
     @property
+    def _scheduled(self) -> list[PlanEntry]:
+        """The entries a run has placed in time; a request never scheduled
+        has no begin or end and says nothing about the plan's span."""
+        return [e for e in self.entries if not (e.begin == 0 and e.end == 0)]
+
+    @property
     def _start_ts(self) -> float:
-        return self.entries[0].begin if self.entries else 0.0
+        scheduled = self._scheduled
+        return scheduled[0].begin if scheduled else 0.0
 
     @property
     def _end_ts(self) -> float:
-        return self.entries[-1].end if self.entries else 0.0
+        scheduled = self._scheduled
+        return scheduled[-1].end if scheduled else 0.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _entries_with_kinds(cls, data: object) -> object:
+        """A file written before entries carried a ``kind`` holds plain entries."""
+        if isinstance(data, dict) and isinstance(data.get("entries"), list):
+            data = {**data, "entries": [with_kind(e) for e in data["entries"]]}
+        return data
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -422,18 +472,47 @@ class Plan(BaseModel):
         return dest.resolve()
 
     @classmethod
-    def load(cls, path: str | Path) -> Plan:
+    def load(cls, path: str | Path, *, load_timeseries: bool = False) -> Plan:
         """Load a plan from a JSON file previously written by :meth:`save`.
 
         Parameters
         ----------
         path:
             Source file path.
+        load_timeseries:
+            Also read linked sibling attitude/orbit sidecars. The default keeps
+            plan-only loading inexpensive. A saved fine attitude series can then
+            be exported again; a coarse sidecar cannot recover finer motion.
 
         Returns
         -------
         Plan
             The deserialised plan.
         """
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls.model_validate(raw)
+        source = Path(path)
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        plan = cls.model_validate(raw)
+        for saved, entry in zip(raw.get("entries", []), plan.entries, strict=True):
+            done = saved.get("done")
+            if isinstance(entry, Pointing) and isinstance(done, bool):
+                # A completed visit may retain its parent's remaining exposure.
+                entry.done = done
+        if load_timeseries:
+            for field, schema in (
+                ("attitude_timeseries", AttitudeTimeseriesSchema),
+                ("orbit_state_timeseries", OrbitStateTimeseriesSchema),
+            ):
+                filename = getattr(plan, field + "_file")
+                if filename is not None:
+                    if Path(filename).name != filename:
+                        raise ValueError(
+                            "Timeseries sidecars must be sibling filenames"
+                        )
+                    setattr(
+                        plan,
+                        field,
+                        schema.model_validate_json(
+                            (source.parent / filename).read_text(encoding="utf-8")
+                        ),
+                    )
+        return plan
