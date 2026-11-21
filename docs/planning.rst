@@ -146,6 +146,10 @@ While it is observed the attitude follows the track at its rate, as a ground
 contact's profile is followed, and comes to rest when the observation ends; the ACS
 reports ``SCIENCE`` throughout, the plan validator expects the track's position at
 each sample, and the planners' battery ledger counts the attitude along the track.
+``Pointing.visibility_in(begin, end)`` returns the windows within one interval
+without storing them, evaluating only the ephemeris samples inside it plus one
+sample of halo on each side; the result equals the whole-ephemeris windows
+clipped to the interval. Bounds accept UTC datetimes, ISO strings or Unix seconds.
 Plan entries record the position at the slew's end and the track itself, which a
 plan replay without the track observes as a fixed pointing.
 
