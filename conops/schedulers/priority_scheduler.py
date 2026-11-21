@@ -225,6 +225,20 @@ class _Request(BaseModel):
         return least
 
     @property
+    def short_remainder(self) -> bool:
+        """Whether what remains is shorter than ``ss_min`` and may still be
+        placed, because a snapshot of the target has been placed or it has
+        collected before. Such a remainder is placed after every request
+        that can still take a full snapshot (see
+        :meth:`PriorityScheduler._place_requests`). A request for a span of
+        allocated time is not one: what it cannot place joins another span."""
+        return (
+            self.span is None
+            and 0 < self.remaining < float(snapshot_min_seconds(self.target, self.step))
+            and self.remaining >= self.minimum_snapshot
+        )
+
+    @property
     def pointing(self) -> Pointing:
         """The pointing the snapshot being placed observes: the target's,
         or the visit's own where its window gives it one."""
@@ -1323,6 +1337,10 @@ class PriorityScheduler:
 
         Re-evaluate values after each snapshot: program shares can change,
         and merging leftover allocated seconds can dilute a request's bonus.
+        Requests with only a remainder shorter than ``ss_min`` left are
+        placed last (see :attr:`_Request.short_remainder`), except one that
+        fits directly after the snapshot of it just placed (see
+        :meth:`_continues`).
         """
         # The request for the rest of a target's exposure can start with none,
         # all of it allocated, and take allocated seconds that do not fit.
@@ -1336,6 +1354,13 @@ class PriorityScheduler:
         following: ObservationGroup | None = None
         """A group that prefers contiguity whose target was just placed: its
         other targets go next, as the queue follows a group in dispatch."""
+        continuing: _Request | None = None
+        """A request whose remainder, shorter than ``ss_min``, fits directly
+        after the snapshot of it just placed. The spacecraft is already at
+        the target, so it is placed next and not with the other short
+        remainders."""
+        continue_from: float | None = None
+        """When that snapshot ends."""
         while active:
             shares = program_shares(self._program_seconds)
             pool = active
@@ -1346,10 +1371,14 @@ class PriorityScheduler:
                 else:
                     following = None
             # The original order breaks ties only; a merge can change value
-            # even when completion-deficit balancing is disabled.
+            # even when completion-deficit balancing is disabled. A remainder
+            # shorter than ``ss_min`` is placed after every request that can
+            # still take a full snapshot, whatever its value: it costs a slew
+            # for little science, so it takes only time no full snapshot used.
             request = max(
                 pool,
                 key=lambda r: (
+                    not r.short_remainder or r is continuing,
                     self._value(r, shares),
                     -order[id(r)],
                 ),
@@ -1371,12 +1400,16 @@ class PriorityScheduler:
             request.budget_left = self._budget_left_in(
                 request, self._category_seconds, self._group_seconds
             )
+            not_before = self._cadence_release(request)
+            if request is continuing and continue_from is not None:
+                not_before = max(not_before or continue_from, continue_from)
             block = (
-                self._place_snapshot(request, self._cadence_release(request))
+                self._place_snapshot(request, not_before)
                 if request.wants_more
                 else None
             )
             self._reactivate_cut_short(active, order)
+            continuing = continue_from = None
             if block is None and request.timed and request.visit is not None:
                 # This window cannot be met; the later ones may be.
                 request.skipped.add(request.visit)
@@ -1393,6 +1426,8 @@ class PriorityScheduler:
                 request.placed_before = True
                 placed[id(request)] += 1
                 self._record_visit(request, block)
+                if request.short_remainder and self._continues(request, block):
+                    continuing, continue_from = request, block.end
                 following = (
                     request.group
                     if request.group is not None and request.group.prefer_contiguous
@@ -2629,6 +2664,25 @@ class PriorityScheduler:
         )
 
     # ── Science snapshots ────────────────────────────────────────────────
+
+    def _continues(self, request: _Request, block: _Block) -> bool:
+        """Whether what remains of ``request`` fits in the gap directly
+        after ``block``, the snapshot of it just placed. The spacecraft is
+        already at the target there, so the remainder costs no turn to
+        another target."""
+        index = next(
+            (k for k, placed in enumerate(self.timeline) if placed is block), None
+        )
+        if index is None:
+            return False
+        request.budget_left = self._budget_left_in(
+            request, self._category_seconds, self._group_seconds
+        )
+        succ = self.timeline[index + 1] if index + 1 < len(self.timeline) else None
+        fit = self._fit_in_gap(
+            request, block, succ, block.end, beyond=self.timeline[index + 2 :]
+        )
+        return fit is not None
 
     def _place_snapshot(
         self, request: _Request, not_before: float | None = None

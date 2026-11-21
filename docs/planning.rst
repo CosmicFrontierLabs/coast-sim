@@ -306,7 +306,13 @@ How a plan is built
    seconds and never shorter than ``ss_min``, until its ``exptime`` is used or it no
    longer fits; once any of it is placed, or the target has collected anything, its
    remainder is placed however short, as dispatch finishes such a target, unless it is
-   shorter than the simulation step, which is rounding and ends the request. A request whose deadline is close gains urgency and so is placed
+   shorter than the simulation step, which is rounding and ends the request. A remainder
+   shorter than ``ss_min`` is placed after every request that can still take a full
+   snapshot, whatever its merit, so it uses only time that no full snapshot used: such a
+   remainder costs a slew for little science. A remainder that fits directly after
+   the snapshot of its own target just placed is placed there at once, because the
+   spacecraft is already at the target. Requests for a span of allocated time are
+   not reordered this way. A request whose deadline is close gains urgency and so is placed
    ahead of flexible requests with higher base merit. Cadence and completion deficit
    follow the plan as it is built (see below).
 4. **Each snapshot** goes in the earliest slot where every check ``DITL`` and the plan
