@@ -1256,10 +1256,15 @@ class SolarPanelSet(ConfigModel):
     ) -> tuple[float, float]:
         """Find optimal RA/Dec pointing for maximum solar panel illumination.
 
-        Analyzes panel normal vectors to determine optimal pointing:
-        - Panels with dominant Y component (side-mounted): point perpendicular to sun
-        - Panels with dominant Z component (body-mounted): point directly at sun
-        - Mixed arrays: uses weighted average approach
+        Uses the power-weighted mean panel normal, in the frame whose
+        boresight is +X:
+
+        - Normal mostly along the boresight (X dominant): point the boresight
+          at the Sun, or directly away from it when the panels face -X.
+        - Normal mostly across the boresight (Y or Z dominant): point the
+          boresight 90 degrees from the Sun in RA. The caller's roll then turns
+          the panels onto the Sun; pointing the boresight at the Sun would leave
+          them edge-on.
 
         Args:
             time: Unix timestamp
@@ -1296,13 +1301,19 @@ class SolarPanelSet(ConfigModel):
         abs_normal = np.abs(avg_normal)
         dominant_axis = np.argmax(abs_normal)
 
-        if dominant_axis == 1:  # Y is dominant (side-mounted-like)
-            # Point perpendicular to sun (90 degrees away in RA)
+        if dominant_axis == 0:  # Along the boresight
+            if avg_normal[0] >= 0.0:
+                # Panels face the way the boresight points: point at the Sun.
+                optimal_ra = sun_ra
+                optimal_dec = sun_dec
+            else:
+                # Panels face away from the boresight: point away from the Sun.
+                optimal_ra = (sun_ra + 180.0) % 360.0
+                optimal_dec = -sun_dec
+        else:  # Y or Z: across the boresight
+            # Point perpendicular to the Sun (90 degrees away in RA); the roll
+            # brings the panel normal onto the Sun.
             optimal_ra = (sun_ra + 90.0) % 360.0
-            optimal_dec = sun_dec
-        else:  # X (boresight) or Z is dominant (body-mounted-like)
-            # Point directly at sun
-            optimal_ra = sun_ra
             optimal_dec = sun_dec
 
         return optimal_ra, optimal_dec

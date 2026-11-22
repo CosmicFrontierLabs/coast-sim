@@ -389,7 +389,7 @@ class TestSolarPanelSetOptimalCharging:
 
     def test_optimal_pointing_body_mounted(self, mock_ephemeris: Mock) -> None:
         """Test optimal pointing for body-mounted panels."""
-        panels = [SolarPanel(normal=(0.0, 0.0, -1.0))]  # Z-pointing (body-mounted)
+        panels = [SolarPanel(normal=(0.0, 0.0, -1.0))]  # -Z face, across the boresight
         panel_set = SolarPanelSet(panels=panels)
         mock_ephem = mock_ephemeris
         mock_time = 1514764800.0
@@ -402,8 +402,10 @@ class TestSolarPanelSetOptimalCharging:
 
         ra, dec = panel_set.optimal_charging_pointing(mock_time, mock_ephem)
 
-        # For body-mounted: optimal_ra = sun_ra = 90, optimal_dec = sun_dec = 30
-        assert ra == pytest.approx(90.0)
+        # A -Z panel lies across the +X boresight, so the boresight goes 90 degrees
+        # in RA from the Sun and the roll turns the panel onto it:
+        # optimal_ra = (90 + 90) % 360 = 180, optimal_dec = sun_dec = 30
+        assert ra == pytest.approx(180.0)
         assert dec == pytest.approx(30.0)
 
     def test_optimal_pointing_wrapping(self, mock_ephemeris: Mock) -> None:
