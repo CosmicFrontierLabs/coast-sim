@@ -233,7 +233,8 @@ class TestSolarPanel:
         mock_ephem.sun_dec_deg = [10.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
-        assert dec == 10.0
+        # On the celestial equator: exactly 90 degrees from the Sun.
+        assert dec == 0.0
 
     def test_optimal_charging_ra_bodymount(self) -> None:
         """Test RA for panels on a Z face."""
@@ -265,7 +266,8 @@ class TestSolarPanel:
         mock_ephem.sun_dec_deg = [-15.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
-        assert dec == -15.0
+        # Across the boresight: on the celestial equator, 90 degrees from the Sun.
+        assert dec == 0.0
 
     def test_optimal_charging_pointing_wraps_ra(self) -> None:
         """Test that RA wraps correctly at 360 degrees."""
@@ -1470,10 +1472,6 @@ class TestBatteryRechargeScenarios:
         assert battery.battery_alert is True
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 class TestOptimalChargingPointingGeometry:
     """The chosen pointing, with the best roll, puts the Sun on the panel."""
 
@@ -1566,6 +1564,36 @@ class TestOptimalChargingPointingIllumination:
         illumination = panel.panel_illumination_fraction(
             sunlit, example_ephem, ra, dec, roll
         )
-        # Y and Z panels sit 90 degrees in RA from the Sun, which is within a few
-        # degrees of perpendicular to it, so the best roll lights them almost fully.
-        assert illumination > 0.99
+        # Y and Z panels sit exactly 90 degrees from the Sun, so the best roll
+        # lights them fully.
+        assert illumination > 0.999
+
+
+class TestSidemountSearchUsesSun:
+    """The side-mounted search builds its circle about the Sun itself."""
+
+    def test_sidemount_search_receives_sun_position(
+        self, emergency_charging, mock_ephem, monkeypatch, utime
+    ) -> None:
+        monkeypatch.setattr(
+            emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
+        )
+        emergency_charging.sidemount = True
+        seen: list[tuple[float, float]] = []
+
+        def search(sun_ra, sun_dec, *_args, **_kwargs):
+            seen.append((sun_ra, sun_dec))
+            return 200.0, 5.0
+
+        monkeypatch.setattr(
+            emergency_charging, "_find_valid_pointing_sidemount", search
+        )
+        emergency_charging.create_charging_pointing(utime, mock_ephem)
+        index = mock_ephem.index(None)
+        assert seen == [
+            (float(mock_ephem.sun_ra_deg[index]), float(mock_ephem.sun_dec_deg[index]))
+        ]
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

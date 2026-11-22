@@ -10,7 +10,7 @@ import rust_ephem
 
 from conops.config.battery import Battery
 
-from ..common import unixtime2date
+from ..common import dtutcfromtimestamp, unixtime2date
 from ..common.enums import ACSMode, DITLEventType, ObsType
 from ..common.vector import angular_separation, sort_by_angular_separation
 from ..config import (
@@ -264,8 +264,15 @@ class EmergencyCharging:
 
         # Find valid pointing that doesn't violate constraints
         if self.sidemount:
+            # The search builds the great circle 90 degrees from the Sun, so it
+            # needs the Sun itself, not the optimal pointing.
+            index = ephem.index(dtutcfromtimestamp(utime))
             charging_ra, charging_dec = self._find_valid_pointing_sidemount(
-                optimal_ra, optimal_dec, utime, lastra, lastdec
+                float(ephem.sun_ra_deg[index]),
+                float(ephem.sun_dec_deg[index]),
+                utime,
+                lastra,
+                lastdec,
             )
         else:
             charging_ra, charging_dec = self._find_valid_pointing(

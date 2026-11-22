@@ -186,8 +186,9 @@ class TestSafeModePointing:
         )
         assert acs.ra == pytest.approx(expected_ra)
         assert acs.dec == pytest.approx(expected_dec)
-        assert acs.ra != initial_ra
-        assert acs.dec != initial_dec
+        # The panel lies across the boresight, so the pointing stays on the
+        # celestial equator 90 degrees from the Sun: it moves in RA.
+        assert (acs.ra, acs.dec) != (initial_ra, initial_dec)
 
 
 class TestSafeModeOverridesPriority:

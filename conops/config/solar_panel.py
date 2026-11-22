@@ -1261,10 +1261,15 @@ class SolarPanelSet(ConfigModel):
 
         - Normal mostly along the boresight (X dominant): point the boresight
           at the Sun, or directly away from it when the panels face -X.
-        - Normal mostly across the boresight (Y or Z dominant): point the
-          boresight 90 degrees from the Sun in RA. The caller's roll then turns
-          the panels onto the Sun; pointing the boresight at the Sun would leave
-          them edge-on.
+        - Normal mostly across the boresight (Y or Z dominant, or opposite
+          panels that cancel): point the boresight exactly 90 degrees from the
+          Sun, at RA ``sun_ra + 90`` on the celestial equator. The caller's roll
+          then turns the panels onto the Sun; pointing the boresight at the Sun
+          would leave them edge-on.
+
+        The choice compares power-weighted ``|n_x|`` with ``hypot(n_y, n_z)``
+        rather than the mean normal, so symmetric arrays are not decided by
+        rounding.
 
         Args:
             time: Unix timestamp
@@ -1290,30 +1295,36 @@ class SolarPanelSet(ConfigModel):
             # No physical panels - default to pointing at sun
             return sun_ra, sun_dec
 
-        # Compute weighted average normal vector
-        avg_normal = np.zeros(3)
-        for p in panels:
-            weight = p.max_power / total_power
-            normal = p.normal if frame is None else frame.canonical_vector(p.normal)
-            avg_normal += np.array(normal) * weight
+        # Power-weighted normals, in the frame whose boresight is +X.
+        normals = np.array(
+            [
+                p.normal if frame is None else frame.canonical_vector(p.normal)
+                for p in panels
+            ],
+            dtype=np.float64,
+        )
+        weights = np.array([p.max_power / total_power for p in panels])
 
-        # Determine dominant axis
-        abs_normal = np.abs(avg_normal)
-        dominant_axis = np.argmax(abs_normal)
+        # Choose by sign-insensitive magnitudes: opposite panels must not
+        # cancel into a mean whose branch is set by rounding noise.
+        along = float(weights @ np.abs(normals[:, 0]))
+        across = float(weights @ np.hypot(normals[:, 1], normals[:, 2]))
+        mean_x = float(weights @ normals[:, 0])
 
-        if dominant_axis == 0:  # Along the boresight
-            if avg_normal[0] >= 0.0:
-                # Panels face the way the boresight points: point at the Sun.
-                optimal_ra = sun_ra
-                optimal_dec = sun_dec
-            else:
+        if along > across:  # Along the boresight
+            if mean_x < -NEGLIGIBLE_NORM * along:
                 # Panels face away from the boresight: point away from the Sun.
                 optimal_ra = (sun_ra + 180.0) % 360.0
                 optimal_dec = -sun_dec
-        else:  # Y or Z: across the boresight
-            # Point perpendicular to the Sun (90 degrees away in RA); the roll
-            # brings the panel normal onto the Sun.
+            else:
+                # Panels face the way the boresight points: point at the Sun.
+                optimal_ra = sun_ra
+                optimal_dec = sun_dec
+        else:  # Across the boresight (Y or Z), including cancelling pairs
+            # A point on the celestial equator 90 degrees in RA from the Sun
+            # is exactly 90 degrees from it at any declination; the roll then
+            # turns the panel normal onto the Sun.
             optimal_ra = (sun_ra + 90.0) % 360.0
-            optimal_dec = sun_dec
+            optimal_dec = 0.0
 
         return optimal_ra, optimal_dec

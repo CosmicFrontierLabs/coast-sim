@@ -382,10 +382,10 @@ class TestSolarPanelSetOptimalCharging:
 
         ra, dec = panel_set.optimal_charging_pointing(mock_time, mock_ephem)
 
-        # For sidemount: optimal_ra = (sun_ra + 90) % 360 = (90 + 90) % 360 = 180
-        # optimal_dec = sun_dec = 30
+        # For sidemount: optimal_ra = (sun_ra + 90) % 360 = (90 + 90) % 360 = 180,
+        # on the celestial equator so it is exactly 90 degrees from the Sun
         assert ra == pytest.approx(180.0)
-        assert dec == pytest.approx(30.0)
+        assert dec == pytest.approx(0.0)
 
     def test_optimal_pointing_body_mounted(self, mock_ephemeris: Mock) -> None:
         """Test optimal pointing for body-mounted panels."""
@@ -404,9 +404,9 @@ class TestSolarPanelSetOptimalCharging:
 
         # A -Z panel lies across the +X boresight, so the boresight goes 90 degrees
         # in RA from the Sun and the roll turns the panel onto it:
-        # optimal_ra = (90 + 90) % 360 = 180, optimal_dec = sun_dec = 30
+        # optimal_ra = (90 + 90) % 360 = 180, on the celestial equator
         assert ra == pytest.approx(180.0)
-        assert dec == pytest.approx(30.0)
+        assert dec == pytest.approx(0.0)
 
     def test_optimal_pointing_wrapping(self, mock_ephemeris: Mock) -> None:
         """Test optimal pointing with RA wrapping."""
