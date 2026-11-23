@@ -713,3 +713,91 @@ def test_a_dump_waits_for_a_fixed_firing_attitude_to_be_allowed(minutes: int) ->
     assert (float(dump.ra), float(dump.dec)) == pytest.approx((80.0, -20.0))
     descriptions = [e.description for e in ditl.log.events]
     assert any("firing attitude" in d for d in descriptions)
+
+
+@pytest.mark.parametrize("minutes", [40, 50, 60, 70])
+def test_the_planner_reserves_a_dump_that_waits_for_its_fixed_attitude(
+    minutes: int,
+) -> None:
+    """At these orbit phases the Earth's limb blocks the fixed firing
+    attitude, or the way to it, when the dump is called for. The planner
+    returns a plan with the dump at its attitude, reached from a hold at a
+    safe attitude where it has to wait. Before, planning stopped with an
+    ``ActivitySchedulingError``."""
+    from conops.schedulers import PriorityScheduler
+
+    begin = BEGIN + timedelta(minutes=minutes)
+    end = begin + timedelta(hours=3)
+    config = _config(
+        capacity_n_m_s=10.0,
+        initial_momentum_body_n_m_s=(7.0, 0.0, 0.0),
+        thruster_dump=ThrusterDumpConfig(
+            duration_seconds=600.0,
+            attitude=ActivityAttitude(
+                kind="fixed", ra_deg=80.0, dec_deg=-20.0, roll_deg=0.0
+            ),
+        ),
+    )
+    config.constraint.safety_constraint = EarthLimbConstraint(min_angle=10)
+    config.constraint.ephem = TLEEphemeris(
+        tle="examples/example.tle", begin=begin, end=end, step_size=STEP
+    )
+    target = Pointing(
+        config=config,
+        obsid=1,
+        name="Held",
+        ra=80.0,
+        dec=-20.0,
+        merit=100.0,
+        ss_min=600,
+        ss_max=3 * 3600,
+    )
+    target.exptime = 3 * 3600
+    plan = PriorityScheduler(config, [target], begin, end, step_size=STEP).schedule()
+    [dump] = [e for e in plan if e.desaturation]
+    assert (float(dump.ra), float(dump.dec)) == pytest.approx((80.0, -20.0))
+    assert dump.activity_hold_end - dump.activity_hold_begin == 600.0
+    holds = [e for e in plan if e.name == "Hold before thruster dump"]
+    assert len(holds) == 1
+    assert float(holds[0].end) <= float(dump.begin)
+    # The hold is at some other attitude: the firing attitude could not be
+    # waited at.
+    assert (float(holds[0].ra), float(holds[0].dec)) != pytest.approx((80.0, -20.0))
+
+
+@pytest.mark.parametrize("minutes", [40, 70])
+def test_a_planned_dump_that_waits_executes_as_planned(minutes: int) -> None:
+    from conops.schedulers import PriorityScheduler
+
+    begin = BEGIN + timedelta(minutes=minutes)
+    end = begin + timedelta(hours=3)
+    config = _config(
+        capacity_n_m_s=10.0,
+        initial_momentum_body_n_m_s=(7.0, 0.0, 0.0),
+        thruster_dump=ThrusterDumpConfig(
+            duration_seconds=600.0,
+            attitude=ActivityAttitude(
+                kind="fixed", ra_deg=80.0, dec_deg=-20.0, roll_deg=0.0
+            ),
+        ),
+    )
+    config.constraint.safety_constraint = EarthLimbConstraint(min_angle=10)
+    config.constraint.ephem = TLEEphemeris(
+        tle="examples/example.tle", begin=begin, end=end, step_size=STEP
+    )
+    target = Pointing(
+        config=config,
+        obsid=1,
+        name="Held",
+        ra=80.0,
+        dec=-20.0,
+        merit=100.0,
+        ss_min=600,
+        ss_max=3 * 3600,
+    )
+    target.exptime = 3 * 3600
+    plan = PriorityScheduler(config, [target], begin, end, step_size=STEP).schedule()
+    run = DITL(config=config, plan=plan, begin=begin, end=end)
+    run.step_size = STEP
+    assert run.calc()
+    assert run.validate_plan_matches_execution() == []
