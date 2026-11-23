@@ -582,6 +582,20 @@ A configured fixed-attitude dump also waits between protected sequence visits.
 Dispatch checks whether a whole visit fits without treating that firing time as
 a mandatory visit cutoff. Fixed firing starts and bounded slide windows still
 limit admission, as do calibration and maintenance deadlines.
+A fixed firing attitude can be blocked when a dump is called for: the Earth's limb
+crosses any inertial attitude once an orbit, for example. The dump then waits for
+the attitude, and neither dispatch nor the planners stop. Dispatch moves the dump
+to the first time the attitude can be held for the whole firing and observes until
+then; if the slew or the firing is still not allowed at that time, the dump waits a
+step and tries again. The planners reserve the firing at the first time the attitude
+can be held for it, one longest slew later, so that the slew to the attitude is
+flown while the attitude is allowed. Where the firing attitude cannot be reached
+from what precedes the dump, because the spacecraft can neither stay where it is
+nor wait at the firing attitude, the plan holds a safe attitude just before the
+dump, as an entry named ``Hold before thruster dump`` at an attitude chosen as for
+any activity that holds the attitude it finds. In safe mode no turn is made: a
+dump, or any activity with a fixed attitude, that comes due in safe mode is held at
+the attitude safe mode has.
 Where the level is reached during an observation, the dump follows it, provided the
 wheels stay within the capacity through the dump's own length; where they would not,
 the dump goes before the observation, which then starts from empty wheels, provided
