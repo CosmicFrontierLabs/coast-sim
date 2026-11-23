@@ -2886,7 +2886,9 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             return
         # Check for battery alert and initiate emergency charging if needed
-        if self._should_initiate_charging(utime):
+        if self._should_initiate_charging(
+            utime
+        ) and not self._observation_cleanup_under_way(utime):
             self._initiate_charging(utime, ra, dec)
 
         # Check for TOO interrupts (before managing PPT lifecycle)
@@ -3097,8 +3099,28 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         )
 
+    def _observation_cleanup_under_way(self, utime: float) -> bool:
+        """Whether the observation has stopped collecting and is paying its
+        cleanup and handoff budget, which emergency charging waits for."""
+        ppt = self.ppt
+        return (
+            ppt is not None
+            and ppt.collection_begin is not None
+            and ppt.collection_end is not None
+            and ppt.collection_begin < utime
+            and ppt.collection_end <= utime < ppt.end
+            and self._ppt_timing(ppt).post_collection_seconds > 0.0
+        )
+
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
-        """Initiate emergency charging by creating charging PPT and sending command to ACS."""
+        """Initiate emergency charging by creating charging PPT and sending command to ACS.
+
+        An observation that has collected science keeps it: collection stops,
+        and charging begins at the first step by which the observation's
+        cleanup and handoff budget is paid. One still slewing or setting up
+        is cut now.
+        """
+        obsid = self.emergency_charging.next_charging_obsid
         charging_ppt = self.emergency_charging.create_charging_pointing(
             utime,
             self.ephem,
@@ -3141,6 +3163,13 @@ class QueueDITL(DITLMixin, DITLStats):
             self.emergency_charging.current_charging_ppt = None
             return
 
+        # Only now that charging is possible is science given up for it.
+        if self._too_cleanup_end(utime) > utime:
+            self.emergency_charging.clear_current_charging()
+            self.emergency_charging.next_charging_obsid = obsid
+            self._reserve_charging_cleanup(utime)
+            return
+
         interrupted_ppt = self.ppt
         self.charging_ppt = charging_ppt
         if interrupted_ppt is not None and not interrupted_ppt.done:
@@ -3175,6 +3204,20 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.acs.enqueue_command(command)
         self.ppt = self.charging_ppt
+
+    def _reserve_charging_cleanup(self, utime: float) -> None:
+        """Stop collecting so that emergency charging can begin on a step."""
+        assert self.ppt is not None
+        post = self._ppt_timing(self.ppt).post_collection_seconds
+        wait = self._too_cleanup_end(utime) - utime
+        begin = utime + ceil(wait / self.step_size) * self.step_size
+        self._reserve_cleanup(
+            begin - post,
+            decision_time=utime,
+            event_type="CHARGING",
+            before="emergency charging",
+            waiting="charging",
+        )
 
     def _setup_simulation_timing(self) -> bool:
         """Set up timing aspect of simulation."""
