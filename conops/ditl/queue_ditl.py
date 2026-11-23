@@ -3473,6 +3473,77 @@ class QueueDITL(DITLMixin, DITLStats):
         slew.calc_slewtime()
         return slew
 
+    def _parked_pass_ingress(
+        self,
+        gspass: Pass,
+        profiles: list[list[tuple[float, float, float]]],
+        utime: float,
+        ra: float,
+        dec: float,
+        roll: float,
+    ) -> tuple[list[tuple[float, float, float]], Slew] | None:
+        """An ingress from a parked attitude no ``PASS`` slew can leave.
+
+        An attitude the spacecraft idles at need only meet the ``IDLE`` scopes.
+        Where it violates the ``PASS`` ones, every ingress slew does at its
+        first sample, whichever profile it aims at, and would do so for as long
+        as the spacecraft stays parked. Such an ingress is flown as any other
+        slew off that attitude would be: in ``SLEWING``, then holding in
+        ``IDLE`` until the contact begins. The profile itself still meets the
+        ``PASS`` scopes.
+        """
+        if (
+            self.ppt is not None
+            or self.acs.acsmode not in (ACSMode.IDLE, ACSMode.SAA)
+            or utime >= gspass.begin
+            or self._attitude_constraint_name_for_attitude(
+                ra, dec, roll, utime, ACSMode.PASS
+            )
+            is None
+        ):
+            return None
+        for profile in profiles:
+            slew = self._gsp_slew_for_profile(gspass, profile, utime, ra, dec, roll)
+            if slew is None or slew.slewend > gspass.begin:
+                continue
+            slew.obstype = ObsType.IDLE
+            if (
+                self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING) is None
+                and self._check_attitude_hold_window(
+                    slew.slewend,
+                    gspass.begin,
+                    (slew.endra, slew.enddec, slew.endroll),
+                    ACSMode.IDLE,
+                )
+                is None
+            ):
+                return profile, slew
+        return None
+
+    def _command_pass_ingress(
+        self,
+        gspass: Pass,
+        profile: list[tuple[float, float, float]],
+        slew: Slew,
+        utime: float,
+    ) -> None:
+        """Command the slew into a contact and reserve the contact in the plan."""
+        gspass.select_tracking_profile(profile)
+        self.log.log_event(
+            utime=utime,
+            event_type="SLEW",
+            description=f"Slewing for pass to {gspass.station}",
+            acs_mode=self.acs.acsmode,
+        )
+        self.acs.enqueue_command(
+            ACSCommand(
+                command_type=ACSCommandType.SLEW_TO_TARGET,
+                execution_time=utime,
+                slew=slew,
+            )
+        )
+        self._record_gsp_plan_entry(gspass, reserved_begin=utime, slew=slew)
+
     def _close_gsp_plan_entry(self, gspass: Pass, executed_end: float) -> None:
         """Extend a GSP plan entry's end time to match when the pass actually ended."""
         entry = self._planned_gsp_entry(gspass)
@@ -3625,23 +3696,16 @@ class QueueDITL(DITLMixin, DITLStats):
                         first_violation = violation
                     continue
 
-                next_pass.select_tracking_profile(profile)
-                self.log.log_event(
-                    utime=utime,
-                    event_type="SLEW",
-                    description=f"Slewing for pass to {next_pass.station}",
-                    acs_mode=self.acs.acsmode,
-                )
-                command = ACSCommand(
-                    command_type=ACSCommandType.SLEW_TO_TARGET,
-                    execution_time=utime,
-                    slew=slew,
-                )
-                self.acs.enqueue_command(command)
-                self._record_gsp_plan_entry(next_pass, reserved_begin=utime, slew=slew)
+                self._command_pass_ingress(next_pass, profile, slew, utime)
                 return True
 
             if first_violation is not None:
+                parked = self._parked_pass_ingress(
+                    next_pass, due_profiles, utime, ra, dec, roll
+                )
+                if parked is not None:
+                    self._command_pass_ingress(next_pass, *parked, utime)
+                    return True
                 violation_time, constraint_name, scope_label = first_violation
                 detail = (
                     f"first candidate violates {constraint_name} ({scope_label}) "
