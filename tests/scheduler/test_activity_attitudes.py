@@ -557,3 +557,44 @@ def test_dispatch_budgets_teardown_before_fixed_pose_ingress(fixed):
         if e.collection_begin is not None and e.collection_end is not None
     )
     assert collected == pytest.approx(planned)
+
+
+@pytest.mark.parametrize("fixed_start", [False, True])
+@pytest.mark.parametrize("fault", ["battery", "recorder"])
+def test_a_fixed_attitude_activity_due_in_safe_mode_holds_what_safe_mode_has(
+    fault: str, fixed_start: bool
+) -> None:
+    """Safe mode takes no turn but its own, so an activity that asks for an
+    attitude cannot be flown there. It is held at the attitude safe mode has
+    and recorded that way. Before, it was recorded as flown at its own
+    attitude, and the run failed its plan and execution check."""
+    from conops import create_ditl
+
+    config = make_config(2)
+    config.constraint.sun_constraint = None
+    config.constraint.earth_constraint = None
+    if fault == "battery":
+        # Below the battery's red limit from the start.
+        config.battery.watthour = 1000.0
+        config.battery.charge_level = 550.0
+    else:
+        config.recorder.current_volume_gb = 0.95 * config.recorder.capacity_gb
+    activity = ScheduledActivity(
+        name="Hold",
+        begin=T0 + 20 * MIN,
+        duration_seconds=40 * MIN,
+        attitude=ActivityAttitude(kind="fixed", ra_deg=150, dec_deg=20, roll_deg=0),
+        fixed=fixed_start,
+    )
+    target = make_target(config, 100, 105.0, 10.0, minutes=60, snapshot=20)
+    run = create_ditl(
+        config, [target], BEGIN, BEGIN + timedelta(hours=2), activities=[activity]
+    )
+    run.step_size = 60
+    assert run.calc()
+    assert run.acs.in_safe_mode
+    assert run.validate_plan_matches_execution() == []
+    [entry] = [e for e in run.plan if e.obstype == ObsType.ACTIVITY]
+    assert entry.slewtime == 0
+    assert (float(entry.ra), float(entry.dec)) != (150.0, 20.0)
+    assert any("begins in safe mode" in e.description for e in run.log.events)
