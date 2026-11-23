@@ -2158,14 +2158,6 @@ class QueueDITL(DITLMixin, DITLStats):
             - max(0.0, float(entry.insaa))
         )
 
-    def _is_short_science_entry(self, entry: PlanEntry) -> bool:
-        """Determine if a science observation entry failed to meet the minimum
-        snapshot requirement."""
-        collection_time = self._science_collection_time(entry)
-        if collection_time is None:
-            return False
-        return collection_time < max(0.0, snapshot_min_seconds(entry))
-
     def _entry_obstype(self, entry: PlanEntry) -> ObsType | None:
         """Return the entry's obstype as an ObsType, or None if it cannot be coerced."""
         return entry_obstype(entry)
@@ -2301,14 +2293,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         raise PlanExecutionMismatchError(message)
 
-    def _close_last_plan_entry(
-        self, end_time: float, *, interrupted: bool = False
-    ) -> None:
-        """Close the last plan entry in the timeline by setting its end time.
-        If it's a science observation that didn't meet the minimum snapshot
-        requirement, log it and remove it from the plan; unless it was
-        ``interrupted``, since its science counts and its target is revisited
-        for the rest."""
+    def _close_last_plan_entry(self, end_time: float) -> None:
+        """Close the last plan entry and keep any science that was collected."""
         if len(self.plan) == 0:
             return
         entry = self.plan[-1]
@@ -2346,26 +2332,28 @@ class QueueDITL(DITLMixin, DITLStats):
             entry.collection_end = max(
                 entry.collection_begin, min(entry.collection_end, cutoff, end_time)
             )
-        self.plan[-1].end = end_time
-        # A cut entry stays only if it collected something; one cut during
-        # its slew or setup has no science to keep.
-        kept = interrupted and (self._science_collection_time(self.plan[-1]) or 0) > 0
-        if not kept and self._is_short_science_entry(self.plan[-1]):
-            entry = self.plan[-1]
+        entry.end = end_time
+        collection_time = self._science_collection_time(entry)
+        if collection_time is None:
+            return
+        minimum = max(0.0, snapshot_min_seconds(entry))
+        if collection_time >= minimum:
+            return
+        collected = max(0.0, collection_time)
+        action = "Keeping" if collected > 0 else "Dropping"
+        self.log.log_event(
+            utime=end_time,
+            event_type="QUEUE",
+            description=(
+                f"{action} under-collected science entry {entry.obsid} - "
+                f"collected {collected:.0f}s of required {minimum:.0f}s"
+            ),
+            obsid=entry.obsid,
+            acs_mode=self.acs.acsmode,
+        )
+        if collected == 0.0:
             self._dropped_science_windows.append(
                 (float(entry.begin), float(entry.end), int(entry.obsid))
-            )
-            collection_time = self._science_collection_time(entry)
-            collected = max(0.0, collection_time or 0.0)
-            self.log.log_event(
-                utime=end_time,
-                event_type="QUEUE",
-                description=(
-                    f"Dropping under-collected science entry {entry.obsid} - "
-                    f"collected {collected:.0f}s of required {snapshot_min_seconds(entry):.0f}s"
-                ),
-                obsid=entry.obsid,
-                acs_mode=self.acs.acsmode,
             )
             self.plan.pop()
 
@@ -2888,6 +2876,8 @@ class QueueDITL(DITLMixin, DITLStats):
         # Check for battery alert and initiate emergency charging if needed
         if self._should_initiate_charging(utime):
             self._initiate_charging(utime, ra, dec)
+            if self.charging_ppt is not None:
+                return
 
         # Check for TOO interrupts (before managing PPT lifecycle)
         # This allows TOOs to preempt ongoing observations
@@ -3164,6 +3154,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
             ):
                 self._close_last_plan_entry(utime)
+            self.acs.end_science_observation(utime)
 
         command = ACSCommand(
             command_type=ACSCommandType.START_BATTERY_CHARGE,
@@ -3875,7 +3866,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
         # Update plan timeline with actual end time
         if len(self.plan) > 0:
-            self._close_last_plan_entry(utime, interrupted=interrupted)
+            self._close_last_plan_entry(utime)
 
         if interrupted:
             self.ppt.record_interruption(utime)
