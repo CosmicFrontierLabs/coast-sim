@@ -525,7 +525,7 @@ class Telescope(Instrument):
             if not isinstance(node, dict):
                 return False
             node_type = node.get("type")
-            if node_type in {"boresight_offset", "solar_roll"}:
+            if node_type in {"boresight_offset", "solar_roll", "stray_light"}:
                 return True
             if node_type in {"bright_star", "body"}:
                 return node.get("fov_polygon") is not None

@@ -1581,6 +1581,8 @@ The :class:`~conops.config.Constraint` defines pointing constraints for the spac
 
 A stray-light patch, a region beside the boresight into which a bright body scatters light, is written as a ``rust_ephem`` field-of-view polygon on ``science_constraint``: a :class:`~rust_ephem.constraints.BodyConstraint` for the Sun, Moon or Earth, or a :class:`~rust_ephem.constraints.BrightStarConstraint` for a list of stars, each with the patch as ``fov_polygon`` in the instrument frame (gnomonic degrees; at zero roll +v points north and +u east, and a roll is the position angle of +v east of north). Leave ``roll_deg`` unset so the roll in question is used. The patch turns with the instrument, so where it sits on the sky depends on the roll: the check is applied to science attitudes at their roll, named ``Science`` in the violation names, and the roll optimiser tests the candidate rolls in power order and takes the first that keeps the patch clear, or the power-optimal roll when none does. Charging, safe-mode and idle attitudes take the power-optimal roll regardless.
 
+A :class:`~rust_ephem.constraints.StrayLightConstraint` (rust_ephem 0.18 or later) on ``science_constraint`` is roll-dependent in the same way: it is checked at each attitude's roll and steers the roll optimiser. Given no roll, rust_ephem evaluates it at one nominal attitude, so visibility windows leave it out; in an OR with other rules the other rules still shape the windows. Testing a roll takes a light integral, far more than a proximity rule. It cannot be used on a telescope-local constraint, which must be roll-independent.
+
 .. code-block:: python
 
    from rust_ephem.constraints import BodyConstraint, BrightStarConstraint

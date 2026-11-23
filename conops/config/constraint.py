@@ -486,10 +486,7 @@ class Constraint(ConfigModel):
             self.orbit_constraint,
             self.anti_sun_constraint,
         ]
-        if self.science_constraint is not None and not self._contains_boresight_offset(
-            self.science_constraint
-        ):
-            components.append(self.science_constraint)
+        components.append(self._roll_free_part(self.science_constraint))
         return self._combine_constraints(components)
 
     @cached_property
@@ -502,7 +499,8 @@ class Constraint(ConfigModel):
         """Combined constraint from roll-independent components only.
 
         Excludes star-tracker constraints (which are roll-dependent via
-        BoresightOffsetConstraint) so that the result can be passed to
+        BoresightOffsetConstraint) and stray light (which is evaluated at one
+        nominal roll when none is given) so that the result can be passed to
         ``ConstraintConfig.evaluate()`` without triggering the "visible only
         if visible at ALL rolls" semantics that ``evaluate(target_roll=None)``
         applies to roll-dependent constraints.
@@ -524,14 +522,12 @@ class Constraint(ConfigModel):
             self.anti_sun_constraint,
         ]
         components.extend(
-            constraint
+            self._roll_free_part(constraint)
             for constraint in (
                 self.science_constraint,
                 self.safety_constraint,
                 self.ground_contact_constraint,
             )
-            if constraint is not None
-            and not self._contains_boresight_offset(constraint)
         )
         return self._combine_constraints(components)
 
@@ -543,8 +539,36 @@ class Constraint(ConfigModel):
             lambda c: (
                 isinstance(c, BoresightOffsetConstraint)
                 or getattr(c, "fov_polygon", None) is not None
+                or self._is_stray_light(c)
             ),
         )
+
+    @staticmethod
+    def _is_stray_light(constraint: ConstraintConfig) -> bool:
+        """Whether this node is a rust_ephem stray-light constraint.
+
+        Matched by type name, which releases without the class also accept.
+        """
+        return getattr(constraint, "type", None) == "stray_light"
+
+    @staticmethod
+    def _roll_free_part(constraint: ConstraintConfig | None) -> ConstraintConfig | None:
+        """The part of a tree that can be evaluated without a roll, if any.
+
+        A tree holding a boresight offset has none. Stray light given no roll is
+        evaluated at its nominal attitude, not at any roll, so a tree holding it
+        has none either, unless it is an OR: each other member is then a
+        violation whatever the roll, and those members are kept.
+        """
+        if constraint is None or Constraint._contains_boresight_offset(constraint):
+            return None
+        if not Constraint._tree_contains(constraint, Constraint._is_stray_light):
+            return constraint
+        if isinstance(constraint, OrConstraint):
+            return Constraint._combine_constraints(
+                [Constraint._roll_free_part(c) for c in constraint.constraints]
+            )
+        return None
 
     @staticmethod
     def _tree_contains(
