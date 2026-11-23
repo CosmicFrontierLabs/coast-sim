@@ -351,6 +351,32 @@ class SchedulingContext:
             return names[0] if names else None
         return self.attitude_violation(attitude, utime, ACSMode.SCIENCE)
 
+    def first_legal_hold(
+        self,
+        attitude: Attitude,
+        begin: float,
+        duration: float,
+        mode: ACSMode,
+        until: float,
+    ) -> float | None:
+        """The first grid step at or after ``begin``, and no later than
+        ``until``, from which ``attitude`` can be held in ``mode`` for
+        ``duration`` seconds without a violation; None where there is none.
+
+        A hold that starts at or before a violation and is still running at
+        it includes it, so the search goes on from the step after each
+        violation it finds.
+        """
+        start = self.ceil_step(begin)
+        while start <= until:
+            violation = self.first_hold_violation(
+                attitude, start, start + duration, mode
+            )
+            if violation is None:
+                return start
+            start = self.ceil_step(violation + self.step_size)
+        return None
+
     def first_hold_violation(
         self, attitude: Attitude, begin: float, end: float, mode: ACSMode
     ) -> float | None:

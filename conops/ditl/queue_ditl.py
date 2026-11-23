@@ -280,6 +280,9 @@ class QueueDITL(DITLMixin, DITLStats):
         """The activities that have not begun, in time order."""
         self._activity_started: float = 0.0
         self._activity_hold_begin: float = 0.0
+        self._automatic_dumps: set[int] = set()
+        """The obsids of the dumps the simulation called for itself. Such a
+        dump has no start it must keep, and waits for its firing attitude."""
         self._activity_slew: Slew | None = None
         self._activity_context: SchedulingContext | None = None
         self._activity_end: float = 0.0
@@ -1165,8 +1168,33 @@ class QueueDITL(DITLMixin, DITLStats):
             obsid=activity.obsid,
         )
 
+    def _explicit_attitude_allowed(
+        self, activity: ScheduledActivity, utime: float
+    ) -> bool:
+        """Whether an activity that asks for an attitude can begin now: the
+        slew to the attitude is clear, and the attitude can be held from the
+        slew's end through the activity. These are the checks made when the
+        activity begins (see :meth:`_begin_activity`)."""
+        ingress = self._activity_ingress(activity, utime)
+        ctx = self._activity_model()
+        pose = (float(ingress.endra), float(ingress.enddec), float(ingress.endroll))
+        hold_begin = max(activity.begin, utime, ctx.ceil_step(float(ingress.slewend)))
+        end = min(hold_begin + activity.duration_seconds, self.uend)
+        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        return (
+            ctx.first_slew_violation(ingress, ACSMode.SLEWING) is None
+            and ctx.first_hold_violation(
+                pose, ingress.slewend, hold_begin, ACSMode.IDLE
+            )
+            is None
+            and ctx.first_hold_violation(pose, hold_begin, end, mode) is None
+        )
+
     def _activity_needing_ingress(self, utime: float) -> ScheduledActivity | None:
         """Prepare a future explicit hold before its latest start is missed."""
+        if self.acs.in_safe_mode:
+            # Safe mode takes no turn but its own.
+            return None
         for activity in self._activities_left:
             if activity.attitude.fixed_pointing is None or activity.begin <= utime:
                 continue
@@ -1220,6 +1248,17 @@ class QueueDITL(DITLMixin, DITLStats):
         window, the observation under way."""
         if not activity.fixed and self._slew_under_way(utime):
             return "the slew under way"
+        if (
+            activity.obsid in self._automatic_dumps
+            and activity.attitude.fixed_pointing is not None
+            and not self.acs.in_safe_mode
+            and utime + activity.duration_seconds < self.uend
+            and not self._explicit_attitude_allowed(activity, utime)
+        ):
+            # A dump the simulation called for has no start it must keep.
+            # Its firing attitude can be blocked for part of every orbit, so
+            # it waits for the slew and the whole firing to be allowed.
+            return "its firing attitude to be allowed"
         if (
             activity.desaturation
             and activity.attitude.fixed_pointing is not None
@@ -1321,15 +1360,53 @@ class QueueDITL(DITLMixin, DITLStats):
         """Add a thruster dump due at ``begin`` to the activities."""
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
         assert dump is not None
+        obsid = DESATURATION_OBSID + self._desaturations
+        fixed = dump.attitude.fixed_pointing
+        if fixed is not None and not self.acs.in_safe_mode:
+            # A fixed firing attitude can be blocked when the dump is called
+            # for, by the Earth's limb once an orbit for one. The firing
+            # begins at the first time the attitude can be held through it,
+            # counted from when the slew to it would arrive.
+            ctx = self._activity_model()
+            start = ctx.ceil_step(self.acs.handoff_ready_time(begin))
+            slew = ctx.slew(
+                self.acs.predicted_attitude(start),
+                fixed,
+                start,
+                obstype=ObsType.IDLE,
+                obsid=obsid,
+            )
+            arrival = ctx.ceil_step(float(slew.slewend))
+            legal = ctx.first_legal_hold(
+                fixed,
+                arrival,
+                dump.duration_seconds,
+                ACSMode.DESAT,
+                self.uend - dump.duration_seconds,
+            )
+            if legal is not None and legal > arrival:
+                self.log.log_event(
+                    utime=begin,
+                    event_type="MOMENTUM",
+                    description=(
+                        "The dump's firing attitude cannot be held from "
+                        f"{unixtime2date(arrival)}; the firing begins at "
+                        f"{unixtime2date(legal)}"
+                    ),
+                    obsid=obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                begin = legal
         activity = ScheduledActivity(
             name="Desaturation",
             begin=begin,
             duration_seconds=dump.duration_seconds,
             desaturation=True,
-            obsid=DESATURATION_OBSID + self._desaturations,
+            obsid=obsid,
             attitude=dump.attitude,
         )
         self._desaturations += 1
+        self._automatic_dumps.add(obsid)
         self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
         self._activities_left = sorted(
             [*self._activities_left, activity], key=lambda a: a.begin
@@ -1812,6 +1889,23 @@ class QueueDITL(DITLMixin, DITLStats):
             self._activity_hold_begin = activity.begin
         self._activity_slew = None
         fixed = activity.attitude.fixed_pointing
+        if fixed is not None and self.acs.in_safe_mode:
+            # Safe mode keeps the attitude it has: the ACS refuses any turn
+            # but its own. The activity is held there, as one that holds the
+            # attitude it finds, and is not recorded as flown at an attitude
+            # the spacecraft never took.
+            fixed = None
+            self.log.log_event(
+                utime=utime,
+                event_type="ACTIVITY",
+                description=(
+                    f"Scheduled activity {activity.name} begins in safe mode: "
+                    "its requested attitude is not flown, and it holds the "
+                    "attitude safe mode has"
+                ),
+                obsid=activity.obsid,
+                acs_mode=self.acs.acsmode,
+            )
         if fixed is not None:
             ctx = self._activity_model()
             ingress = self._activity_ingress(activity, utime)
