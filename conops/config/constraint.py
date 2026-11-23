@@ -535,12 +535,16 @@ class Constraint(ConfigModel):
     def science_constraint_roll_dependent(self) -> bool:
         """Whether the explicit science constraint depends on the roll."""
         return self.science_constraint is not None and self._tree_contains(
-            self.science_constraint,
-            lambda c: (
-                isinstance(c, BoresightOffsetConstraint)
-                or getattr(c, "fov_polygon", None) is not None
-                or self._is_stray_light(c)
-            ),
+            self.science_constraint, self._is_roll_dependent_node
+        )
+
+    @staticmethod
+    def _is_roll_dependent_node(constraint: ConstraintConfig) -> bool:
+        """Whether this node's result depends on the roll."""
+        return (
+            getattr(constraint, "type", None)
+            in {"boresight_offset", "solar_roll", "stray_light"}
+            or getattr(constraint, "fov_polygon", None) is not None
         )
 
     @staticmethod
