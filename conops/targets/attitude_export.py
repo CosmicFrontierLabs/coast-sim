@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -79,21 +80,33 @@ def sample_executed_attitude(
     grid = np.asarray([t.timestamp() for t in ephem.timestamp], dtype=float)
     if begin < grid[0] or end > grid[-1]:
         raise ValueError("Export lies outside the ephemeris coverage")
-    sun = np.asarray(position_vectors(ephem, "sun"), dtype=float)
-    position = np.asarray(position_vectors(ephem, "gcrs"), dtype=float)
+    ordered = sorted(times)
+    # The Sun's direction at every sample, interpolated once from the
+    # ephemeris points that bracket the export. Doing this for each sample
+    # over the whole ephemeris made a sample cost more the longer the
+    # ephemeris was, whatever the length exported.
+    first_point = max(0, int(np.searchsorted(grid, begin, side="right")) - 1)
+    last_point = min(len(grid), int(np.searchsorted(grid, end, side="left")) + 1)
+    window = grid[first_point:last_point]
+    separation = (
+        np.asarray(position_vectors(ephem, "sun"), dtype=float)[first_point:last_point]
+        - np.asarray(position_vectors(ephem, "gcrs"), dtype=float)[
+            first_point:last_point
+        ]
+    )
+    directions = np.column_stack(
+        [np.interp(ordered, window, separation[:, axis]) for axis in range(3)]
+    )
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
     samples = []
     previous: npt.NDArray[np.float64] | None = None
-    for utime in sorted(times):
+    for utime, direction in zip(ordered, directions, strict=True):
         state = executor.flown(utime)
         q = np.asarray(state.quaternion, dtype=float)
         q /= np.linalg.norm(q)
         if previous is not None and np.dot(previous, q) < 0:
             q = -q
         previous = q
-        direction = np.asarray(
-            [np.interp(utime, grid, component) for component in (sun - position).T]
-        )
-        direction /= np.linalg.norm(direction)
         body_sun = quaternion_to_rotation_matrix(q) @ direction
         timestamp = datetime.fromtimestamp(utime, tz=timezone.utc)
         ra, dec, roll = state.attitude
@@ -136,30 +149,46 @@ def j2000_from_gcrs(utime: float, dut1: float) -> npt.NDArray[np.float64]:
     cancels. UTC/TT/UT1 are kept distinct; no catalog aberration is applied to
     attitude axes. The explicit DUT1 is saved with newly sampled series.
     """
-    if not np.isfinite(utime) or not np.isfinite(dut1):
+    return np.asarray(_j2000_from_gcrs_many([utime], [dut1])[0], dtype=float)
+
+
+def _j2000_from_gcrs_many(
+    utimes: Sequence[float], dut1s: Sequence[float]
+) -> npt.NDArray[np.float64]:
+    """:func:`j2000_from_gcrs` for many times at once, as an ``(N, 3, 3)``
+    array: one call of each ERFA routine for the whole series, not one for
+    each sample."""
+    times = np.asarray(utimes, dtype=float)
+    dut1 = np.asarray(dut1s, dtype=float)
+    if not np.all(np.isfinite(times)) or not np.all(np.isfinite(dut1)):
         raise ValueError("Frame conversion requires finite UTC and UT1-UTC")
-    dt = datetime.fromtimestamp(utime, tz=timezone.utc)
+    stamps = [datetime.fromtimestamp(float(t), tz=timezone.utc) for t in times]
     utc1, utc2 = erfa.dtf2d(
         "UTC",
-        dt.year,
-        dt.month,
-        dt.day,
-        dt.hour,
-        dt.minute,
-        dt.second + dt.microsecond / 1e6,
+        [dt.year for dt in stamps],
+        [dt.month for dt in stamps],
+        [dt.day for dt in stamps],
+        [dt.hour for dt in stamps],
+        [dt.minute for dt in stamps],
+        [dt.second + dt.microsecond / 1e6 for dt in stamps],
     )
     tt1, tt2 = erfa.taitt(*erfa.utctai(utc1, utc2))
     ut11, ut12 = erfa.utcut1(utc1, utc2, dut1)
     identity = np.eye(3)
+    # gst06a builds the same precession-nutation matrix itself, which is most
+    # of the cost of a sample; gst06 takes the one already made.
+    precession_nutation = erfa.pnm06a(tt1, tt2)
     modern = erfa.c2teqx(
-        erfa.pnm06a(tt1, tt2), erfa.gst06a(ut11, ut12, tt1, tt2), identity
+        precession_nutation,
+        erfa.gst06(ut11, ut12, tt1, tt2, precession_nutation),
+        identity,
     )
     classic = erfa.c2teqx(
         erfa.nutm80(tt1, tt2) @ erfa.pmat76(tt1, tt2),
         erfa.gmst82(ut11, ut12) + erfa.eqeq94(tt1, tt2),
         identity,
     )
-    return np.asarray(classic.T @ modern, dtype=float)
+    return np.asarray(np.swapaxes(classic, -1, -2) @ modern, dtype=float)
 
 
 def euler123(matrix: npt.ArrayLike) -> tuple[float, float, float, bool]:
@@ -194,7 +223,7 @@ def _rotations(
         raise ValueError("Cannot export an empty attitude series")
     if not all(np.isfinite(value) for value in series.origin_offset_m):
         raise ValueError("Origin offset must contain finite coordinates")
-    result = []
+    matrices = []
     previous = -float("inf")
     for sample in series.samples:
         if not np.isfinite(sample.utime) or sample.utime <= previous:
@@ -205,15 +234,23 @@ def _rotations(
         q = (sample.quat_w, sample.quat_x, sample.quat_y, sample.quat_z)
         if any(value is None for value in q):
             raise ValueError("Attitude export requires every quaternion component")
-        matrix = quaternion_to_rotation_matrix(np.asarray(q, dtype=float))
-        if reference_frame == "J2000":
-            if sample.ut1_utc_seconds is None:
-                raise ValueError(
-                    "J2000 export requires saved UT1-UTC; sample the executed trajectory first"
-                )
-            matrix = matrix @ j2000_from_gcrs(sample.utime, sample.ut1_utc_seconds).T
-        result.append((sample, matrix))
-    return result
+        matrices.append(quaternion_to_rotation_matrix(np.asarray(q, dtype=float)))
+    if reference_frame == "J2000":
+        offsets = [sample.ut1_utc_seconds for sample in series.samples]
+        if any(offset is None for offset in offsets):
+            raise ValueError(
+                "J2000 export requires saved UT1-UTC; sample the executed trajectory first"
+            )
+        # One rotation for each sample, from one call of each ERFA routine.
+        to_j2000 = _j2000_from_gcrs_many(
+            [sample.utime for sample in series.samples],
+            [float(offset) for offset in offsets if offset is not None],
+        )
+        matrices = [
+            matrix @ rotation.T
+            for matrix, rotation in zip(matrices, to_j2000, strict=True)
+        ]
+    return list(zip(series.samples, matrices, strict=True))
 
 
 def _metadata(

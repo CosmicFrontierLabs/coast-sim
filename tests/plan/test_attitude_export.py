@@ -17,6 +17,7 @@ from conops.config import AttitudeControlSystem, SpacecraftFrame
 from conops.simulation.attitude import AttitudeExecutor, AttitudeTrajectory
 from conops.targets import AttitudeSampleSchema, AttitudeTimeseriesSchema, Plan
 from conops.targets.attitude_export import (
+    _j2000_from_gcrs_many,
     euler123,
     j2000_from_gcrs,
     sample_executed_attitude,
@@ -353,3 +354,72 @@ def test_sidecar_link_must_name_a_sibling_file(tmp_path):
     path.write_text(Plan(attitude_timeseries_file="../other.json").model_dump_json())
     with pytest.raises(ValueError, match="sibling"):
         Plan.load(path, load_timeseries=True)
+
+
+def test_sun_vector_does_not_depend_on_the_ephemeris_length(ephem):
+    """The Sun's direction is interpolated from the ephemeris points that
+    bracket the export, so a longer ephemeris gives the same samples."""
+    longer = rust_ephem.TLEEphemeris(
+        tle="examples/example.tle",
+        begin=BEGIN - timedelta(hours=6),
+        end=BEGIN + timedelta(days=3),
+        step_size=int(ephem.step_size),
+    )
+    series_by_ephemeris = []
+    for source in (ephem, longer):
+        executor = AttitudeExecutor(T0, (10, 20, 30))
+        executor.install(
+            AttitudeTrajectory.turn(T0, (10, 20, 30), (170, -10, 90), limits())
+        )
+        executor.advance(T0 + 300)
+        series_by_ephemeris.append(
+            sample_executed_attitude(
+                executor, source, SpacecraftFrame(), interval_seconds=7
+            )
+        )
+    short, long = series_by_ephemeris
+    assert [s.utime for s in short.samples] == [s.utime for s in long.samples]
+    np.testing.assert_allclose(
+        [s.sun_body_vector for s in short.samples],
+        [s.sun_body_vector for s in long.samples],
+        rtol=0,
+        atol=1e-12,
+    )
+
+
+def test_j2000_rotations_for_a_series_match_one_time_at_a_time():
+    """The rotation for every sample comes from one call of each ERFA
+    routine; it is the rotation the same routines give one time at a time."""
+
+    def one(utime, dut1):
+        dt = datetime.fromtimestamp(utime, tz=timezone.utc)
+        utc1, utc2 = erfa.dtf2d(
+            "UTC",
+            dt.year,
+            dt.month,
+            dt.day,
+            dt.hour,
+            dt.minute,
+            dt.second + dt.microsecond / 1e6,
+        )
+        tt1, tt2 = erfa.taitt(*erfa.utctai(utc1, utc2))
+        ut11, ut12 = erfa.utcut1(utc1, utc2, dut1)
+        modern = erfa.c2teqx(
+            erfa.pnm06a(tt1, tt2), erfa.gst06a(ut11, ut12, tt1, tt2), np.eye(3)
+        )
+        classic = erfa.c2teqx(
+            erfa.nutm80(tt1, tt2) @ erfa.pmat76(tt1, tt2),
+            erfa.gmst82(ut11, ut12) + erfa.eqeq94(tt1, tt2),
+            np.eye(3),
+        )
+        return classic.T @ modern
+
+    utimes = [T0, T0 + 0.25, T0 + 3600.5, T0 + 86400 * 40, T0 + 86400 * 400]
+    dut1s = [0.1, 0.1, -0.2, 0.05, 0.3]
+    many = _j2000_from_gcrs_many(utimes, dut1s)
+    assert many.shape == (5, 3, 3)
+    for matrix, utime, dut1 in zip(many, utimes, dut1s, strict=True):
+        np.testing.assert_allclose(matrix, one(utime, dut1), rtol=0, atol=1e-15)
+        np.testing.assert_allclose(j2000_from_gcrs(utime, dut1), matrix, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="finite UTC"):
+        _j2000_from_gcrs_many([T0, float("nan")], [0.1, 0.1])

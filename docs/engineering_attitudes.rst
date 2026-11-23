@@ -34,6 +34,12 @@ before execution or beyond the retained interval raises ``ValueError``. Export
 or save the fine series before discarding the run: loading a coarse sidecar
 cannot reconstruct finer motion.
 
+A series holds one record for each sample in memory, about 2 kB each, so a day at
+one second is about 170 MB and a month about 5 GB. The time to sample depends on
+the number of samples and not on the length of the ephemeris. For a long run,
+sample and save it a day or so at a time with ``begin`` and ``end``, or use a
+coarser interval where the motion allows.
+
 Frames and file conventions
 ---------------------------
 
