@@ -7,7 +7,7 @@ from typing import Protocol, TypeVar
 import numpy as np
 
 from ..common.enums import AntennaType
-from ..config import GroundStation, MissionConfig
+from ..config import CommunicationsSystem, GroundStation, MissionConfig
 
 
 class RandomSource(Protocol):
@@ -49,6 +49,13 @@ def deconflict_contacts(
     return selected, dropped
 
 
+def _min_pass_seconds(communications: object) -> float:
+    """The configured minimum, or the default where there is no communications system."""
+    if isinstance(communications, CommunicationsSystem):
+        return communications.min_pass_seconds
+    return float(CommunicationsSystem.model_fields["min_pass_seconds"].default)
+
+
 class ContactScheduler:
     """Configure station booking before antenna-specific execution is considered.
 
@@ -73,7 +80,9 @@ class ContactScheduler:
         )
         # Short visibility windows and trimmed handovers are valid network
         # contacts; the minimum belongs only to whole-pass booking.
-        self.minlen = 0 if self.continuous_contacts else 8 * 60
+        self.minlen = (
+            0.0 if self.continuous_contacts else _min_pass_seconds(communications)
+        )
         self.schedule_chance = 1.0
 
     def _random(self) -> float:

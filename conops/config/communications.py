@@ -274,6 +274,16 @@ class CommunicationsSystem(ConfigModel):
         ),
     )
 
+    min_pass_seconds: float = Field(
+        default=480.0,
+        description=(
+            "Shortest station visibility window booked as a whole pass. "
+            "Continuous contacts keep windows of any length"
+        ),
+        ge=0.0,
+        allow_inf_nan=False,
+    )
+
     # Antenna polarization
     polarization: Polarization = Field(
         default=Polarization.CIRCULAR_RIGHT,
