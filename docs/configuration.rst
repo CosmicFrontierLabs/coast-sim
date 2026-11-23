@@ -1604,11 +1604,17 @@ Set the policy before creating requests or binding a program:
 The default mission value preserves existing behaviour. The resolved policy is
 available through ``config.science_in_eclipse_for(obsid)`` and is shared by
 request visibility, dispatch, all three planners and rolling replanning, including
-Targets of Opportunity and moving targets. Protected sequences must fit wholly
+Targets of Opportunity and moving targets. ``Constraint.in_science_constraint``,
+``science_constraint_name`` and ``in_science_constraint_batch`` apply the mission
+default unless given a policy: pass
+``science_in_eclipse=config.science_in_eclipse_for(obsid)`` to check one request
+as the planners do. Protected sequences must fit wholly
 inside a permitted window. Setup and cleanup hold times also fit inside that
 window; the slew into it may start earlier if the existing slew rules permit it.
 
-Both the ephemeris's natural eclipses and ``eclipse_intervals`` apply. Natural
+Both the ephemeris's natural eclipses and ``eclipse_intervals`` apply. A natural
+eclipse is the umbra only, as it is for the panel and radiator constraints: the
+spacecraft counts as sunlit in the penumbra. Natural
 window boundaries use rust-ephem's ephemeris resolution; injected intervals use
 half-open bounds, including boundaries between simulation ticks. Science credit
 and data collection are clipped before a forbidden interval. A saved plan that

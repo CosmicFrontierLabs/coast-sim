@@ -148,7 +148,11 @@ class Constraint(ConfigModel):
     )
     science_in_eclipse: bool = Field(
         default=True,
-        description="Whether observations may run in eclipse; categories can override this default",
+        description=(
+            "Whether observations may run in eclipse; categories can override "
+            "this default. A natural eclipse is the umbra only: the penumbra "
+            "counts as sunlit"
+        ),
     )
     eclipse_intervals: list[tuple[float, float]] = Field(
         default_factory=list,
@@ -696,6 +700,11 @@ class Constraint(ConfigModel):
             for start, end in self.eclipse_intervals
         ]
 
+    def _science_allowed_in_eclipse(self, override: bool | None) -> bool:
+        """The eclipse observing policy to apply: ``override`` where one is
+        given, else the mission default."""
+        return self.science_in_eclipse if override is None else override
+
     def in_eclipse_interval(self, time: float) -> bool:
         """Whether ``time`` falls in an interval given as eclipse."""
         return any(start <= time < end for start, end in self.eclipse_intervals_unix())
@@ -926,9 +935,21 @@ class Constraint(ConfigModel):
         utime: float,
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> bool:
-        """Check imaging-quality and power-generation constraints."""
-        if not self.science_in_eclipse and self.in_eclipse(ra, dec, utime):
+        """Check imaging-quality and power-generation constraints.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply.
+        None applies the mission default, :attr:`science_in_eclipse`. An
+        observation category can override that default, and this class
+        does not hold the categories, so for one request pass
+        ``config.science_in_eclipse_for(obsid)`` to get the answer the
+        planners and dispatch use for it.
+        """
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(ra, dec, utime)
+        ):
             return True
         return in_attitude_constraint_scopes(
             self,
@@ -1028,9 +1049,19 @@ class Constraint(ConfigModel):
         utime: float,
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> str | None:
-        """Return the first violated science/scheduling constraint name."""
-        if not self.science_in_eclipse and self.in_eclipse(ra, dec, utime):
+        """Return the first violated science/scheduling constraint name.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply:
+        None for the mission default, or a request's own from
+        ``config.science_in_eclipse_for(obsid)`` (see
+        :meth:`in_science_constraint`).
+        """
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(ra, dec, utime)
+        ):
             return "science_eclipse"
         return science_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
@@ -1135,8 +1166,16 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """Check imaging-quality and power-generation constraints."""
+        """Check imaging-quality and power-generation constraints.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply to
+        every pointing: None for the mission default, or a request's own
+        from ``config.science_in_eclipse_for(obsid)`` (see
+        :meth:`in_science_constraint`).
+        """
         result = self._in_constraint_batch_for_components(
             ras,
             decs,
@@ -1154,7 +1193,9 @@ class Constraint(ConfigModel):
             target_rolls=target_rolls,
         )
 
-        if not self.science_in_eclipse and self.in_eclipse(0, 0, utime):
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(0, 0, utime)
+        ):
             return np.ones_like(result, dtype=bool)
         return result
 

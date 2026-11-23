@@ -502,3 +502,41 @@ def test_eclipse_policy_applies_in_the_mounted_telescope_frame(planned):
         run.queue.add_request(t)
     assert run.calc()
     assert_sunlit(run)
+
+
+def test_science_constraint_helpers_take_a_request_s_own_eclipse_policy():
+    """The helpers apply the mission default unless given a policy. With the
+    mission forbidding eclipse and a category allowing it, the category's
+    policy gives the answer the scheduling context gives for that request."""
+    c = configuration(allowed=False, override=True)
+    t = target(c)
+    ctx = SchedulingContext(c, BEGIN, BEGIN + timedelta(hours=3))
+    at = T0 + 15 * MIN
+    constraint = c.constraint
+    assert ctx.science_violation(t, (105, 10, 0), at) is None
+    # The mission default, as before.
+    assert constraint.in_science_constraint(105, 10, at)
+    assert constraint.science_constraint_name(105, 10, at) == "science_eclipse"
+    assert constraint.in_science_constraint_batch([105], [10], at).tolist() == [True]
+    # The request's own policy.
+    policy = c.science_in_eclipse_for(int(t.obsid))
+    assert policy is True
+    assert not constraint.in_science_constraint(105, 10, at, science_in_eclipse=policy)
+    assert (
+        constraint.science_constraint_name(105, 10, at, science_in_eclipse=policy)
+        is None
+    )
+    assert constraint.in_science_constraint_batch(
+        [105], [10], at, science_in_eclipse=policy
+    ).tolist() == [False]
+    # And the other way round: a mission that allows it, a request that does not.
+    c.constraint.science_in_eclipse = True
+    assert not constraint.in_science_constraint(105, 10, at)
+    assert constraint.in_science_constraint(105, 10, at, science_in_eclipse=False)
+    assert (
+        constraint.science_constraint_name(105, 10, at, science_in_eclipse=False)
+        == "science_eclipse"
+    )
+    assert constraint.in_science_constraint_batch(
+        [105], [10], at, science_in_eclipse=False
+    ).tolist() == [True]
