@@ -11,6 +11,7 @@ from rust_ephem import EarthLimbConstraint, SunConstraint, TLEEphemeris
 from conops import DITL, QueueDITL, create_ditl
 from conops.common import ACSMode, ObsType
 from conops.config import (
+    ActivityAttitude,
     AttitudeConstraintScope,
     AttitudeControlSystem,
     Battery,
@@ -668,3 +669,47 @@ def test_capacity_fault_is_recorded_without_an_available_dump(
     ]
     assert len(faults) == 1
     assert faults[0].utime == BEGIN.timestamp()
+
+
+@pytest.mark.parametrize("minutes", [40, 50, 60])
+def test_a_dump_waits_for_a_fixed_firing_attitude_to_be_allowed(minutes: int) -> None:
+    """A fixed firing attitude is blocked by the Earth's limb for part of
+    every orbit. A dump called for then begins at the first time the slew
+    to the attitude and the whole firing are allowed. Before, dispatch
+    stopped the run with an ``ActivitySchedulingError``."""
+    begin = BEGIN + timedelta(minutes=minutes)
+    end = begin + timedelta(hours=3)
+    config = _config(
+        capacity_n_m_s=10.0,
+        initial_momentum_body_n_m_s=(7.0, 0.0, 0.0),
+        thruster_dump=ThrusterDumpConfig(
+            duration_seconds=600.0,
+            attitude=ActivityAttitude(
+                kind="fixed", ra_deg=80.0, dec_deg=-20.0, roll_deg=0.0
+            ),
+        ),
+    )
+    config.constraint.safety_constraint = EarthLimbConstraint(min_angle=10)
+    config.constraint.ephem = TLEEphemeris(
+        tle="examples/example.tle", begin=begin, end=end, step_size=STEP
+    )
+    target = Pointing(
+        config=config,
+        obsid=1,
+        name="Held",
+        ra=80.0,
+        dec=-20.0,
+        merit=100.0,
+        ss_min=600,
+        ss_max=3 * 3600,
+    )
+    target.exptime = 3 * 3600
+    ditl = create_ditl(config, [target], begin, end)
+    ditl.step_size = STEP
+    assert ditl.calc()
+    assert ditl.validate_plan_matches_execution() == []
+    [dump] = [e for e in ditl.plan if e.desaturation]
+    assert dump.activity_hold_end - dump.activity_hold_begin == 600.0
+    assert (float(dump.ra), float(dump.dec)) == pytest.approx((80.0, -20.0))
+    descriptions = [e.description for e in ditl.log.events]
+    assert any("firing attitude" in d for d in descriptions)
