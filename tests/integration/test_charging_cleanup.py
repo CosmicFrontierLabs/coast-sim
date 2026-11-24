@@ -474,3 +474,144 @@ def test_the_batterys_own_alert_gives_up_nothing_without_a_charging_attitude(
 
     assert not _entries(ditl, ObsType.CHARGE)
     assert target.collected_seconds == pytest.approx(1800)
+
+
+def _distant_visit(
+    monkeypatch: pytest.MonkeyPatch, alert: tuple[float, float], steps: int = 2
+) -> tuple[QueueDITL, Pointing]:
+    """A visit whose steps are 150 degrees apart, so a long slew separates them."""
+    ditl, target = _visit(monkeypatch, alert)
+    target.sequence = ObservationSequence(
+        steps=[
+            SequenceStep(
+                name=f"step{i}",
+                duration_seconds=300,
+                ra=20 if i % 2 == 0 else 170,
+                dec=0,
+            )
+            for i in range(steps)
+        ]
+    )
+    return ditl, target
+
+
+def _check_distant_cut(
+    ditl: QueueDITL, target: Pointing, alert: float, steps: int
+) -> None:
+    charge = _entries(ditl, ObsType.CHARGE)[0]
+    entries = _entries(ditl, ObsType.AT)
+    first, abandoned = [e for e in entries if e.begin < charge.begin]
+    assert first.collection_end - first.collection_begin == 300
+    assert abandoned.collection_end == abandoned.collection_begin
+    assert abandoned.end - abandoned.collection_end == 125
+    assert abandoned.collection_end >= abandoned.begin + abandoned.slewtime
+    assert abandoned.collection_end >= BEGIN + alert
+    assert 0 <= charge.begin - abandoned.end < STEP
+    # The visit was cut, and is retaken whole.
+    assert len(target.interruptions) == 1
+    assert len([e for e in entries if e.begin >= charge.end]) == steps
+    assert target.done
+    assert len(_starts(ditl)) == 1
+    assert ditl.validate_plan_matches_execution() == []
+
+
+def _gap(monkeypatch: pytest.MonkeyPatch, steps: int) -> list[int]:
+    """The simulation steps between the first two steps' collection."""
+    undisturbed, _ = _distant_visit(monkeypatch, (1e9, 1e9), steps)
+    assert undisturbed.calc()
+    second = _entries(undisturbed, ObsType.AT)[1]
+    gap = [
+        offset
+        for offset in range(0, 7200, STEP)
+        if second.begin - BEGIN < offset <= second.collection_begin - BEGIN
+    ]
+    assert len(gap) >= 2
+    return gap
+
+
+@pytest.mark.parametrize("steps", [2, 3])
+def test_charging_between_a_visits_steps_pays_its_teardown(monkeypatch, steps) -> None:
+    for alert in _gap(monkeypatch, steps):
+        ditl, target = _distant_visit(monkeypatch, (alert, alert + 400), steps)
+        assert ditl.calc()
+        _check_distant_cut(ditl, target, alert, steps)
+
+
+def test_the_batterys_own_alert_between_steps_pays_the_teardown(monkeypatch) -> None:
+    for alert in _gap(monkeypatch, 2):
+        ditl, _ = _draining(monkeypatch, 85, 40, alert)
+        _, target = _distant_visit(monkeypatch, (0, 0))
+        ditl.queue.targets[:] = [target]
+        target.config, target.ephem = ditl.config, ditl.ephem
+        assert ditl.calc()
+        charge = _entries(ditl, ObsType.CHARGE)[0]
+        cut = [e for e in _entries(ditl, ObsType.AT) if e.begin < charge.begin][-1]
+        assert cut.collection_end == cut.collection_begin
+        assert cut.end - cut.collection_end == 125
+        assert charge.begin >= cut.end
+        assert ditl.validate_plan_matches_execution() == []
+
+
+def test_charging_between_steps_that_owe_no_teardown_is_at_once(monkeypatch) -> None:
+    alert = _gap(monkeypatch, 2)[0]
+    ditl, target = _distant_visit(monkeypatch, (alert, alert + 400))
+    ditl.config.payload.observation_timing = ObservationTiming(
+        setup_seconds=10, cleanup_seconds=0, handoff_seconds=0
+    )
+
+    assert ditl.calc()
+
+    assert _entries(ditl, ObsType.CHARGE)[0].begin - BEGIN == alert
+    assert target.done
+    assert ditl.validate_plan_matches_execution() == []
+
+
+def test_an_alert_that_clears_between_steps_still_ends_the_visit(monkeypatch) -> None:
+    alert = _gap(monkeypatch, 2)[0]
+    ditl, target = _distant_visit(monkeypatch, (alert, alert + 1))
+
+    assert ditl.calc()
+
+    assert not _entries(ditl, ObsType.CHARGE)
+    assert len(target.interruptions) == 1
+    assert target.done
+    assert ditl.validate_plan_matches_execution() == []
+
+
+def test_below_the_floor_charging_between_steps_cuts_at_once(monkeypatch) -> None:
+    alert = _gap(monkeypatch, 2)[-1]
+    ditl, target = _distant_visit(monkeypatch, (alert, alert + 400))
+    _below_floor_from(ditl, alert, monkeypatch)
+
+    assert ditl.calc()
+
+    assert _entries(ditl, ObsType.CHARGE)[0].begin - BEGIN == alert
+    assert ditl.validate_plan_matches_execution() == []
+
+
+@pytest.mark.parametrize("sidemount", [False, True])
+@pytest.mark.parametrize("violated", ["first", "all", "slew"])
+def test_previewing_charging_logs_nothing(
+    monkeypatch, capsys, sidemount, violated
+) -> None:
+    ditl, _ = _simulation(monkeypatch, 20, 5, (1e9, 1e9))
+    charging = ditl.emergency_charging
+    charging.sidemount = sidemount
+    if violated == "slew":
+        charging.max_slew_deg = 0.001
+    else:
+        monkeypatch.setattr(
+            charging, "_charging_attitude_violates_scopes", lambda *_, **__: True
+        )
+        monkeypatch.setattr(
+            charging,
+            "_charging_candidate_violations",
+            lambda ras, *_: [violated == "all"] * len(ras),
+        )
+    before = len(ditl.log.events)
+
+    charging.create_charging_pointing(BEGIN, ditl.ephem, 20, 0, preview=True)
+
+    assert len(ditl.log.events) == before
+    charging.create_charging_pointing(BEGIN, ditl.ephem, 20, 0)
+    assert len(ditl.log.events) > before

@@ -2090,7 +2090,11 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline = self._next_charge_science_deadline(utime + self.step_size)
         if deadline is None:
             return
-        if self._observation_cleanup_under_way(utime) or self._below_battery_floor():
+        if (
+            self._observation_cleanup_under_way(utime)
+            or self._below_battery_floor()
+            or self._visit_abandoned(self.ppt)
+        ):
             # Waited for, or cut short at the next step: see _initiate_charging.
             return
         teardown = self._visit_teardown(self.ppt, utime)
@@ -3151,8 +3155,9 @@ class QueueDITL(DITLMixin, DITLStats):
         An observation that has collected science keeps it: collection stops,
         and charging begins at the first step by which the observation's
         cleanup and handoff budget is paid. One still slewing or setting up
-        is cut now, and so is any observation while the battery is below its
-        depth-of-discharge floor, its cleanup unpaid.
+        is cut now, unless an earlier step of its visit has collected. So is
+        any observation while the battery is below its depth-of-discharge
+        floor, its cleanup unpaid.
         """
         if not self._below_battery_floor():
             begin = self._charging_begin(utime)
@@ -3279,30 +3284,47 @@ class QueueDITL(DITLMixin, DITLStats):
         )
 
     def _visit_teardown(self, ppt: Pointing, utime: float) -> ObservationTiming | None:
-        """The budgets of a step the visit would go on from, were it its last.
+        """The budgets of the step the visit would be ended with.
 
-        None where the observation pays its own cleanup and handoff, or has
-        collected nothing.
+        They are owed once any step has collected, so also while slewing to a
+        later step or setting up for it. None where the observation pays its
+        own cleanup and handoff, or the visit has collected nothing.
         """
         run = self._sequence
         if (
             run is None
             or ppt.step is None
             or run.ending
-            or run.index + 1 >= len(run.sequence.steps)
             or ppt.collection_begin is None
             or ppt.collection_end is None
-            or utime <= ppt.collection_begin
         ):
+            return None
+        last = run.index + 1 >= len(run.sequence.steps)
+        collecting = utime > ppt.collection_begin
+        if (collecting and last) or (not collecting and run.index == 0):
             return None
         own = self._ppt_timing(ppt)
         base = self._timing_for(run.parent)
-        return own.model_copy(
+        teardown = own.model_copy(
             update={
                 "cleanup_steps": list(base.cleanup_steps),
                 "cleanup_seconds": base.cleanup_seconds,
                 "handoff_seconds": base.handoff_seconds,
             }
+        )
+        if not collecting and teardown.post_collection_seconds <= 0.0:
+            # Nothing to pay on arrival, so no reason to finish the slew.
+            return None
+        return teardown
+
+    def _visit_abandoned(self, ppt: Pointing) -> bool:
+        """Whether the visit is ending at a step that collects nothing."""
+        return (
+            self._sequence is not None
+            and self._sequence.ending
+            and ppt.step is not None
+            and ppt.collection_begin is not None
+            and ppt.collection_begin == ppt.collection_end
         )
 
     def _charging_begin(self, utime: float) -> float:
@@ -3310,9 +3332,13 @@ class QueueDITL(DITLMixin, DITLStats):
         ppt = self.ppt
         end = self._too_cleanup_end(utime)
         if ppt is not None:
+            if self._visit_abandoned(ppt):
+                end = ppt.end
             teardown = self._visit_teardown(ppt, utime)
             if teardown is not None and ppt.collection_end is not None:
-                end = min(utime, ppt.collection_end) + teardown.post_collection_seconds
+                assert ppt.collection_begin is not None
+                stop = max(ppt.collection_begin, min(utime, ppt.collection_end))
+                end = stop + teardown.post_collection_seconds
         return utime + ceil(max(0.0, end - utime) / self.step_size) * self.step_size
 
     def _defer_charging(self, utime: float, begin: float) -> None:
@@ -3330,12 +3356,33 @@ class QueueDITL(DITLMixin, DITLStats):
         teardown = self._visit_teardown(ppt, utime)
         if teardown is not None:
             assert self._sequence is not None and ppt.collection_end is not None
+            assert ppt.collection_begin is not None
             self._sequence.ending = True
             ppt._step_timing = teardown
+            abandoned = utime <= ppt.collection_begin
+            if abandoned:
+                # Between steps: this one collects nothing, and the teardown
+                # owed to the earlier ones is paid on arrival, as a plan entry
+                # has no place for it during a slew.
+                ppt.collection_end = ppt.collection_begin
             ppt.end = ppt.collection_end + teardown.post_collection_seconds
             if self.plan and self.plan[-1].begin == ppt.begin:
                 self.plan[-1]._step_timing = teardown
+                self.plan[-1].collection_begin = ppt.collection_begin
+                self.plan[-1].collection_end = ppt.collection_end
                 self.plan[-1].end = ppt.end
+            if abandoned:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="CHARGING",
+                    description=(
+                        f"Ending visit between steps for emergency charging; "
+                        f"cleanup/handoff until {unixtime2date(ppt.end)}"
+                    ),
+                    obsid=ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return
         post = self._ppt_timing(ppt).post_collection_seconds
         self._reserve_cleanup(
             max(utime, begin - post),
