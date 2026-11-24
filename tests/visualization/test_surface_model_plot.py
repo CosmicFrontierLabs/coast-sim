@@ -6,9 +6,25 @@ from pydantic import ValidationError
 
 from conops.config import MissionConfig, SpacecraftBus, SpacecraftFrame
 from conops.config.geometry import PanelGeometry
-from conops.config.instrument import Payload, Telescope
+from conops.config.instrument import Payload, Telescope, TelescopeConfig
+from conops.config.radiator import (
+    Radiator,
+    RadiatorConfiguration,
+    RadiatorOrientation,
+)
 from conops.config.solar_panel import SolarPanel, SolarPanelSet
-from conops.config.surfaces import Surface, SurfaceModel, panel_surfaces
+from conops.config.star_tracker import (
+    StarTracker,
+    StarTrackerConfiguration,
+    StarTrackerOrientation,
+)
+from conops.config.surfaces import (
+    Surface,
+    SurfaceModel,
+    box_surfaces,
+    panel_surfaces,
+    telescope_surfaces,
+)
 from conops.visualization import plot_spacecraft_3d
 
 
@@ -36,7 +52,8 @@ def test_surface_plate_preserves_center_area_normal_and_plot_bounds(normal):
     )
     names = {t.name for t in fig.data}
     assert config.spacecraft_bus.name not in names
-    assert "Synthetic tube" not in names
+    # The plate is not the telescope's aperture, so the telescope stays.
+    assert {"Synthetic tube", "Synthetic tube boresight"} <= names
     for axis, column in zip(
         (fig.layout.scene.xaxis, fig.layout.scene.yaxis, fig.layout.scene.zaxis),
         pts.T,
@@ -123,3 +140,109 @@ def test_empty_surface_model_retains_fallback_bus():
     assert any(
         t.name == config.spacecraft_bus.name for t in plot_spacecraft_3d(config).data
     )
+
+
+def _cube_config(**bus: object) -> MissionConfig:
+    """A 4 m cube of plates: faces at 2 m on every axis."""
+    return MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=box_surfaces((4, 4, 4))), **bus
+        ),
+        payload=Payload(instruments=[]),
+    )
+
+
+def test_parts_without_geometry_sit_on_the_configured_hull():
+    """Before, they were placed on the fallback box the plates replace, and
+    so inside a hull larger than it."""
+    config = _cube_config(
+        star_trackers=StarTrackerConfiguration(
+            star_trackers=[
+                StarTracker(
+                    name="Tracker",
+                    orientation=StarTrackerOrientation(boresight=(0, 0, 1)),
+                )
+            ]
+        ),
+        radiators=RadiatorConfiguration(
+            radiators=[
+                Radiator(
+                    name="Radiator",
+                    width_m=1,
+                    height_m=1,
+                    orientation=RadiatorOrientation(normal=(0, -1, 0)),
+                )
+            ]
+        ),
+    )
+    fig = plot_spacecraft_3d(config)
+    tracker = next(t for t in fig.data if t.name == "Tracker")
+    radiator = next(t for t in fig.data if t.name == "Radiator")
+    assert min(tracker.z) >= 2.0
+    assert max(radiator.y) <= -2.0
+    # A caller's own box still decides the placement.
+    boxed = plot_spacecraft_3d(config, bus_half_dims=(1.0, 0.55, 0.55))
+    tracker = next(t for t in boxed.data if t.name == "Tracker")
+    assert max(tracker.z) < 1.0
+
+
+def test_a_small_patch_does_not_remove_the_telescope():
+    patch = Surface(name="Patch", center_m=(0, 0, 1), normal=(0, 0, 1), area_m2=0.1)
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(surfaces=SurfaceModel(surfaces=[patch])),
+        payload=Payload(instruments=[Telescope(name="Scope")]),
+    )
+    names = {t.name for t in plot_spacecraft_3d(config).data}
+    assert {"Patch", "Scope", "Scope boresight"} <= names
+
+
+def test_an_aperture_plate_stands_for_the_telescope_tube():
+    payload = Payload(
+        instruments=[
+            Telescope(
+                name="Scope",
+                optics=TelescopeConfig(aperture_m=0.5, tube_length_m=1.2),
+            )
+        ]
+    )
+    [aperture] = telescope_surfaces(payload)
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=[*box_surfaces((2, 1, 1)), aperture])
+        ),
+        payload=payload,
+    )
+    fig = plot_spacecraft_3d(config)
+    names = {t.name for t in fig.data}
+    assert "Scope" not in names
+    assert aperture.name in names
+    # The boresight is shown all the same, from the aperture plate.
+    arrow = next(
+        t for t in fig.data if t.name == "Scope boresight" and t.type == "scatter3d"
+    )
+    assert arrow.x[0] == pytest.approx(aperture.center_m[0] + 0.05)
+    assert "Scope boresight" not in {
+        t.name for t in plot_spacecraft_3d(config, show_normals=False).data
+    }
+
+
+def test_many_plates_share_two_legend_entries_and_two_normal_traces():
+    plates = [
+        Surface(name=f"Plate {k}", center_m=(k, 0, 1), normal=(0, 0, 1), area_m2=0.5)
+        for k in range(200)
+    ]
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(surfaces=SurfaceModel(surfaces=plates)),
+        payload=Payload(instruments=[]),
+    )
+    fig = plot_spacecraft_3d(config, show_axes=False)
+    in_groups = [
+        t for t in fig.data if t.legendgroup in ("surfaces", "surface_normals")
+    ]
+    # A mesh for each plate, and one line trace and one cone trace of normals.
+    assert len(in_groups) == 202
+    assert sum(bool(t.showlegend) for t in in_groups) == 2
+    cone = next(t for t in in_groups if t.type == "cone")
+    assert len(cone.x) == 200
+    np.testing.assert_allclose(cone.w, cone.w[0])
+    assert cone.text[7] == "Plate 7 normal"

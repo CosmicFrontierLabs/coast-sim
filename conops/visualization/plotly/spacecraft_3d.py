@@ -338,6 +338,75 @@ def _arrow_traces(
     return [line, cone]
 
 
+def _arrow_set_traces(
+    origins: list[npt.NDArray[np.float64]],
+    directions: list[npt.NDArray[np.float64]],
+    labels: list[str],
+    length: float,
+    color: str,
+    name: str,
+    legendgroup: str,
+    cone_sz: float = _CONE_SIZE,
+) -> list[Any]:
+    """Many arrows as one line trace and one cone trace, with one legend
+    entry; each arrow shows its own label on hover."""
+    xs: list[float | None] = []
+    ys: list[float | None] = []
+    zs: list[float | None] = []
+    texts: list[str | None] = []
+    tips: list[npt.NDArray[np.float64]] = []
+    units: list[npt.NDArray[np.float64]] = []
+    tip_labels: list[str] = []
+    for origin, direction, label in zip(origins, directions, labels, strict=True):
+        d = _unit(direction)
+        if np.linalg.norm(d) < _NO_DIRECTION:
+            continue
+        shaft_end = origin + d * (length - cone_sz * 1.2)
+        # None breaks the line between one arrow and the next.
+        xs += [float(origin[0]), float(shaft_end[0]), None]
+        ys += [float(origin[1]), float(shaft_end[1]), None]
+        zs += [float(origin[2]), float(shaft_end[2]), None]
+        texts += [label, label, None]
+        tips.append(origin + d * length)
+        units.append(d * cone_sz)
+        tip_labels.append(label)
+    if not tips:
+        return []
+    tip = np.stack(tips)
+    unit = np.stack(units)
+    line = go.Scatter3d(
+        x=xs,
+        y=ys,
+        z=zs,
+        mode="lines",
+        line=dict(color=color, width=4),
+        name=name,
+        text=texts,
+        showlegend=True,
+        legendgroup=legendgroup,
+        hoverinfo="text",
+    )
+    cone = go.Cone(
+        x=tip[:, 0].tolist(),
+        y=tip[:, 1].tolist(),
+        z=tip[:, 2].tolist(),
+        u=unit[:, 0].tolist(),
+        v=unit[:, 1].tolist(),
+        w=unit[:, 2].tolist(),
+        colorscale=[[0, color], [1, color]],
+        showscale=False,
+        name=name,
+        text=tip_labels,
+        showlegend=False,
+        legendgroup=legendgroup,
+        sizemode="absolute",
+        sizeref=cone_sz,
+        anchor="tip",
+        hoverinfo="text",
+    )
+    return [line, cone]
+
+
 def _axis_label(pos: npt.NDArray[np.float64], text: str, color: str) -> go.Scatter3d:
     return go.Scatter3d(
         x=[float(pos[0])],
@@ -456,8 +525,10 @@ def plot_spacecraft_3d(
         (default ``True``).
     bus_half_dims:
         ``(half_x, half_y, half_z)`` extents of the spacecraft bus box in
-        metres. Defaults to ``(1.0, 0.55, 0.55)``. The box and synthetic
-        telescope are replaced by configured surfaces when present. Surfaces
+        metres. Defaults to ``(1.0, 0.55, 0.55)``. Configured surfaces
+        replace the box; parts without geometry of their own are then placed
+        on the box that encloses the plates, unless this is given. The
+        telescope tube is drawn unless a plate is its aperture. Surfaces
         without geometry are illustrated as squares preserving center, normal
         and area; their actual outlines are unknown.
     title:
@@ -508,6 +579,10 @@ def plot_spacecraft_3d(
     surfaces = surface_model.surfaces if surface_model is not None else []
     solar_set = getattr(config, "solar_panel", None)
     panels = list(getattr(solar_set, "panels", []) or [])
+    plate_corners: list[npt.NDArray[np.float64]] = []
+    plate_centers: list[npt.NDArray[np.float64]] = []
+    plate_normals: list[npt.NDArray[np.float64]] = []
+    plate_names: list[str] = []
     for surface in surfaces:
         # Panel front/back plates already have explicit display geometry below.
         if any(
@@ -533,30 +608,43 @@ def plot_spacecraft_3d(
             width = height = math.sqrt(surface.area_m2)
         if np.dot(np.cross(u, v), normal) < 0:
             v = -v
-        traces.append(
-            _flat_rect_mesh(
-                center,
-                u,
-                v,
-                width,
-                height,
-                _C_BUS,
-                surface.name,
-                opacity=bus_opacity,
-                legendgroup="surfaces",
+        plate = _flat_rect_mesh(
+            center,
+            u,
+            v,
+            width,
+            height,
+            _C_BUS,
+            surface.name,
+            opacity=bus_opacity,
+            # One legend entry for the plates, as for the panels.
+            show_legend=not plate_names,
+            legendgroup="surfaces",
+        )
+        traces.append(plate)
+        plate_corners.append(np.column_stack((plate.x, plate.y, plate.z)))
+        plate_centers.append(center)
+        plate_normals.append(normal)
+        plate_names.append(f"{surface.name} normal")
+    if show_normals:
+        # One line trace and one cone trace however many plates there are.
+        traces.extend(
+            _arrow_set_traces(
+                plate_centers,
+                plate_normals,
+                plate_names,
+                _NORMAL_LEN,
+                _C_NORMAL,
+                "Surface normals",
+                "surface_normals",
             )
         )
-        if show_normals:
-            traces.extend(
-                _arrow_traces(
-                    center,
-                    normal,
-                    _NORMAL_LEN,
-                    _C_NORMAL,
-                    f"{surface.name} normal",
-                    legendgroup="surface_normals",
-                )
-            )
+    if plate_corners and bus_half_dims is None:
+        # Parts without geometry of their own are placed on the hull the
+        # plates enclose, not on the fallback box the plates replace.
+        reach = np.abs(np.concatenate(plate_corners)).max(axis=0)
+        bus_hd = (float(reach[0]), float(reach[1]), float(reach[2]))
+        hx, hy, hz = bus_hd
     if not surfaces:
         traces.append(
             _box_mesh(hx, hy, hz, name=bus_name, color=_C_BUS, opacity=bus_opacity)
@@ -569,7 +657,7 @@ def plot_spacecraft_3d(
     instruments = list(getattr(payload, "instruments", []) or [])
 
     scope_legend_shown = False
-    for inst in [] if surfaces else instruments:
+    for inst in instruments:
         inst_type = getattr(inst, "instrument_type", None)
         if inst_type != "Telescope":
             continue
@@ -578,6 +666,32 @@ def plot_spacecraft_3d(
         bore = _unit(bore)
         optics = getattr(inst, "optics", None)
         aperture_r: float = (getattr(optics, "aperture_m", None) or 0.5) / 2.0
+        # A plate facing along the boresight with the aperture's area is the
+        # telescope in the surface model (see ``telescope_surfaces``): the
+        # tube is then not drawn over it, and the boresight starts there.
+        aperture_plate = next(
+            (
+                surface
+                for surface in surfaces
+                if np.isclose(np.dot(surface.normal, bore), 1)
+                and np.isclose(surface.area_m2, math.pi * aperture_r**2)
+            ),
+            None,
+        )
+        if aperture_plate is not None:
+            if show_normals:
+                traces.extend(
+                    _arrow_traces(
+                        np.asarray(aperture_plate.center_m, dtype=float) + bore * 0.05,
+                        bore,
+                        _NORMAL_LEN,
+                        color=_C_BORESIGHT,
+                        name=f"{getattr(inst, 'name', 'Telescope')} boresight",
+                        legendgroup="tel_normals",
+                        show_legend=True,
+                    )
+                )
+            continue
         tube_len: float = getattr(optics, "tube_length_m", None) or max(
             aperture_r * 5.0, 1.2
         )
@@ -991,6 +1105,8 @@ def plot_spacecraft_3d(
             for axis in (trace.x, trace.y, trace.z)
             if axis is not None
             for value in axis
+            # None breaks a line between its segments.
+            if value is not None
         ),
         default=_AXIS_LEN,
     )

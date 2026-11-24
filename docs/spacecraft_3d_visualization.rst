@@ -14,8 +14,15 @@ Features
   plate's optional ``geometry`` supplies its rectangular outline; otherwise a
   square of equal area illustrates it. Area and normal alone cannot recover a
   facet's aspect ratio or the outline of a scarfed baffle. The configured model
-  replaces the synthetic bus and telescope. Coincident panel front/back plates
-  are represented once by the panel geometry. Plot bounds include all components.
+  replaces the synthetic bus. Radiators, star trackers, wheels and panels
+  without geometry of their own are placed on the box that encloses the plates,
+  unless ``bus_half_dims`` is given. The telescope tube is still drawn, and its
+  boresight always is; the tube is left out only where a plate is the
+  telescope's aperture (one facing along the boresight with the aperture's
+  area, as :func:`~conops.config.surfaces.telescope_surfaces` makes). Coincident
+  panel front/back plates are represented once by the panel geometry. The plates
+  share one legend entry and their normals another. Plot bounds include all
+  components.
 * **Spacecraft bus fallback** — lit, solid-shaded box with configurable dimensions
   when no surfaces are configured.
 * **Telescope assembly** — cylindrical baffle tube with aperture ring, mid-tube
