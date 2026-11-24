@@ -335,6 +335,10 @@ class SchedulingContext:
         Mounted instruments are checked with science and body constraints in
         their own frames, as DITL records them.
         """
+        if entry.forbids_eclipse() is True and self.config.constraint.in_eclipse(
+            0, 0, utime
+        ):
+            return "science_eclipse"
         if entry.moves:
             attitude = entry.target_body_attitude(entry.roll, at=utime)
         if entry.uses_mounted_attitude():
@@ -401,12 +405,18 @@ class SchedulingContext:
         self, entry: PlanEntry, attitude: Attitude, begin: float, end: float
     ) -> float | None:
         """Return the first step in ``[begin, end)`` where observing ``entry`` is not allowed."""
-        times = [float(utime) for utime in self.steps(begin, end)]
+        eclipse = (
+            entry.eclipse_violation(begin, end)
+            if entry.forbids_eclipse() is True
+            else None
+        )
+        stop = end if eclipse is None else eclipse
+        times = [float(utime) for utime in self.steps(begin, stop)]
         with self.config.constraint.held_over(times):
             for utime in times:
                 if self.science_violation(entry, attitude, utime) is not None:
                     return utime
-        return None
+        return eclipse
 
     def first_slew_violation(self, slew: Slew, mode: ACSMode) -> float | None:
         """Return the first step during a slew where its path violates ``mode``."""
@@ -472,6 +482,8 @@ class SchedulingContext:
                 (window.start_time.timestamp(), window.end_time.timestamp())
                 for window in result.visibility
             ]
+        if target.forbids_eclipse() is True:
+            windows = target.observing_windows(windows)
         windows = self.without_repoints(target, windows)
         # Keep the track with its windows so another trajectory cannot reuse them.
         self._window_cache[key] = (target.track, len(target.track), list(windows))
