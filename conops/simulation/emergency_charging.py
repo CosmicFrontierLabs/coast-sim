@@ -222,6 +222,7 @@ class EmergencyCharging:
         *,
         drive_state: SolarArrayDriveState | None = None,
         lastroll: float = 0.0,
+        preview: bool = False,
     ) -> Pointing | None:
         """
         Create an emergency charging pointing to recover battery charge.
@@ -236,15 +237,18 @@ class EmergencyCharging:
             ephem: Ephemeris object for spacecraft position/eclipse info
             lastra: Current pointing RA in degrees
             lastdec: Current pointing Dec in degrees
+            preview: Only find out whether charging could begin at ``utime``:
+                nothing is logged, and the pointing is not the current one
 
         Returns:
             Pointing object for emergency charging, or None if not possible
         """
         # Check if we're in sunlight (eclipse check)
         if not self._is_in_sunlight(utime, ephem):
-            self._log_or_print(
-                utime, "ERROR", "Cannot start emergency charging: in eclipse"
-            )
+            if not preview:
+                self._log_or_print(
+                    utime, "ERROR", "Cannot start emergency charging: in eclipse"
+                )
             return None
 
         self._ephem, self._drive_state = ephem, drive_state
@@ -286,7 +290,8 @@ class EmergencyCharging:
             )
 
         if charging_ra is None or charging_dec is None:
-            self._log_or_print(utime, "ERROR", "No valid charging pointing found")
+            if not preview:
+                self._log_or_print(utime, "ERROR", "No valid charging pointing found")
             return None
 
         # Calculate optimal roll angle for solar panel pointing
@@ -305,6 +310,9 @@ class EmergencyCharging:
         charging_ppt = self._create_pointing(
             charging_ra, charging_dec, roll_angle, utime
         )
+        if preview:
+            self.next_charging_obsid -= 1
+            return charging_ppt
 
         self._log_or_print(
             utime,

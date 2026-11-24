@@ -105,9 +105,22 @@ def test_charge_forecast_reserves_cleanup_before_data_is_counted(timed_ditl):
 
 
 def test_charge_cannot_retroactively_erase_collection(timed_ditl):
+    """Charging waits for the teardown that does not fit before it."""
     timed_ditl._next_charge_science_deadline = Mock(return_value=225)
-    with pytest.raises(ValueError, match="Recharge interrupts observation"):
-        timed_ditl._reserve_pending_charge_cleanup(220)
+    timed_ditl._charging_possible = Mock(return_value=True)
+    timed_ditl._reserve_pending_charge_cleanup(220)
+    begin = timed_ditl._charging_possible.call_args[0][0]
+    assert (begin - 225) % timed_ditl.step_size == 0
+    assert timed_ditl.ppt.collection_end == begin - 12 >= 220
+    assert timed_ditl.ppt.end == begin
+
+
+def test_charge_that_cannot_begin_leaves_collection_alone(timed_ditl):
+    timed_ditl._next_charge_science_deadline = Mock(return_value=225)
+    timed_ditl._charging_possible = Mock(return_value=False)
+    before = timed_ditl.ppt.collection_end
+    timed_ditl._reserve_pending_charge_cleanup(220)
+    assert timed_ditl.ppt.collection_end == before
 
 
 def test_unanticipated_interrupt_fails_closed(timed_ditl):
