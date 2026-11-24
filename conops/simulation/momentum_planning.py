@@ -277,6 +277,7 @@ class MomentumObservationPlanner:
                 self.sim.config.solar_panel,
                 self.sim.constraint,
                 drive_state=self.acs.solar_array_drive_state,
+                science_attitude=False,
             )
             for roll in self.acs._idle_safe_roll_candidates(preferred):
                 # Re-certifying a short zero-motion hold is not proof that a

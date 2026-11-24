@@ -763,6 +763,7 @@ def test_idle_escape_tries_destination_solar_roll_first(scenario, monkeypatch):
     assert recovery.call_args.args[2] == (180.0, 10.0, 123.0)
     assert optimum.call_args.args[:3] == (180.0, 10.0, sim.ustart)
     assert optimum.call_args.kwargs["drive_state"] is sim.acs.solar_array_drive_state
+    assert optimum.call_args.kwargs["science_attitude"] is False
 
 
 def test_pass_conflict_allows_safe_idle_wait_with_torque_enabled(scenario, monkeypatch):
