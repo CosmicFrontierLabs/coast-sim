@@ -1220,8 +1220,8 @@ class PassTimes(ContactScheduler):
     ) -> tuple[Pass, bool] | None:
         """Build a Pass for one visibility window.
 
-        Returns None if the window is too short, loses the scheduling-probability
-        dice roll (only when ``apply_scheduling``), or no constraint-safe
+        Returns None if the window is too short or loses the scheduling-probability
+        dice roll (both only when ``apply_scheduling``), or if no constraint-safe
         tracking attitude profile can be built. Otherwise returns
         (gspass, profile_safe).
         """
