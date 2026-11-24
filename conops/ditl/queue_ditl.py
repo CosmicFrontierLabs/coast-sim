@@ -168,6 +168,9 @@ class _SequenceRun(BaseModel):
     advancing: bool = False
     """Whether the step's observation is ending because the step is over,
     rather than being cut short."""
+    ending: bool = False
+    """Whether the visit ends with this step, whose cleanup and handoff are
+    then its last."""
     rate_fraction: float = 1.0
     """The slew rate admitted for this visit, including its internal slews."""
     optimum: float | None = None
@@ -1895,7 +1898,8 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         finally:
             run.advancing = False
-        if not complete:
+        last = run.index + 1 == len(run.sequence.steps)
+        if not complete or (run.ending and not last):
             self._cut_sequence(utime)
             return
         if run.index + 1 < len(run.sequence.steps):
@@ -2084,14 +2088,34 @@ class QueueDITL(DITLMixin, DITLStats):
             return
         timing = self._ppt_timing(self.ppt)
         deadline = self._next_charge_science_deadline(utime + self.step_size)
-        if deadline is None or deadline >= self.ppt.end:
+        if deadline is None:
             return
-        collection_end = deadline - timing.post_collection_seconds
-        if collection_end < utime and self.ppt.collection_end > collection_end:
-            raise ValueError(
-                "Recharge interrupts observation before its cleanup/handoff budget "
-                "can be reserved; no executable observation timeline can be exported"
-            )
+        if (
+            self._observation_cleanup_under_way(utime)
+            or self._below_battery_floor()
+            or self._visit_abandoned(self.ppt)
+        ):
+            # Waited for, or cut short at the next step: see _initiate_charging.
+            return
+        teardown = self._visit_teardown(self.ppt, utime)
+        post = (teardown or timing).post_collection_seconds
+        collecting = (
+            self.ppt.collection_begin is not None and utime > self.ppt.collection_begin
+        )
+        if teardown is not None or (collecting and deadline - post < utime):
+            # Not before the teardown can be paid, and only if it can begin then.
+            steps = ceil(max(0.0, post - (deadline - utime)) / self.step_size)
+            begin = deadline + steps * self.step_size
+            if begin < self.ppt.end or teardown is not None:
+                self._defer_charging(utime, begin)
+            return
+        if deadline >= self.ppt.end or (
+            collecting and not self._charging_possible(deadline)
+        ):
+            return
+        if deadline - post < utime:
+            # Nothing is collected yet: charging cuts the observation.
+            return
         previous_collection_begin = self.ppt.collection_begin
         previous_collection_end = self.ppt.collection_end
         self.ppt.end = deadline
@@ -2304,8 +2328,14 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         raise PlanExecutionMismatchError(message)
 
-    def _close_last_plan_entry(self, end_time: float) -> None:
-        """Close the last plan entry and keep any science that was collected."""
+    def _close_last_plan_entry(
+        self, end_time: float, *, pay_cleanup: bool = True
+    ) -> None:
+        """Close the last plan entry and keep any science that was collected.
+
+        Without ``pay_cleanup`` the observation ends at ``end_time`` with its
+        cleanup and handoff unpaid, or paid in part.
+        """
         if len(self.plan) == 0:
             return
         entry = self.plan[-1]
@@ -2329,7 +2359,12 @@ class QueueDITL(DITLMixin, DITLStats):
             assert entry.collection_end is not None
             cutoff = max(
                 entry.collection_begin,
-                end_time - self._ppt_timing(entry).post_collection_seconds,
+                end_time
+                - (
+                    self._ppt_timing(entry).post_collection_seconds
+                    if pay_cleanup
+                    else 0.0
+                ),
             )
             # Future collection can be cancelled, but already executed collection
             # cannot be relabelled as cleanup to make an interruption fit.
@@ -2885,7 +2920,10 @@ class QueueDITL(DITLMixin, DITLStats):
         ):
             return
         # Check for battery alert and initiate emergency charging if needed
-        if self._should_initiate_charging(utime):
+        if self._should_initiate_charging(utime) and (
+            not self._observation_cleanup_under_way(utime)
+            or self._below_battery_floor()
+        ):
             self._initiate_charging(utime, ra, dec)
             if self.charging_ppt is not None:
                 return
@@ -3098,8 +3136,34 @@ class QueueDITL(DITLMixin, DITLStats):
             )
         )
 
+    def _observation_cleanup_under_way(self, utime: float) -> bool:
+        """Whether the observation has stopped collecting and is paying its
+        cleanup and handoff budget, which emergency charging waits for."""
+        ppt = self.ppt
+        return (
+            ppt is not None
+            and ppt.collection_begin is not None
+            and ppt.collection_end is not None
+            and ppt.collection_begin < utime
+            and ppt.collection_end <= utime < ppt.end
+            and self._ppt_timing(ppt).post_collection_seconds > 0.0
+        )
+
     def _initiate_charging(self, utime: float, ra: float, dec: float) -> None:
-        """Initiate emergency charging by creating charging PPT and sending command to ACS."""
+        """Initiate emergency charging by creating charging PPT and sending command to ACS.
+
+        An observation that has collected science keeps it: collection stops,
+        and charging begins at the first step by which the observation's
+        cleanup and handoff budget is paid. One still slewing or setting up
+        is cut now, unless an earlier step of its visit has collected. So is
+        any observation while the battery is below its depth-of-discharge
+        floor, its cleanup unpaid.
+        """
+        if not self._below_battery_floor():
+            begin = self._charging_begin(utime)
+            if begin > utime:
+                self._defer_charging(utime, begin)
+                return
         charging_ppt = self.emergency_charging.create_charging_pointing(
             utime,
             self.ephem,
@@ -3111,21 +3175,7 @@ class QueueDITL(DITLMixin, DITLStats):
         if charging_ppt is None:
             return
 
-        slew = Slew(config=self.config)
-        slew.ephem = self.acs.ephem
-        slew.slewrequest = utime
-        slew.slewstart = utime
-        slew.startra = ra
-        slew.startdec = dec
-        slew.startroll = self.acs.roll
-        slew.endra = charging_ppt.ra
-        slew.enddec = charging_ppt.dec
-        slew.endroll = charging_ppt.roll
-        slew.obstype = ObsType.CHARGE
-        slew.obsid = charging_ppt.obsid
-        slew.at = charging_ppt
-        slew.calc_slewtime()
-        violation = self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+        violation = self._charging_slew_violation(charging_ppt, utime, ra, dec)
         if violation is not None:
             violation_time, constraint_name, scope_label = violation
             self.log.log_event(
@@ -3142,6 +3192,15 @@ class QueueDITL(DITLMixin, DITLStats):
             self.emergency_charging.current_charging_ppt = None
             return
 
+        if self.ppt is not None and utime >= self.ppt.end:
+            # Finished, not interrupted.
+            if self._sequence is not None and self.ppt.step is not None:
+                self._sequence.ending = True
+                self._advance_sequence(utime)
+            else:
+                self._terminate_ppt(
+                    utime, reason="Time window elapsed, ending observation"
+                )
         interrupted_ppt = self.ppt
         self.charging_ppt = charging_ppt
         if interrupted_ppt is not None and not interrupted_ppt.done:
@@ -3164,8 +3223,11 @@ class QueueDITL(DITLMixin, DITLStats):
                 and self._entry_obstype(self.plan[-1]) == ObsType.AT
                 and int(self.plan[-1].obsid) == int(interrupted_ppt.obsid)
             ):
-                self._close_last_plan_entry(utime)
+                self._close_last_plan_entry(
+                    utime, pay_cleanup=not self._below_battery_floor()
+                )
             self.acs.end_science_observation(utime)
+            self._cut_sequence(utime)
 
         command = ACSCommand(
             command_type=ACSCommandType.START_BATTERY_CHARGE,
@@ -3177,6 +3239,158 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         self.acs.enqueue_command(command)
         self.ppt = self.charging_ppt
+
+    def _below_battery_floor(self) -> bool:
+        """Whether the battery is below its depth-of-discharge floor."""
+        return self.battery.below_minimum_charge_level is True
+
+    def _charging_slew_violation(
+        self, charging_ppt: Pointing, utime: float, ra: float, dec: float
+    ) -> tuple[float, str, str] | None:
+        """The first violation on the slew to a charging pointing, if any."""
+        slew = Slew(config=self.config)
+        slew.ephem = self.acs.ephem
+        slew.slewrequest = utime
+        slew.slewstart = utime
+        slew.startra = ra
+        slew.startdec = dec
+        slew.startroll = self.acs.roll
+        slew.endra = charging_ppt.ra
+        slew.enddec = charging_ppt.dec
+        slew.endroll = charging_ppt.roll
+        slew.obstype = ObsType.CHARGE
+        slew.obsid = charging_ppt.obsid
+        slew.at = charging_ppt
+        slew.calc_slewtime()
+        return self._slew_attitude_constraint_violation(slew, ACSMode.SLEWING)
+
+    def _charging_possible(self, begin: float) -> bool:
+        """Whether charging could begin at ``begin``, from the attitude held now."""
+        if begin >= self._simulation_end_deadline():
+            return False
+        ra, dec = self.acs.ra, self.acs.dec
+        pointing = self.emergency_charging.create_charging_pointing(
+            begin,
+            self.ephem,
+            ra,
+            dec,
+            drive_state=self.acs.solar_array_drive_state,
+            lastroll=self.acs.roll,
+            preview=True,
+        )
+        return (
+            pointing is not None
+            and self._charging_slew_violation(pointing, begin, ra, dec) is None
+        )
+
+    def _visit_teardown(self, ppt: Pointing, utime: float) -> ObservationTiming | None:
+        """The budgets of the step the visit would be ended with.
+
+        They are owed once any step has collected, so also while slewing to a
+        later step or setting up for it. None where the observation pays its
+        own cleanup and handoff, or the visit has collected nothing.
+        """
+        run = self._sequence
+        if (
+            run is None
+            or ppt.step is None
+            or run.ending
+            or ppt.collection_begin is None
+            or ppt.collection_end is None
+        ):
+            return None
+        last = run.index + 1 >= len(run.sequence.steps)
+        collecting = utime > ppt.collection_begin
+        if (collecting and last) or (not collecting and run.index == 0):
+            return None
+        own = self._ppt_timing(ppt)
+        base = self._timing_for(run.parent)
+        teardown = own.model_copy(
+            update={
+                "cleanup_steps": list(base.cleanup_steps),
+                "cleanup_seconds": base.cleanup_seconds,
+                "handoff_seconds": base.handoff_seconds,
+            }
+        )
+        if not collecting and teardown.post_collection_seconds <= 0.0:
+            # Nothing to pay on arrival, so no reason to finish the slew.
+            return None
+        return teardown
+
+    def _visit_abandoned(self, ppt: Pointing) -> bool:
+        """Whether the visit is ending at a step that collects nothing."""
+        return (
+            self._sequence is not None
+            and self._sequence.ending
+            and ppt.step is not None
+            and ppt.collection_begin is not None
+            and ppt.collection_begin == ppt.collection_end
+        )
+
+    def _charging_begin(self, utime: float) -> float:
+        """The first step at which the observation's teardown can be paid."""
+        ppt = self.ppt
+        end = self._too_cleanup_end(utime)
+        if ppt is not None:
+            if self._visit_abandoned(ppt):
+                end = ppt.end
+            teardown = self._visit_teardown(ppt, utime)
+            if teardown is not None and ppt.collection_end is not None:
+                assert ppt.collection_begin is not None
+                stop = max(ppt.collection_begin, min(utime, ppt.collection_end))
+                end = stop + teardown.post_collection_seconds
+        return utime + ceil(max(0.0, end - utime) / self.step_size) * self.step_size
+
+    def _defer_charging(self, utime: float, begin: float) -> None:
+        """Stop collecting so that charging can begin at ``begin``, if it can.
+
+        Science is only given up for charging that is expected to happen: the
+        spacecraft must be in sunlight then, with a charging attitude and a
+        safe slew to it. Otherwise the observation goes on, and the alert is
+        considered again at the next step.
+        """
+        ppt = self.ppt
+        assert ppt is not None
+        if not self._charging_possible(begin):
+            return
+        teardown = self._visit_teardown(ppt, utime)
+        if teardown is not None:
+            assert self._sequence is not None and ppt.collection_end is not None
+            assert ppt.collection_begin is not None
+            self._sequence.ending = True
+            ppt._step_timing = teardown
+            abandoned = utime <= ppt.collection_begin
+            if abandoned:
+                # Between steps: this one collects nothing, and the teardown
+                # owed to the earlier ones is paid on arrival, as a plan entry
+                # has no place for it during a slew.
+                ppt.collection_end = ppt.collection_begin
+            ppt.end = ppt.collection_end + teardown.post_collection_seconds
+            if self.plan and self.plan[-1].begin == ppt.begin:
+                self.plan[-1]._step_timing = teardown
+                self.plan[-1].collection_begin = ppt.collection_begin
+                self.plan[-1].collection_end = ppt.collection_end
+                self.plan[-1].end = ppt.end
+            if abandoned:
+                self.log.log_event(
+                    utime=utime,
+                    event_type="CHARGING",
+                    description=(
+                        f"Ending visit between steps for emergency charging; "
+                        f"cleanup/handoff until {unixtime2date(ppt.end)}"
+                    ),
+                    obsid=ppt.obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                return
+        post = self._ppt_timing(ppt).post_collection_seconds
+        self._reserve_cleanup(
+            max(utime, begin - post),
+            decision_time=utime,
+            event_type="CHARGING",
+            before="emergency charging",
+            waiting="charging",
+        )
 
     def _setup_simulation_timing(self) -> bool:
         """Set up timing aspect of simulation."""

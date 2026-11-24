@@ -3768,6 +3768,8 @@ class TestCalcMethod:
         )
 
         science_ppt = Mock()
+        science_ppt.obsid = 12345
+        science_ppt.collection_begin = None
         science_ppt.end = 5000.0
         science_ppt.done = False
         queue_ditl.ppt = science_ppt
@@ -6641,6 +6643,8 @@ class TestQueueDITLCoverage:
         interrupted_ppt = Mock()
         interrupted_ppt.done = False
         interrupted_ppt.obsid = 12345
+        interrupted_ppt.collection_begin = None
+        interrupted_ppt.end = 5000.0
         queue_ditl.ppt = interrupted_ppt
         queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=charging_ppt

@@ -222,6 +222,7 @@ class EmergencyCharging:
         *,
         drive_state: SolarArrayDriveState | None = None,
         lastroll: float = 0.0,
+        preview: bool = False,
     ) -> Pointing | None:
         """
         Create an emergency charging pointing to recover battery charge.
@@ -236,15 +237,18 @@ class EmergencyCharging:
             ephem: Ephemeris object for spacecraft position/eclipse info
             lastra: Current pointing RA in degrees
             lastdec: Current pointing Dec in degrees
+            preview: Only find out whether charging could begin at ``utime``:
+                nothing is logged, and the pointing is not the current one
 
         Returns:
             Pointing object for emergency charging, or None if not possible
         """
         # Check if we're in sunlight (eclipse check)
         if not self._is_in_sunlight(utime, ephem):
-            self._log_or_print(
-                utime, "ERROR", "Cannot start emergency charging: in eclipse"
-            )
+            if not preview:
+                self._log_or_print(
+                    utime, "ERROR", "Cannot start emergency charging: in eclipse"
+                )
             return None
 
         self._ephem, self._drive_state = ephem, drive_state
@@ -273,6 +277,7 @@ class EmergencyCharging:
                 utime,
                 lastra,
                 lastdec,
+                preview=preview,
             )
         else:
             charging_ra, charging_dec = self._find_valid_pointing(
@@ -283,10 +288,12 @@ class EmergencyCharging:
                 lastra,
                 lastdec,
                 drive_state=drive_state,
+                preview=preview,
             )
 
         if charging_ra is None or charging_dec is None:
-            self._log_or_print(utime, "ERROR", "No valid charging pointing found")
+            if not preview:
+                self._log_or_print(utime, "ERROR", "No valid charging pointing found")
             return None
 
         # Calculate optimal roll angle for solar panel pointing
@@ -305,6 +312,9 @@ class EmergencyCharging:
         charging_ppt = self._create_pointing(
             charging_ra, charging_dec, roll_angle, utime
         )
+        if preview:
+            self.next_charging_obsid -= 1
+            return charging_ppt
 
         self._log_or_print(
             utime,
@@ -376,6 +386,7 @@ class EmergencyCharging:
         current_dec: float = 0.0,
         *,
         drive_state: SolarArrayDriveState | None = None,
+        preview: bool = False,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing that doesn't violate constraints.
@@ -392,6 +403,7 @@ class EmergencyCharging:
             ephem: Ephemeris object for calculating panel illumination
             current_ra: Current pointing RA in degrees
             current_dec: Current pointing Dec in degrees
+            preview: Log nothing
 
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
@@ -414,21 +426,23 @@ class EmergencyCharging:
                     current_ra, current_dec, optimal_ra, optimal_dec
                 )
                 if slew > self.max_slew_deg:
-                    self._log_or_print(
-                        utime,
-                        "CHARGING",
-                        f"Optimal charging pointing requires {slew:.1f}° slew (limit: {self.max_slew_deg:.1f}°), searching for closer alternative",
-                    )
+                    if not preview:
+                        self._log_or_print(
+                            utime,
+                            "CHARGING",
+                            f"Optimal charging pointing requires {slew:.1f}° slew (limit: {self.max_slew_deg:.1f}°), searching for closer alternative",
+                        )
                 else:
                     return optimal_ra, optimal_dec
             else:
                 return optimal_ra, optimal_dec
 
-        self._log_or_print(
-            utime,
-            "CHARGING",
-            "Emergency charging pointing violates constraints, searching for alternative",
-        )
+        if not preview:
+            self._log_or_print(
+                utime,
+                "CHARGING",
+                "Emergency charging pointing violates constraints, searching for alternative",
+            )
 
         # Search strategy: Try multiple RA/Dec combinations and select the one
         # with best solar panel illumination that doesn't violate constraints
@@ -519,11 +533,12 @@ class EmergencyCharging:
 
             # Early exit: if illumination is good enough, use this pointing immediately
             if illumination >= good_enough_illumination:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found alternative charging pointing at RA={alt_ra:.2f}, Dec={alt_dec:.2f} with {illumination:.1%} illumination",
-                )
+                if not preview:
+                    self._log_or_print(
+                        utime,
+                        "CHARGING",
+                        f"Found alternative charging pointing at RA={alt_ra:.2f}, Dec={alt_dec:.2f} with {illumination:.1%} illumination",
+                    )
                 return alt_ra, alt_dec
 
             # Keep track of the best unconstrained pointing (fallback)
@@ -533,11 +548,12 @@ class EmergencyCharging:
                 best_dec = alt_dec
 
         if best_ra is not None:
-            self._log_or_print(
-                utime,
-                "CHARGING",
-                f"Found alternative charging pointing at RA={best_ra:.2f}, Dec={best_dec:.2f} with {best_illumination:.1%} illumination",
-            )
+            if not preview:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found alternative charging pointing at RA={best_ra:.2f}, Dec={best_dec:.2f} with {best_illumination:.1%} illumination",
+                )
             return best_ra, best_dec
 
         return None, None
@@ -549,6 +565,8 @@ class EmergencyCharging:
         utime: float,
         current_ra: float | None = None,
         current_dec: float | None = None,
+        *,
+        preview: bool = False,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing for side-mounted solar panels.
@@ -569,6 +587,7 @@ class EmergencyCharging:
             utime: Current unix timestamp
             current_ra: Current pointing RA in degrees
             current_dec: Current pointing Dec in degrees
+            preview: Log nothing
 
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
@@ -661,19 +680,21 @@ class EmergencyCharging:
         if best_candidate is not None:
             candidate_ra, candidate_dec = best_candidate
             slew_clause = f", {best_slew:.1f}° slew" if best_slew is not None else ""
-            self._log_or_print(
-                utime,
-                "CHARGING",
-                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
-                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
-            )
+            if not preview:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
+                    f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
+                )
             return best_candidate
 
-        self._log_or_print(
-            utime,
-            "ERROR",
-            "No valid side-mount charging pointing found (all perpendicular pointings violate constraints)",
-        )
+        if not preview:
+            self._log_or_print(
+                utime,
+                "ERROR",
+                "No valid side-mount charging pointing found (all perpendicular pointings violate constraints)",
+            )
         return None, None
 
     def _create_pointing(
