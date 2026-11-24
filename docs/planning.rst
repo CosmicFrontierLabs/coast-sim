@@ -1396,6 +1396,8 @@ run record.
 ``conops.benchmark.reproducibility.execution_record`` retains exact entries,
 decisions, telemetry, ToOs and science reports. ``compare_runs`` reports the
 first differing value and event, without rounding away timestamps or attitudes.
+Entry and ToO times are recorded as exact Unix seconds, not as the ISO strings
+a saved plan holds, which resolve only microseconds.
 Equality passes only for complete, valid runs with identical provenance; two
 identical failures do not pass. Exceptions retain their original diagnostic
 state rather than replacing it with validation of an unfinished plan. This

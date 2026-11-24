@@ -6,7 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from conops.benchmark.reproducibility import compare_runs, first_difference
+import numpy as np
+
+from conops.benchmark.reproducibility import (
+    compare_runs,
+    exact_dump,
+    first_difference,
+)
+from conops.targets import PlanEntry
 
 
 def test_comparison_does_not_round_away_a_boundary_difference() -> None:
@@ -16,6 +23,29 @@ def test_comparison_does_not_round_away_a_boundary_difference() -> None:
     )
     assert difference is not None
     assert difference["path"] == "$.entries[0].begin"
+
+
+def test_an_entry_boundary_one_ulp_apart_is_a_difference() -> None:
+    """A real plan entry writes its times as ISO strings, to the microsecond.
+    The record keeps them as floats, so the smallest change is seen."""
+    end = 1761961171.0
+    entry = PlanEntry(begin=end - 600.0, end=end)
+    moved = entry.model_copy(update={"end": float(np.nextafter(end, np.inf))})
+    assert entry.model_dump(mode="json") == moved.model_dump(mode="json")
+    difference = first_difference(
+        {"entries": [exact_dump(entry)]}, {"entries": [exact_dump(moved)]}
+    )
+    assert difference is not None
+    assert difference["path"] == "$.entries[0].end"
+    assert difference["left"] == end
+    # The exact times survive being written to a run file and read back.
+    assert json.loads(json.dumps(exact_dump(moved)))["end"] == moved.end
+    # Nothing but the times differs from the model's own dump.
+    assert {
+        key
+        for key, value in exact_dump(entry).items()
+        if value != entry.model_dump(mode="json")[key]
+    } == {"begin", "end"}
 
 
 def test_identical_failed_runs_do_not_pass() -> None:

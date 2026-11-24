@@ -124,6 +124,24 @@ def test_a_change_during_execution_cannot_be_accepted(cli, worker, changed):
     assert not compare_runs(payload, payload)["passed"]
 
 
+def test_changed_eop_keeps_the_original_failure(cli, worker, monkeypatch):
+    """Before, the Earth-orientation mismatch replaced the run's own error."""
+    worker.calculate.side_effect = RuntimeError("original dispatch failure")
+    monkeypatch.setattr(
+        rust_ephem,
+        "get_eop_provenance",
+        lambda: {"ut1": {"available": True, "sha256": "different"}},
+    )
+    assert cli.run_worker(worker.args) == 1
+    error = json.loads((worker.args.output / "run-1.json").read_text())["execution"][
+        "error"
+    ]
+    assert error == (
+        "RuntimeError: original dispatch failure; "
+        "ut1 loaded EOP different from the captured input"
+    )
+
+
 def test_unchanged_snapshot_can_complete(cli, worker):
     assert cli.run_worker(worker.args) == 0
     payload = json.loads((worker.args.output / "run-1.json").read_text())

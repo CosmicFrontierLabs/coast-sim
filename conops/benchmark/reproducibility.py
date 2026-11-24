@@ -7,7 +7,35 @@ different attitude or dispatch boundary to make a run appear repeatable.
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from ..ditl.queue_ditl import QueueDITL
+
+
+def exact_dump(model: BaseModel) -> dict[str, Any]:
+    """A model's JSON dump with its times left as the floats they are.
+
+    A model that writes a time as an ISO string rounds it to the microsecond,
+    which hides a change of a few hundred nanoseconds in an entry's boundary:
+    the typical result of a different order of floating-point summation. Each
+    such field is recorded here as its exact Unix time, in nested models too.
+    """
+    dumped: dict[str, Any] = _exact(model, model.model_dump(mode="json"))
+    return dumped
+
+
+def _exact(value: Any, dumped: Any) -> Any:
+    if isinstance(value, BaseModel) and isinstance(dumped, dict):
+        return {
+            key: _exact(getattr(value, key, None), item) for key, item in dumped.items()
+        }
+    if isinstance(value, (list, tuple)) and isinstance(dumped, list):
+        if len(value) != len(dumped):
+            return dumped
+        return [_exact(v, d) for v, d in zip(value, dumped, strict=True)]
+    if isinstance(value, float) and isinstance(dumped, str):
+        return value
+    return dumped
 
 
 def first_difference(left: Any, right: Any, path: str = "$") -> dict[str, Any] | None:
@@ -60,9 +88,9 @@ def execution_record(
     return {
         "completed": completed,
         "error": error,
-        "entries": [e.model_dump(mode="json") for e in simulation.plan],
+        "entries": [exact_dump(e) for e in simulation.plan],
         "events": [e.model_dump(mode="json") for e in simulation.log],
-        "toos": [t.model_dump(mode="json") for t in simulation.too_register],
+        "toos": [exact_dump(t) for t in simulation.too_register],
         "categories": [s.model_dump() for s in simulation.summary_by_category()],
         "groups": [s.model_dump() for s in simulation.summary_by_group()],
         "visits": [s.model_dump() for s in simulation.visit_table(per_window=True)],
@@ -83,9 +111,7 @@ def execution_record(
                 "acs_mode": int(simulation.acs.acsmode),
                 "battery_level": simulation.battery.battery_level,
                 "active_observation": (
-                    simulation.ppt.model_dump(mode="json")
-                    if simulation.ppt is not None
-                    else None
+                    exact_dump(simulation.ppt) if simulation.ppt is not None else None
                 ),
             }
             if error is not None

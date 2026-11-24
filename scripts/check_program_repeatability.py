@@ -180,7 +180,9 @@ def run_worker(args) -> int:
     expected_eop = manifest["inputs"]["latest_eop2.short"]["sha256"]
     for provider, data in provenance["eop"].items():
         if data.get("available") and data["sha256"] != expected_eop:
-            record["error"] = f"{provider} loaded EOP different from the captured input"
+            message = f"{provider} loaded EOP different from the captured input"
+            # A failed run keeps its own error ahead of this one.
+            record["error"] = "; ".join(filter(None, (record["error"], message)))
             record["completed"] = False
     payload = {
         "provenance": provenance,
