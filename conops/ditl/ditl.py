@@ -1039,6 +1039,8 @@ class DITL(DITLMixin, DITLStats):
         slew.obstype = ObsType.GSP
         slew.obsid = gspass.obsid
         slew.calc_slewtime()
+        if entry.contact_ingress == "reposition":
+            slew.obstype = ObsType.IDLE
         self.acs.enqueue_command(
             ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,

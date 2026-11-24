@@ -473,7 +473,8 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         Every step draws its mode's power less what the panels generate at the
         attitude held then: along the slew's ``path`` from ``path_start``
         (none counted without one) at ``SLEWING`` power, or ``PASS`` power
-        into a contact, as ACS reports the slew; then the entry's own
+        into a contact (unless it is a reposition, held in ``IDLE`` until the
+        contact), as ACS reports the slew; then the entry's own
         attitude in ``SCIENCE`` or ``CHARGING`` mode, or the contact's
         ``track`` in ``PASS`` mode, and ``SLEWING`` power at the contact's
         last attitude while it brakes to ``rest`` after its end. Only the
@@ -492,6 +493,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             rest,
             path_start,
             track is not None,
+            getattr(entry, "contact_ingress", None),
             tuple(sorted(entry.effective_instrument_modes().items())),
         )
         if key in self._addition_cache:
@@ -516,6 +518,7 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
         else:
             self._addition_cache[key] = None
             return None
+        repositions = getattr(entry, "contact_ingress", None) == "reposition"
         own: Attitude = (
             entry.target_body_attitude()
             if mode is ACSMode.SCIENCE
@@ -566,7 +569,14 @@ class BatteryLedger(ConsumableLedger[Additions, Addition]):
             if utime < arrival:
                 # ACS reports the slew into a contact as PASS, and the slew
                 # into anything else as SLEWING.
-                step_mode = ACSMode.PASS if mode is ACSMode.PASS else ACSMode.SLEWING
+                # A reposition into a contact is a slew like any other.
+                step_mode = (
+                    ACSMode.PASS
+                    if mode is ACSMode.PASS and not repositions
+                    else ACSMode.SLEWING
+                )
+            elif repositions and utime < float(entry.contact_begin or begin):
+                step_mode = ACSMode.IDLE
             elif utime >= end:
                 step_mode = ACSMode.SLEWING
             else:
