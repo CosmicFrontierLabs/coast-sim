@@ -29,9 +29,10 @@ CHARGE_OBSID = 999000
 lie below the synthetic ones."""
 DESATURATION_OBSID = 997000
 """Obsids given to the thruster dumps dispatch calls for, in order."""
-DUMP_WAIT_OBSID = 997500
+DUMP_WAIT_OBSID = 996000
 """Obsids given to the holds a planner reserves before a thruster dump that
-has to wait for its firing attitude, in the order of the dumps."""
+has to wait for its firing attitude, in the order of the dumps. They lie
+below the dumps' own, so the two never meet however many dumps there are."""
 
 
 class ScheduledActivity(BaseModel):
