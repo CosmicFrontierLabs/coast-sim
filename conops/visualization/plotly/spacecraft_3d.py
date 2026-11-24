@@ -78,6 +78,9 @@ _NO_DIRECTION = 0.5
 _RADIAL_MIN = 0.1
 """A boresight component across the tube shorter than this gives no radial
 direction of its own."""
+_HULL_FACING = 0.7
+"""A plate whose normal has this much along a direction faces that way: from
+about 45 degrees of it."""
 
 
 def _unit(v: Any) -> npt.NDArray[np.float64]:
@@ -429,10 +432,12 @@ def _face_placement(
     normal: npt.NDArray[np.float64],
     bus_hd: tuple[float, float, float],
     gap: float = 0.03,
+    origin: npt.NDArray[np.float64] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """
     Given a component normal/boresight, return (center, span_u, span_v)
     placing the component on the bus face whose outward normal best matches.
+    The bus box is centred at ``origin``, the body origin unless given.
     """
     hx, hy, hz = bus_hd
     face_n = np.array(
@@ -458,17 +463,47 @@ def _face_placement(
     best = int(np.argmax(face_n @ normal))
     fn = face_n[best]
     center = face_c[best] + fn * gap
+    if origin is not None:
+        center = center + origin
     u, v = _perp_pair(fn)
     return center, u, v
 
 
+def _hull_box(
+    centers: list[npt.NDArray[np.float64]], normals: list[npt.NDArray[np.float64]]
+) -> tuple[npt.NDArray[np.float64], tuple[float, float, float]]:
+    """The centre and half-dimensions of the box the hull plates bound.
+
+    Each face of the box is as far out as the furthest plate facing that way,
+    so a plate that sticks out edge-on, such as a wing, does not move it. An
+    axis no plate faces along takes the spread of the plate centres.
+    """
+    points = np.asarray(centers, dtype=float)
+    facing = np.asarray(normals, dtype=float)
+    low, high = points.min(axis=0), points.max(axis=0)
+    for axis in range(3):
+        outward = points[facing[:, axis] > _HULL_FACING, axis]
+        inward = points[facing[:, axis] < -_HULL_FACING, axis]
+        if outward.size:
+            high[axis] = outward.max()
+        if inward.size:
+            low[axis] = inward.min()
+        if low[axis] > high[axis]:
+            low[axis] = high[axis] = (low[axis] + high[axis]) / 2.0
+    half = (high - low) / 2.0
+    return (low + high) / 2.0, (float(half[0]), float(half[1]), float(half[2]))
+
+
 def _wheel_centers(
-    wheels: list[Any], bus_hd: tuple[float, float, float]
+    wheels: list[Any],
+    bus_hd: tuple[float, float, float],
+    origin: npt.NDArray[np.float64] | None = None,
 ) -> list[npt.NDArray[np.float64]]:
     """Where each wheel is drawn: its configured position, or halfway from the
     bus centre to the bus surface along its spin axis. Wheels sharing an axis
     take alternate sides of the centre, then sit further in."""
     half = np.asarray(bus_hd, dtype=float)
+    middle = np.zeros(3) if origin is None else origin
     shared: dict[tuple[float, float, float], int] = {}
     centers: list[npt.NDArray[np.float64]] = []
     for wheel in wheels:
@@ -490,7 +525,7 @@ def _wheel_centers(
         with np.errstate(divide="ignore"):
             to_surface = float(np.min(half / np.abs(canonical)))
         side = 1.0 if count % 2 == 0 else -1.0
-        centers.append(canonical * to_surface * side * 0.5 / (1 + count // 2))
+        centers.append(middle + canonical * to_surface * side * 0.5 / (1 + count // 2))
     return centers
 
 
@@ -527,8 +562,9 @@ def plot_spacecraft_3d(
         ``(half_x, half_y, half_z)`` extents of the spacecraft bus box in
         metres. Defaults to ``(1.0, 0.55, 0.55)``. Configured surfaces
         replace the box; parts without geometry of their own are then placed
-        on the box that encloses the plates, unless this is given. The
-        telescope tube is drawn unless a plate is its aperture. Surfaces
+        on the box the hull plates bound, unless this is given. The telescope
+        tube is drawn unless plates are marked as that telescope's
+        (``Surface.instrument``). Surfaces
         without geometry are illustrated as squares preserving center, normal
         and area; their actual outlines are unknown.
     title:
@@ -555,6 +591,9 @@ def plot_spacecraft_3d(
 
     bus_hd: tuple[float, float, float] = bus_half_dims or (1.0, 0.55, 0.55)
     hx, hy, hz = bus_hd
+    # Where the box parts are placed on is centred: the body origin, unless
+    # the configured hull is elsewhere.
+    hull_center = np.zeros(3)
 
     # Telescope geometry captured during section 2; used for ST mounting in section 5.
     # (tube_start, bore, outer_r, tube_len)
@@ -579,10 +618,11 @@ def plot_spacecraft_3d(
     surfaces = surface_model.surfaces if surface_model is not None else []
     solar_set = getattr(config, "solar_panel", None)
     panels = list(getattr(solar_set, "panels", []) or [])
-    plate_corners: list[npt.NDArray[np.float64]] = []
     plate_centers: list[npt.NDArray[np.float64]] = []
     plate_normals: list[npt.NDArray[np.float64]] = []
     plate_names: list[str] = []
+    hull_centers: list[npt.NDArray[np.float64]] = []
+    hull_normals: list[npt.NDArray[np.float64]] = []
     for surface in surfaces:
         # Panel front/back plates already have explicit display geometry below.
         if any(
@@ -617,15 +657,33 @@ def plot_spacecraft_3d(
             _C_BUS,
             surface.name,
             opacity=bus_opacity,
-            # One legend entry for the plates, as for the panels.
-            show_legend=not plate_names,
+            show_legend=False,
             legendgroup="surfaces",
         )
         traces.append(plate)
-        plate_corners.append(np.column_stack((plate.x, plate.y, plate.z)))
         plate_centers.append(center)
         plate_normals.append(normal)
         plate_names.append(f"{surface.name} normal")
+        if surface.instrument is None:
+            # An instrument's plates stand out from the hull; parts are not
+            # placed on them.
+            hull_centers.append(center)
+            hull_normals.append(normal)
+    if plate_names:
+        # One legend entry for the plates, under a name of its own.
+        traces.append(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                marker=dict(color=_C_BUS, symbol="square"),
+                name="Surfaces",
+                legendgroup="surfaces",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
     if show_normals:
         # One line trace and one cone trace however many plates there are.
         traces.extend(
@@ -639,11 +697,10 @@ def plot_spacecraft_3d(
                 "surface_normals",
             )
         )
-    if plate_corners and bus_half_dims is None:
+    if hull_centers and bus_half_dims is None:
         # Parts without geometry of their own are placed on the hull the
-        # plates enclose, not on the fallback box the plates replace.
-        reach = np.abs(np.concatenate(plate_corners)).max(axis=0)
-        bus_hd = (float(reach[0]), float(reach[1]), float(reach[2]))
+        # plates bound, not on the fallback box the plates replace.
+        hull_center, bus_hd = _hull_box(hull_centers, hull_normals)
         hx, hy, hz = bus_hd
     if not surfaces:
         traces.append(
@@ -666,23 +723,27 @@ def plot_spacecraft_3d(
         bore = _unit(bore)
         optics = getattr(inst, "optics", None)
         aperture_r: float = (getattr(optics, "aperture_m", None) or 0.5) / 2.0
-        # A plate facing along the boresight with the aperture's area is the
-        # telescope in the surface model (see ``telescope_surfaces``): the
-        # tube is then not drawn over it, and the boresight starts there.
-        aperture_plate = next(
-            (
-                surface
-                for surface in surfaces
-                if np.isclose(np.dot(surface.normal, bore), 1)
-                and np.isclose(surface.area_m2, math.pi * aperture_r**2)
-            ),
-            None,
-        )
-        if aperture_plate is not None:
+        # Plates marked as this telescope's are the telescope in the surface
+        # model (see ``telescope_surfaces``): the tube is then not drawn over
+        # them, and the boresight starts at the one furthest along it.
+        own_plates = [
+            surface
+            for surface in surfaces
+            if surface.instrument is not None
+            and surface.instrument == getattr(inst, "name", None)
+        ]
+        if own_plates:
             if show_normals:
+                front = max(
+                    own_plates,
+                    key=lambda surface: (
+                        bool(np.dot(surface.normal, bore) > _HULL_FACING),
+                        float(np.dot(surface.center_m, bore)),
+                    ),
+                )
                 traces.extend(
                     _arrow_traces(
-                        np.asarray(aperture_plate.center_m, dtype=float) + bore * 0.05,
+                        np.asarray(front.center_m, dtype=float) + bore * 0.05,
                         bore,
                         _NORMAL_LEN,
                         color=_C_BORESIGHT,
@@ -706,7 +767,7 @@ def plot_spacecraft_3d(
             hz / abs(bore[2]) if abs(bore[2]) > eps else math.inf,
         ]
         face_offset: float = min(t_candidates)
-        tube_start = bore * face_offset
+        tube_start = hull_center + bore * face_offset
         outer_r = aperture_r + 0.06  # baffle slightly wider than aperture
         scope_name = getattr(inst, "name", "Telescope")
 
@@ -827,7 +888,7 @@ def plot_spacecraft_3d(
             area_est = max_pwr / max(150.0 * eff, 1.0)
             pw = max(math.sqrt(area_est * 1.6), 0.8)
             ph = max(math.sqrt(area_est / 1.6), 0.5)
-            c, u, v = _face_placement(n_vec, bus_hd, gap=0.02)
+            c, u, v = _face_placement(n_vec, bus_hd, gap=0.02, origin=hull_center)
 
         show_sol = not panel_legend_shown
         traces.append(
@@ -899,7 +960,7 @@ def plot_spacecraft_3d(
             rw = float(geom.width_m)
             rh = float(geom.height_m)
         else:
-            c, u, v = _face_placement(n_vec, bus_hd, gap=0.005)
+            c, u, v = _face_placement(n_vec, bus_hd, gap=0.005, origin=hull_center)
 
         show_r = not rad_legend_shown
         traces.append(
@@ -965,7 +1026,7 @@ def plot_spacecraft_3d(
             prism_end = c + radial * 0.08
         else:
             # No telescope — fall back to bus-face placement.
-            c, u, v = _face_placement(b_vec, bus_hd, gap=0.0)
+            c, u, v = _face_placement(b_vec, bus_hd, gap=0.0, origin=hull_center)
             prism_start = c
             prism_end = c + b_vec * 0.08
         traces.append(
@@ -1019,7 +1080,7 @@ def plot_spacecraft_3d(
     # 6. Momentum wheels                                                   #
     # ------------------------------------------------------------------ #
     for widx, (wheel, c) in enumerate(
-        zip(wheels, _wheel_centers(wheels, bus_hd), strict=True)
+        zip(wheels, _wheel_centers(wheels, bus_hd, hull_center), strict=True)
     ):
         axis = _unit(np.asarray(wheel.spin_axis, dtype=float))
         radius = float(wheel.radius_m)

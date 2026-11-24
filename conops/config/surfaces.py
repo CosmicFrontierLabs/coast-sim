@@ -70,6 +70,13 @@ class Surface(ConfigModel):
         gt=0.0,
         description="The plate's drag coefficient in free molecular flow",
     )
+    instrument: str | None = Field(
+        default=None,
+        description=(
+            "The name of the instrument the plate is part of, such as a "
+            "telescope's aperture or a facet of its barrel"
+        ),
+    )
 
     @model_validator(mode="after")
     def _check(self) -> Surface:
@@ -136,6 +143,7 @@ def box_surfaces(
             normal=normal,
             area_m2=area,
             geometry=None,
+            instrument=None,
             **coefficients,
         )
         for face, center, normal, area in faces
@@ -198,6 +206,7 @@ def telescope_surfaces(payload: Payload | None) -> list[Surface]:
         surfaces.append(
             Surface(
                 name=f"{instrument.name} aperture",
+                instrument=instrument.name,
                 center_m=(
                     boresight[0] * length,
                     boresight[1] * length,

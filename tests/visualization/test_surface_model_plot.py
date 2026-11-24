@@ -22,6 +22,7 @@ from conops.config.surfaces import (
     Surface,
     SurfaceModel,
     box_surfaces,
+    guess_surfaces,
     panel_surfaces,
     telescope_surfaces,
 )
@@ -239,10 +240,152 @@ def test_many_plates_share_two_legend_entries_and_two_normal_traces():
     in_groups = [
         t for t in fig.data if t.legendgroup in ("surfaces", "surface_normals")
     ]
-    # A mesh for each plate, and one line trace and one cone trace of normals.
-    assert len(in_groups) == 202
-    assert sum(bool(t.showlegend) for t in in_groups) == 2
+    # A mesh for each plate, their legend entry, and one line trace and one
+    # cone trace of normals.
+    assert len(in_groups) == 203
+    assert [t.name for t in in_groups if t.showlegend] == [
+        "Surfaces",
+        "Surface normals",
+    ]
     cone = next(t for t in in_groups if t.type == "cone")
     assert len(cone.x) == 200
     np.testing.assert_allclose(cone.w, cone.w[0])
     assert cone.text[7] == "Plate 7 normal"
+
+
+def _radiator(normal: tuple[float, float, float]) -> RadiatorConfiguration:
+    return RadiatorConfiguration(
+        radiators=[
+            Radiator(
+                name="Radiator",
+                width_m=1,
+                height_m=1,
+                orientation=RadiatorOrientation(normal=normal),
+            )
+        ]
+    )
+
+
+def _radiator_center(surfaces: list[Surface], normal: tuple[float, float, float]):
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=surfaces), radiators=_radiator(normal)
+        ),
+        payload=Payload(instruments=[]),
+    )
+    radiator = next(t for t in plot_spacecraft_3d(config).data if t.name == "Radiator")
+    return vertices(radiator).mean(axis=0)
+
+
+def test_an_aperture_plate_does_not_move_parts_off_the_hull():
+    payload = Payload(
+        instruments=[
+            Telescope(
+                name="T", optics=TelescopeConfig(aperture_m=0.5, tube_length_m=3.0)
+            )
+        ]
+    )
+    # A 1.5 x 1.5 x 2 m box with the aperture 3 m out along +X.
+    surfaces = guess_surfaces(None, payload).surfaces
+    center = _radiator_center(surfaces, (-1, 0, 0))
+    np.testing.assert_allclose(center, (-0.755, 0, 0), atol=1e-9)
+
+
+def test_parts_sit_on_a_hull_away_from_the_body_origin():
+    surfaces = box_surfaces((2, 2, 4), center_m=(0, 0, 2))
+    np.testing.assert_allclose(
+        _radiator_center(surfaces, (0, 0, -1)), (0, 0, -0.005), atol=1e-9
+    )
+    np.testing.assert_allclose(
+        _radiator_center(surfaces, (0, -1, 0)), (0, -1.005, 2), atol=1e-9
+    )
+
+
+def test_a_wing_seen_edge_on_does_not_move_parts_off_the_hull():
+    wings = [
+        Surface(name=f"wing {y}", center_m=(0, y, 0), normal=(0, 0, 1), area_m2=4)
+        for y in (-5, 5)
+    ]
+    surfaces = [*box_surfaces((2, 2, 2)), *wings]
+    np.testing.assert_allclose(
+        _radiator_center(surfaces, (0, -1, 0)), (0, -1.005, 0), atol=1e-9
+    )
+
+
+def test_a_barrel_wider_than_the_optics_is_not_given_a_second_tube():
+    """Its plates are marked as the telescope's, whatever their size."""
+    facets = [
+        Surface(
+            name=f"barrel {k}",
+            center_m=(2.25, 0.31 * np.cos(angle), 0.31 * np.sin(angle)),
+            normal=(0, np.cos(angle), np.sin(angle)),
+            area_m2=0.6,
+            instrument="Scope",
+        )
+        for k, angle in enumerate(np.linspace(0, 2 * np.pi, 8, endpoint=False))
+    ]
+    front = Surface(
+        name="barrel front",
+        center_m=(3.5, 0, 0),
+        normal=(1, 0, 0),
+        area_m2=0.62**2,
+        instrument="Scope",
+    )
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=[*box_surfaces((2, 1, 1)), *facets, front])
+        ),
+        payload=Payload(
+            instruments=[
+                Telescope(
+                    name="Scope",
+                    optics=TelescopeConfig(aperture_m=0.5, tube_length_m=2.5),
+                )
+            ]
+        ),
+    )
+    fig = plot_spacecraft_3d(config)
+    assert "Scope" not in {t.name for t in fig.data}
+    arrow = next(
+        t for t in fig.data if t.name == "Scope boresight" and t.type == "scatter3d"
+    )
+    assert (arrow.x[0], arrow.y[0], arrow.z[0]) == pytest.approx((3.55, 0, 0))
+
+
+def test_a_plate_is_a_telescopes_only_when_marked_as_its_own():
+    """Not by having the aperture's area: each telescope's boresight starts
+    at its own plate, and an unmarked plate of that area removes no tube."""
+    optics = {"aperture_m": 0.5}
+    payload = Payload(
+        instruments=[
+            Telescope(name="Near", optics=TelescopeConfig(tube_length_m=1.2, **optics)),
+            Telescope(name="Far", optics=TelescopeConfig(tube_length_m=2.4, **optics)),
+        ]
+    )
+    near, far = telescope_surfaces(payload)
+    assert (near.instrument, far.instrument) == ("Near", "Far")
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=[*box_surfaces((2, 1, 1)), near, far])
+        ),
+        payload=payload,
+    )
+    fig = plot_spacecraft_3d(config)
+    starts = {
+        t.name: t.x[0]
+        for t in fig.data
+        if t.type == "scatter3d" and t.name in ("Near boresight", "Far boresight")
+    }
+    assert starts == pytest.approx({"Near boresight": 1.25, "Far boresight": 2.45})
+
+    stray = Surface(
+        name="Stray",
+        center_m=(-1, 5, 0),
+        normal=(1, 0, 0),
+        area_m2=near.area_m2,
+    )
+    config = MissionConfig(
+        spacecraft_bus=SpacecraftBus(surfaces=SurfaceModel(surfaces=[stray])),
+        payload=Payload(instruments=payload.instruments[:1]),
+    )
+    assert "Near" in {t.name for t in plot_spacecraft_3d(config).data}
