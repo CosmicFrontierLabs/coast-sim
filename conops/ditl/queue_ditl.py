@@ -2788,7 +2788,7 @@ class QueueDITL(DITLMixin, DITLStats):
 
     def _sync_slew_metadata(self, slew: Slew) -> None:
         """Sync slew metadata onto the GSP or PPT plan entry the slew belongs to."""
-        if slew.obstype == ObsType.GSP:
+        if slew.obstype == ObsType.GSP or slew in self._gsp_slew_plan_entries:
             self._sync_gsp_slew_metadata(slew)
             return
 
@@ -3384,6 +3384,8 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if slew is not None:
             entry.slewdist = float(slew.slewdist)
+            if slew.obstype == ObsType.IDLE:
+                entry.contact_ingress = "reposition"
         entry.obsid = gspass.obsid
         entry.obstype = ObsType.GSP
         entry.ss_min = 0
@@ -3501,11 +3503,11 @@ class QueueDITL(DITLMixin, DITLStats):
         as the spacecraft stays parked. Such an ingress is flown as any other
         slew off that attitude would be: in ``SLEWING``, then holding in
         ``IDLE`` until the contact begins. The profile itself still meets the
-        ``PASS`` scopes.
+        ``PASS`` scopes. The contact takes precedence over an observation or
+        emergency charging at such an attitude, as it does elsewhere.
         """
         if (
-            self.ppt is not None
-            or self.acs.acsmode not in (ACSMode.IDLE, ACSMode.SAA)
+            self.acs.acsmode == ACSMode.DESAT
             or utime >= gspass.begin
             or self._attitude_constraint_name_for_attitude(
                 ra, dec, roll, utime, ACSMode.PASS
@@ -4796,7 +4798,11 @@ class QueueDITL(DITLMixin, DITLStats):
                     # waiting rate is not credited with a saving over it.
                     volume += max(
                         0.0,
-                        config.housekeeping_generated(ingress, mode=ACSMode.PASS)
+                        max(
+                            config.housekeeping_generated(ingress, mode=mode)
+                            # Off a parked attitude it is flown in SLEWING.
+                            for mode in (ACSMode.PASS, ACSMode.SLEWING)
+                        )
                         - config.housekeeping_while_waiting(ingress),
                     )
                 worst = max(worst, volume)
@@ -4840,6 +4846,8 @@ class QueueDITL(DITLMixin, DITLStats):
         whatever attitude it turns out to be flown from; where the
         configured algorithm has no bound, it is the slew from the attitude
         given at ``utime``. 0 where the pass cannot say when its slew is due.
+        Whether it will be flown off a parked attitude instead, in
+        ``SLEWING`` (see :meth:`_parked_pass_ingress`), is not known yet.
         """
         step = float(self.step_size)
         try:

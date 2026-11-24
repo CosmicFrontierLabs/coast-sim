@@ -108,17 +108,39 @@ def test_not_once_the_contact_has_begun(parked: QueueDITL) -> None:
     parked.acs.enqueue_command.assert_not_called()
 
 
-@pytest.mark.parametrize("mode", [ACSMode.SCIENCE, ACSMode.CHARGING])
-def test_only_from_idle(parked: QueueDITL, mode: ACSMode) -> None:
+@pytest.mark.parametrize("mode", [ACSMode.SCIENCE, ACSMode.CHARGING, ACSMode.SAA])
+def test_also_from_an_attitude_held_for_something_else(
+    parked: QueueDITL, mode: ACSMode
+) -> None:
     parked.acs.acsmode = mode
+    assert _manage(parked)
+    assert parked.acs.enqueue_command.call_args[0][0].slew.obstype == ObsType.IDLE
+
+
+def test_charging_gives_way_to_the_contact(parked: QueueDITL) -> None:
+    parked.acs.acsmode = ACSMode.CHARGING
+    charging = Mock(obsid=999000)
+    parked.ppt = parked.charging_ppt = charging
+    assert _manage(parked)
+    assert parked.charging_ppt is None
+    assert parked.ppt is None
+    assert [entry.obstype for entry in parked.plan] == [ObsType.GSP]
+
+
+def test_not_while_dumping_momentum(parked: QueueDITL) -> None:
+    parked.acs.acsmode = ACSMode.DESAT
     assert not _manage(parked)
     parked.acs.enqueue_command.assert_not_called()
 
 
-def test_not_while_an_observation_is_pending(parked: QueueDITL) -> None:
-    parked.ppt = Mock()
-    assert not _manage(parked)
-    parked.acs.enqueue_command.assert_not_called()
+def test_the_plan_entry_follows_the_slew_flown(parked: QueueDITL) -> None:
+    assert _manage(parked)
+    slew = parked.acs.enqueue_command.call_args[0][0].slew
+    (entry,) = list(parked.plan)
+    assert entry.contact_ingress == "reposition"
+    slew.slewstart, slew.slewtime, slew.slewdist = UTIME + 5, 77.0, 12.5
+    parked._sync_slew_metadata(slew)
+    assert (entry.begin, entry.slewtime, entry.slewdist) == (UTIME + 5, 77, 12.5)
 
 
 def test_a_path_that_turns_unsafe_later_is_still_rejected(parked: QueueDITL) -> None:
@@ -147,29 +169,24 @@ def test_a_compliant_ingress_is_unchanged(parked: QueueDITL) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "violates", "obstype"),
-    [
-        (ACSMode.IDLE, True, ObsType.IDLE),
-        (ACSMode.IDLE, False, ObsType.GSP),
-        (ACSMode.SCIENCE, True, ObsType.GSP),
-    ],
+    ("ingress", "obstype"), [("reposition", ObsType.IDLE), (None, ObsType.GSP)]
 )
-def test_plan_execution_flies_it_the_same_way(
-    parked: QueueDITL, mode: ACSMode, violates: bool, obstype: ObsType
+def test_plan_execution_flies_the_ingress_the_plan_records(
+    parked: QueueDITL, ingress: str | None, obstype: ObsType
 ) -> None:
     gspass = parked.acs.passrequests.next_pass(UTIME)
-    entry = Mock(contact_begin=1200.0, contact_end=1800.0, begin=UTIME, end=1800.0)
-    parked.acs.acsmode = mode
+    entry = Mock(
+        contact_begin=1200.0,
+        contact_end=1800.0,
+        begin=UTIME,
+        end=1800.0,
+        contact_ingress=ingress,
+    )
     parked.acs.ra, parked.acs.dec, parked.acs.roll = PARKED
     ditl = DITL.__new__(DITL)
     ditl.config, ditl.acs = parked.config, parked.acs
-    ditl.constraint = parked.constraint
     ditl._entry_passes = {id(entry): gspass}
-    with patch(
-        "conops.ditl.ditl.attitude_constraint_name_for_scopes",
-        return_value="Panel" if violates else None,
-    ):
-        assert ditl._command_pass_entry(entry, UTIME)
+    assert ditl._command_pass_entry(entry, UTIME)
     slew = parked.acs.enqueue_command.call_args[0][0].slew
     assert slew.obstype == obstype
     assert (slew.endra, slew.enddec, slew.endroll) == PROFILE[0]

@@ -1039,9 +1039,7 @@ class DITL(DITLMixin, DITLStats):
         slew.obstype = ObsType.GSP
         slew.obsid = gspass.obsid
         slew.calc_slewtime()
-        if self._parked_outside_pass_scopes(utime) and slew.slewend <= acquire:
-            # As QueueDITL flies it: off the parked attitude in SLEWING, then
-            # idle until the contact (see QueueDITL._parked_pass_ingress).
+        if entry.contact_ingress == "reposition":
             slew.obstype = ObsType.IDLE
         self.acs.enqueue_command(
             ACSCommand(
@@ -1052,22 +1050,6 @@ class DITL(DITLMixin, DITLStats):
         )
         self._active_pass = gspass
         return True
-
-    def _parked_outside_pass_scopes(self, utime: float) -> bool:
-        """Whether the spacecraft idles at an attitude the ``PASS`` scopes forbid."""
-        return (
-            self.acs.acsmode in (ACSMode.IDLE, ACSMode.SAA)
-            and attitude_constraint_name_for_scopes(
-                self.constraint,
-                self.config.attitude_constraint_scopes_for_mode(ACSMode.PASS),
-                self.acs.ra,
-                self.acs.dec,
-                utime,
-                target_roll=self.acs.roll,
-                acs_mode=ACSMode.PASS,
-            )
-            is not None
-        )
 
     @staticmethod
     def _planned_tracking_profile(

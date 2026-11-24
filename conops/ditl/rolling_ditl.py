@@ -1262,7 +1262,9 @@ class RollingHorizonDITL(DITL):
                 float(entry.dec),
                 float(entry.roll),
             )
-            slew.obstype = ObsType.GSP
+            slew.obstype = (
+                ObsType.IDLE if entry.contact_ingress == "reposition" else ObsType.GSP
+            )
         else:
             slew.endra, slew.enddec, slew.endroll = entry.target_body_attitude()
         slew.obsid = entry.obsid

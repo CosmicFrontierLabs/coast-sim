@@ -604,8 +604,13 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         last = min(self.grid_step(slew_end), self.bounds[-1])
         if last <= first:
             return 0.0
+        mode = (
+            ACSMode.SLEWING
+            if getattr(entry, "contact_ingress", None) == "reposition"
+            else ACSMode.PASS
+        )
         return self.config.housekeeping_generated(
-            last - first, mode=ACSMode.PASS
+            last - first, mode=mode
         ) - self.config.housekeeping_generated(last - first)
 
     def ingress_segment(self, entry: PlanEntry, *, begin: float | None = None) -> int:

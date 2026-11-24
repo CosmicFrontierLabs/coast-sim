@@ -182,6 +182,7 @@ class PlanEntry(BaseModel):
             "track_end_ra",
             "track_end_dec",
             "track_end_roll",
+            "contact_ingress",
         }
     )
     """The fields a run fills in as it schedules and executes an entry; a
@@ -312,6 +313,9 @@ class PlanEntry(BaseModel):
     track_end_ra: float | None = None
     track_end_dec: float | None = None
     track_end_roll: float | None = None
+    contact_ingress: Literal["reposition"] | None = None
+    """How a contact's ingress is flown where not as a ``PASS`` slew: as a
+    reposition, in ``SLEWING`` and then holding in ``IDLE`` until the contact."""
     saa: SAA | None = Field(default=None, exclude=True)
     merit: float = 101
     step: str | None = Field(
