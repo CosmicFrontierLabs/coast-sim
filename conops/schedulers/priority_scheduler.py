@@ -527,12 +527,12 @@ class PriorityScheduler:
         self.activities = assign_obsids(activities)
         """Fixed-time activities to reserve, in time order."""
         self.dumps: list[ScheduledActivity] = []
+        """The thruster dumps this scheduler has reserved where its momentum
+        forecast reached the level, in time order."""
         self._dump_waits: dict[int, ScheduledActivity] = {}
         """For a reserved dump whose fixed firing attitude cannot be reached
         from what precedes it, by the dump's obsid, the hold reserved before
         it (see :meth:`_park_before_dump`)."""
-        """The thruster dumps this scheduler has reserved where its momentum
-        forecast reached the level, in time order."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
         empty, or whose slew asks more of them at the slowest configured
@@ -684,7 +684,7 @@ class PriorityScheduler:
             # Keep the dumps ending by begin and reserve another there.
             kept = [d for d in self.dumps if d.end <= begin]
             reserved = self._dump_activity(begin, DESATURATION_OBSID + len(kept))
-            if reserved.end > self.ctx.uend:
+            if reserved is None or reserved.end > self.ctx.uend:
                 return None
             self.dumps = [*kept, reserved]
             return reserved
@@ -787,8 +787,10 @@ class PriorityScheduler:
         )
         return plan
 
-    def _dump_activity(self, begin: float, obsid: int) -> ScheduledActivity:
-        """Reserve a dump's firing after any configured ingress from ``begin``."""
+    def _dump_activity(self, begin: float, obsid: int) -> ScheduledActivity | None:
+        """Reserve a dump's firing after any configured ingress from ``begin``;
+        None where its fixed firing attitude stays blocked to the end of the
+        horizon, and the dump is left to the next plan."""
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
         assert dump is not None
         fixed = dump.attitude.fixed_pointing
@@ -802,13 +804,16 @@ class PriorityScheduler:
                 obstype=ObsType.IDLE,
                 obsid=obsid,
             )
-            begin = self._firing_start(
+            firing = self._firing_start(
                 fixed,
                 begin,
                 self.ctx.ceil_step(float(slew.slewend)),
                 dump.duration_seconds,
                 obsid,
             )
+            if firing is None:
+                return None
+            begin = firing
         return ScheduledActivity(
             name="Desaturation",
             begin=begin,
@@ -833,7 +838,7 @@ class PriorityScheduler:
         arrival: float,
         duration: float,
         obsid: int,
-    ) -> float:
+    ) -> float | None:
         """When a dump at the fixed attitude ``fixed`` begins firing: at
         ``arrival``, when the slew from where the dump is called for
         reaches it, or later where the attitude cannot be held from then.
@@ -848,17 +853,62 @@ class PriorityScheduler:
         the attitude it has. The firing begins one longest slew after the
         hold ends, so the slew to the firing attitude is flown wholly while
         that attitude is allowed.
+
+        None where the attitude stays blocked to the end of the horizon with
+        the wheels under their capacity: the dump is left to the next plan.
         """
         self._dump_waits.pop(obsid, None)
+        step = self.ctx.step_size
+
+        def across(begin: float, end: float) -> ScheduledActivity | None:
+            # The mission's activity reserved across the approach or firing.
+            return next(
+                (
+                    a
+                    for a in self.activities
+                    if a.begin < end and a.latest_start + a.duration_seconds > begin
+                ),
+                None,
+            )
+
         bound = self._longest_slew_steps()
-        legal = self.ctx.first_legal_hold(
-            fixed,
-            arrival,
-            duration + bound,
-            ACSMode.DESAT,
-            self._dump_latest_start(called, duration),
-        )
-        if legal is None or legal <= arrival:
+        # Reached directly, only the firing itself has to be allowed where
+        # the plan has something after it to turn to. With nothing after it
+        # the spacecraft stays at the firing attitude, so that has to be
+        # allowed for one longest slew more, the time to leave it.
+        followed = any(block.ready >= called for block in self.timeline)
+        stay = duration if followed else duration + bound
+        if (
+            self.ctx.first_hold_violation(fixed, arrival, arrival + stay, ACSMode.DESAT)
+            is None
+            and across(called, arrival + duration) is None
+        ):
+            return arrival
+        latest = self._dump_latest_start(called, duration)
+        search = arrival
+        while True:
+            legal = self.ctx.first_legal_hold(
+                fixed, search, duration + bound, ACSMode.DESAT, latest
+            )
+            if legal is None:
+                break
+            # The hold before the firing, the slew and the firing keep clear
+            # of the mission's activities: a later start is tried past one.
+            other = across(legal - step, legal + bound + duration)
+            if other is None:
+                break
+            search = self.ctx.ceil_step(
+                other.latest_start + other.duration_seconds + step
+            )
+        if legal is None and latest >= self.ctx.uend - duration:
+            self._log(
+                called,
+                "The dump's firing attitude cannot be held before the horizon "
+                "ends; the dump is left to the next plan",
+                obsid,
+            )
+            return None
+        if legal is None:
             return arrival
         self._log(
             called,
