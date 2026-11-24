@@ -304,6 +304,13 @@ class MissionConfig(ConfigModel):
                     check(step.instrument_modes)
         return self
 
+    def science_in_eclipse_for(self, obsid: int) -> bool:
+        """The category override, or the mission's eclipse observing default."""
+        override = self.observation_categories.get_category(
+            int(obsid)
+        ).science_in_eclipse
+        return self.constraint.science_in_eclipse if override is None else override
+
     def observation_timing_for(self, obsid: int) -> ObservationTiming:
         """The setup, cleanup and handoff budgets of the observation ``obsid``:
         its category's where that sets them, else the payload's."""

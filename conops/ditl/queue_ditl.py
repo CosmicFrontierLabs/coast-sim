@@ -1862,10 +1862,14 @@ class QueueDITL(DITLMixin, DITLStats):
             if cursor > context.uend:
                 return False
             previous = pose
+        visit_end = context.ceil_step(cursor)
         activity_begin = self._next_activity_begin(float(slew.slewstart))
-        if activity_begin is not None and context.ceil_step(cursor) > activity_begin:
+        if activity_begin is not None and visit_end > activity_begin:
             return False
-        return True
+        return (
+            parent.forbids_eclipse() is not True
+            or parent.eclipse_violation(float(slew.slewend), visit_end) is None
+        )
 
     def _begin_sequence(self, parent: Pointing, utime: float) -> Pointing:
         """Start a visit of ``parent``: its first step is the observation,
@@ -2214,6 +2218,13 @@ class QueueDITL(DITLMixin, DITLStats):
         """Return the violated constraint name and scope label for one attitude."""
         scopes = self.config.attitude_constraint_scopes_for_mode(mode)
         science_target = target if target is not None else self.ppt
+        if (
+            mode == ACSMode.SCIENCE
+            and science_target is not None
+            and science_target.forbids_eclipse() is True
+            and self.constraint.in_eclipse(0, 0, utime)
+        ):
+            return "science_eclipse", "observing policy"
         mounted_science = (
             mode == ACSMode.SCIENCE
             and science_target is not None
@@ -3809,12 +3820,19 @@ class QueueDITL(DITLMixin, DITLStats):
             utime,
             ACSMode.SCIENCE,
         )
+        if (
+            violation is not None
+            and violation[0] == "science_eclipse"
+            and utime >= self.ppt.end
+        ):
+            violation = None
         if violation is not None:
             constraint_name, scope_label = violation
             constraint_text = f"{constraint_name} ({scope_label})"
             self._terminate_ppt(
                 utime,
                 reason=f"Target {constraint_text} constrained, ending observation",
+                interrupted=constraint_name == "science_eclipse",
             )
         elif utime >= self.ppt.end:
             if self._sequence is not None and self.ppt.step is not None:
@@ -3874,6 +3892,15 @@ class QueueDITL(DITLMixin, DITLStats):
         target: Pointing | None = None,
     ) -> tuple[float, str, str] | None:
         """Shared rest-hold geometry on the bracketing ephemeris grid."""
+        science_target = target if target is not None else self.ppt
+        if (
+            mode == ACSMode.SCIENCE
+            and science_target is not None
+            and science_target.forbids_eclipse() is True
+        ):
+            eclipse = science_target.eclipse_violation(start, end)
+            if eclipse is not None:
+                return eclipse, "science_eclipse", "observing policy"
         times = self._ephem_utimes()
         first = max(0, bisect_right(times, start) - 1)
         last = min(len(times), bisect_left(times, end) + 1)
@@ -3886,6 +3913,8 @@ class QueueDITL(DITLMixin, DITLStats):
                 )
             )
             if violation is not None:
+                if violation[0] == "science_eclipse" and not start <= time < end:
+                    continue
                 return time, *violation
         return None
 
@@ -5272,7 +5301,7 @@ class QueueDITL(DITLMixin, DITLStats):
                     utime=utime,
                     event_type="QUEUE",
                     obsid=self.ppt.obsid,
-                    description="Protected visit rejected: the whole visit does not fit before a required activity or run boundary",
+                    description="Protected visit rejected: the whole visit does not fit the available observing window",
                     acs_mode=self.acs.acsmode,
                 )
                 self._retry_fetch_without_current_ppt(utime, ra, dec)

@@ -44,7 +44,7 @@ class MockConstraint(Constraint):
         self.ephem = MockEphemeris()
         # Add a mock constraint object with evaluate method (overrides the
         # real `constraint` cached_property via plain assignment).
-        mock_constraint_obj = Mock()
+        mock_constraint_obj = Mock(fov_polygon=None)  # a roll-independent rule
         mock_result = Mock()
         mock_result.visibility = [
             Mock(

@@ -519,23 +519,7 @@ class Telescope(Instrument):
     @staticmethod
     def _contains_local_roll_semantics(constraint: ConstraintConfig) -> bool:
         """Return whether a local constraint needs instrument-frame roll."""
-        data = constraint.model_dump(mode="json")
-
-        def contains(node: Any) -> bool:
-            if not isinstance(node, dict):
-                return False
-            node_type = node.get("type")
-            if node_type in {"boresight_offset", "solar_roll"}:
-                return True
-            if node_type in {"bright_star", "body"}:
-                return node.get("fov_polygon") is not None
-            if node_type in {"and", "or", "xor", "at_least"}:
-                return any(contains(child) for child in node.get("constraints", []))
-            if node_type == "not":
-                return contains(node.get("constraint"))
-            return False
-
-        return contains(data)
+        return Constraint._tree_contains(constraint, Constraint._is_roll_dependent_node)
 
     def target_body_attitude(
         self, ra_deg: float, dec_deg: float, roll_deg: float
