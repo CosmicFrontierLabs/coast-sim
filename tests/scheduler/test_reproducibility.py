@@ -48,6 +48,19 @@ def test_an_entry_boundary_one_ulp_apart_is_a_difference() -> None:
     } == {"begin", "end"}
 
 
+def test_a_time_held_as_an_int_equals_the_same_time_as_a_float() -> None:
+    """A run assigns some entry times as ints. Before, only a float was kept
+    as seconds, so the int stayed an ISO string and the same instant compared
+    unequal."""
+    floating = PlanEntry(begin=1761960571.0, end=1761961171.0)
+    whole = floating.model_copy()
+    whole.begin = 1761960571
+    assert type(whole.begin) is int
+    whole_dump, floating_dump = exact_dump(whole), exact_dump(floating)
+    assert first_difference(whole_dump, floating_dump) is None
+    assert type(whole_dump["begin"]) is float
+
+
 def test_identical_failed_runs_do_not_pass() -> None:
     run = {
         "provenance": {},

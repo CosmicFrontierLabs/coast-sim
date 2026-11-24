@@ -1397,7 +1397,10 @@ run record.
 decisions, telemetry, ToOs and science reports. ``compare_runs`` reports the
 first differing value and event, without rounding away timestamps or attitudes.
 Entry and ToO times are recorded as exact Unix seconds, not as the ISO strings
-a saved plan holds, which resolve only microseconds.
+a saved plan holds, which resolve only microseconds. A program built in memory
+can therefore differ from its saved and loaded copy where a time has more than
+microsecond precision, since saving rounds it: compare two built programs, or
+two loaded ones.
 Equality passes only for complete, valid runs with identical provenance; two
 identical failures do not pass. Exceptions retain their original diagnostic
 state rather than replacing it with validation of an unfinished plan. This

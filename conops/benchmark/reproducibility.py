@@ -33,8 +33,13 @@ def _exact(value: Any, dumped: Any) -> Any:
         if len(value) != len(dumped):
             return dumped
         return [_exact(v, d) for v, d in zip(value, dumped, strict=True)]
-    if isinstance(value, float) and isinstance(dumped, str):
-        return value
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and isinstance(dumped, str)
+    ):
+        # A time held as an int is the same instant as one held as a float.
+        return float(value)
     return dumped
 
 
