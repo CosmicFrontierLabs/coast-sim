@@ -533,6 +533,10 @@ class PriorityScheduler:
         """For a reserved dump whose fixed firing attitude cannot be reached
         from what precedes it, by the dump's obsid, the hold reserved before
         it (see :meth:`_park_before_dump`)."""
+        self._dump_floors: dict[int, float] = {}
+        """The earliest each dump the planner called for may be reserved, by
+        obsid, once an earlier reservation of it could not be placed (see
+        :meth:`_postpone_dump`)."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
         empty, or whose slew asks more of them at the slowest configured
@@ -672,6 +676,8 @@ class PriorityScheduler:
         # Share integrations across this plan's momentum passes.
         self._momentum_cache: SpanCache = {}
         self._momentum_seed = None
+        self._dump_floors = {}
+        build = self._postponing_dumps(build)
         plan = build()
         forecast = self._momentum
         if forecast is None:
@@ -793,6 +799,9 @@ class PriorityScheduler:
         horizon, and the dump is left to the next plan."""
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
         assert dump is not None
+        begin = max(begin, self._dump_floors.get(obsid, begin))
+        if begin + dump.duration_seconds > self.ctx.uend:
+            return None
         fixed = dump.attitude.fixed_pointing
         if fixed is not None:
             before = [b for b in self.timeline if b.end <= begin]
@@ -822,6 +831,62 @@ class PriorityScheduler:
             obsid=obsid,
             attitude=dump.attitude,
         )
+
+    def _postponing_dumps(self, build: Callable[[], Plan]) -> Callable[[], Plan]:
+        """``build``, with a dump the planner called for tried later where
+        it cannot be reserved. Such a dump is the planner's own to move; a
+        mission activity that cannot be reserved still raises."""
+
+        def postponing() -> Plan:
+            while True:
+                try:
+                    return build()
+                except ActivitySchedulingError as error:
+                    if not self._postpone_dump(error.activity):
+                        raise
+
+        return postponing
+
+    def _postpone_dump(self, activity: ScheduledActivity) -> bool:
+        """Move a dump the planner called for later, where it or the hold
+        before it could not be reserved: by one longest slew, and again each
+        time that fails. The dumps after it are found again from the plan
+        built with it. One with no start left inside the horizon is left to
+        the next plan. False where ``activity`` is not such a dump."""
+        index = next(
+            (
+                k
+                for k, dump in enumerate(self.dumps)
+                if activity.obsid == dump.obsid
+                or self._dump_waits.get(dump.obsid or -1) is activity
+            ),
+            None,
+        )
+        if index is None:
+            return False
+        dump = self.dumps[index]
+        assert dump.obsid is not None
+        self.dumps = self.dumps[:index]
+        self._dump_waits.pop(dump.obsid, None)
+        self._dump_floors[dump.obsid] = dump.begin + self._longest_slew_steps()
+        later = self._dump_activity(dump.begin, dump.obsid)
+        if later is None:
+            self._dump_floors[dump.obsid] = self.ctx.uend
+            self._log(
+                dump.begin,
+                "The dump cannot be reserved before the horizon ends; it is "
+                "left to the next plan",
+                dump.obsid,
+            )
+        else:
+            self._log(
+                dump.begin,
+                f"The dump cannot be reserved at {unixtime2date(dump.begin)}; "
+                f"it is tried at {unixtime2date(later.begin)}",
+                dump.obsid,
+            )
+            self.dumps.append(later)
+        return True
 
     def _activities_to_reserve(self) -> list[ScheduledActivity]:
         """The activities the plan reserves: the mission's, the dumps the
@@ -861,12 +926,16 @@ class PriorityScheduler:
         step = self.ctx.step_size
 
         def across(begin: float, end: float) -> ScheduledActivity | None:
-            # The mission's activity reserved across the approach or firing.
+            # The mission's activity reserved across the approach, the firing
+            # or the turn away from it. One that may slide is reserved at its
+            # latest start and settles earlier where there is room, so only
+            # the time from its latest start is taken.
             return next(
                 (
                     a
                     for a in self.activities
-                    if a.begin < end and a.latest_start + a.duration_seconds > begin
+                    if a.latest_start < end
+                    and a.latest_start + a.duration_seconds > begin
                 ),
                 None,
             )
@@ -881,30 +950,40 @@ class PriorityScheduler:
         if (
             self.ctx.first_hold_violation(fixed, arrival, arrival + stay, ACSMode.DESAT)
             is None
-            and across(called, arrival + duration) is None
+            and across(called, arrival + duration + bound) is None
         ):
             return arrival
         latest = self._dump_latest_start(called, duration)
         search = arrival
+        gave_way = False
         while True:
             legal = self.ctx.first_legal_hold(
                 fixed, search, duration + bound, ACSMode.DESAT, latest
             )
             if legal is None:
                 break
-            # The hold before the firing, the slew and the firing keep clear
-            # of the mission's activities: a later start is tried past one.
-            other = across(legal - step, legal + bound + duration)
+            # The hold before the firing, the slew, the firing and the turn
+            # away from it keep clear of the mission's activities: a later
+            # start is tried past one.
+            other = across(legal - step, legal + bound + duration + bound)
             if other is None:
                 break
+            gave_way = True
             search = self.ctx.ceil_step(
                 other.latest_start + other.duration_seconds + step
             )
         if legal is None and latest >= self.ctx.uend - duration:
             self._log(
                 called,
-                "The dump's firing attitude cannot be held before the horizon "
-                "ends; the dump is left to the next plan",
+                (
+                    "The dump's firing finds no start clear of the scheduled "
+                    "activities at which its attitude can be held before the "
+                    "horizon ends"
+                    if gave_way
+                    else "The dump's firing attitude cannot be held before the "
+                    "horizon ends"
+                )
+                + "; the dump is left to the next plan",
                 obsid,
             )
             return None
