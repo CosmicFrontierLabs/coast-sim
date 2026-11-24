@@ -1375,3 +1375,41 @@ them, with rolling replans every six hours (or four times in a shorter run) and 
 steered by an allocator with one-day bins::
 
    uv run python scripts/benchmark_schedulers.py --scenario all --time-limit 10
+
+
+Cross-process dispatch verification
+-----------------------------------
+
+A seed alone does not establish repeatability. From the repository root, capture
+identical inputs and run dispatch in fresh Python processes::
+
+   PYTHONPATH=. .venv/bin/python scripts/check_program_repeatability.py \
+       --config mission.yaml --program program.json --ephemeris orbit.e \
+       --output out/repeatability --hash-seeds 2029 2029 1
+
+The destination must be new, preserving earlier results. Initialize the cached
+Earth-orientation provider before capture. Moving targets must already carry
+saved tracks; this command does not refresh them. The first two workers load the
+same saved program; subsequent workers save and reload it before execution.
+The default uses analytic planetary models; supply ``--planetary-kernel`` for an
+explicit SPICE kernel. Each worker records the loaded EOP data, source hashes,
+dependency versions and actual input hashes. The runtime fingerprint also covers
+the verification driver. Before execution, each worker checks the runtime and
+inputs against the captured manifest; after execution it checks them again.
+A checkout, dependency or input change fails verification even if all workers
+otherwise agree. Changes detected after execution are retained in the failed
+run record.
+
+``conops.benchmark.reproducibility.execution_record`` retains exact entries,
+decisions, telemetry, ToOs and science reports. ``compare_runs`` reports the
+first differing value and event, without rounding away timestamps or attitudes.
+Entry and ToO times are recorded as exact Unix seconds, not as the ISO strings
+a saved plan holds, which resolve only microseconds. A program built in memory
+can therefore differ from its saved and loaded copy where a time has more than
+microsecond precision, since saving rounds it: compare two built programs, or
+two loaded ones.
+Equality passes only for complete, valid runs with identical provenance; two
+identical failures do not pass. Exceptions retain their original diagnostic
+state rather than replacing it with validation of an unfinished plan. This
+checks dispatch and saved-program round trips; it does not establish planned-run
+science quality or solver repeatability.
