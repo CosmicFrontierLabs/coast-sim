@@ -23,6 +23,7 @@ from ..ditl.ditl_log import DITLLog
 from ..simulation.roll import optimum_body_roll, optimum_instrument_roll
 from ..simulation.saa import SAA
 from ..targets import MovingPointing, Plan, PlanEntry
+from ..targets.plan_entry import observing_constraint_of
 
 Attitude = tuple[float, float, float]
 
@@ -254,7 +255,7 @@ class SequentialScheduler:
                 self.ephem,
                 telescope,
                 self.config.solar_panel,
-                self.constraint,
+                observing_constraint_of(target, self.constraint),
             )
         else:
             roll = optimum_body_roll(
@@ -263,7 +264,7 @@ class SequentialScheduler:
                 utime,
                 self.ephem,
                 self.config.solar_panel,
-                self.constraint,
+                observing_constraint_of(target, self.constraint),
             )
         target.roll = roll
         attitude = (
@@ -293,7 +294,9 @@ class SequentialScheduler:
         begin_idx = self.ephem.index(dtutcfromtimestamp(begin))
         end_idx = self.ephem.index(dtutcfromtimestamp(end)) + 1
         times = self.ephem.timestamp[begin_idx:end_idx]
-        if _is_plan_entry(target) and target.uses_mounted_attitude():
+        if _is_plan_entry(target) and (
+            target.uses_mounted_attitude() or target.has_own_constraints()
+        ):
             blocked = [
                 bool(
                     target.attitude_constraint_names(
@@ -332,6 +335,9 @@ class SequentialScheduler:
         )
         if _is_plan_entry(target):
             entry.science_data = target.science_data
+            entry.science_constraint = target.science_constraint
+            entry.extra_constraint = target.extra_constraint
+            entry.stray_light_max_ratio = target.stray_light_max_ratio
         entry.spacecraft_attitude = target.spacecraft_attitude
         entry.begin = begin
         entry.slewtime = int(selection.slewtime)

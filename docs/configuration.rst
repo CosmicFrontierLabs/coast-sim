@@ -1652,6 +1652,68 @@ A :class:`~rust_ephem.constraints.StrayLightConstraint` (rust_ephem 0.18 or late
        ),
    )
 
+Constraints for one target
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The constraints above apply to every target. A request (a ``Pointing``, a
+``TOORequest`` or a request in a program) can also be given constraints of its
+own, which apply only while that target is observed. Each takes any
+``rust_ephem`` constraint, or a combination of them written with ``|`` and
+``&``:
+
+* ``science_constraint``: replaces the mission's ``constraint.science_constraint``
+  for this target. The replacement may be stricter or looser than the mission's.
+* ``extra_constraint``: applied in addition to every other science constraint.
+  The target is not observed where it is violated, so it can only narrow when
+  the target is observed.
+* ``stray_light_max_ratio`` (float, greater than 0): for a mission whose science
+  constraint holds a :external+rust_ephem:py:class:`StrayLightConstraint`. It
+  replaces ``max_ratio`` in every stray-light constraint that applies to the
+  target, so the point-source transmittance table is written once, on the
+  mission, and each target states only its own limit. A request that sets it
+  when no stray-light constraint applies to it is refused when it is made.
+
+When more than one is set, ``science_constraint`` is taken first, the ratio is
+then set in it, and ``extra_constraint`` is applied to the result. The Sun,
+Earth, Moon, orbit, star-tracker, safety and hardware constraints are the
+mission's for every target, and so is a telescope's own constraint.
+
+The target's constraints are used wherever the target is tested: its visibility
+windows, the roll chosen for it, the attitude check of dispatch and of each
+planner, and the check made at every step of a run. A slew to or from the
+target, and any other mode, is checked against the mission's constraints only.
+Violations are named ``Science``.
+
+Each plan entry made for the target keeps the three fields, and a saved plan
+writes them, so a replayed plan is checked against the same limits. Targets with
+equal constraints of their own share one set of constraint lookups; each
+distinct value is evaluated separately.
+
+.. code-block:: python
+
+   from rust_ephem import EarthLimbConstraint
+   from rust_ephem.constraints import StrayLightConstraint
+
+   config.constraint.science_constraint = StrayLightConstraint(
+       pst=pst, conversion_factor=3.0e-9, max_ratio=3.0
+   )
+
+   # A tighter limit for one target, and a looser one for another.
+   faint = Pointing(
+       config=config, obsid=1, ra=150.0, dec=2.0, stray_light_max_ratio=0.5
+   )
+   bright = Pointing(
+       config=config, obsid=2, ra=83.6, dec=22.0, stray_light_max_ratio=20.0
+   )
+   # A wider Earth limb limit for a third, on top of everything else.
+   limb = Pointing(
+       config=config,
+       obsid=3,
+       ra=10.7,
+       dec=41.3,
+       extra_constraint=EarthLimbConstraint(min_angle=30.0),
+   )
+
 ground_stations
 ~~~~~~~~~~~~~~~
 

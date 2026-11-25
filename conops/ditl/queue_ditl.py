@@ -65,7 +65,11 @@ from ..targets import (
     assign_obsids,
 )
 from ..targets.merit import MeritBreakdown, MeritModel
-from ..targets.plan_entry import instrument_modes_of, snapshot_min_seconds
+from ..targets.plan_entry import (
+    instrument_modes_of,
+    observing_constraint_of,
+    snapshot_min_seconds,
+)
 from ..targets.sequence import ObservationSequence
 from ..targets.too import TOORequest
 from .ditl_log import DITLLog
@@ -2249,12 +2253,17 @@ class QueueDITL(DITLMixin, DITLStats):
             and self.constraint.in_eclipse(0, 0, utime)
         ):
             return "science_eclipse", "observing policy"
-        mounted_science = (
+        # A target on a mounted instrument, or one observed under constraints
+        # of its own, is checked through the target.
+        own_check = (
             mode == ACSMode.SCIENCE
             and science_target is not None
-            and science_target.uses_mounted_attitude() is True
+            and (
+                science_target.uses_mounted_attitude() is True
+                or science_target.has_own_constraints() is True
+            )
         )
-        if mounted_science:
+        if own_check:
             assert science_target is not None
             names = science_target.attitude_constraint_names(
                 scopes,
@@ -2417,7 +2426,11 @@ class QueueDITL(DITLMixin, DITLStats):
             and self.ppt is not None
             and self.ppt.uses_mounted_attitude() is True
         )
-        if mounted_science:
+        if mounted_science or (
+            mode == ACSMode.SCIENCE
+            and self.ppt is not None
+            and self.ppt.has_own_constraints() is True
+        ):
             assert self.ppt is not None
             all_names = self.ppt.attitude_constraint_names(
                 list(AttitudeConstraintScope),
@@ -2496,7 +2509,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.ephem,
                 telescope,
                 self.config.solar_panel,
-                self.constraint,
+                observing_constraint_of(self.ppt, self.constraint),
                 drive_state=self.acs.solar_array_drive_state,
             )
             roll_offset_deg = (instrument_roll - nominal_roll + 180.0) % 360.0 - 180.0
@@ -4685,13 +4698,14 @@ class QueueDITL(DITLMixin, DITLStats):
         telescope = (
             target.science_telescope() if issubclass(type(target), PlanEntry) else None
         )
+        constraint = observing_constraint_of(target, self.config.constraint)
         key = (
             float(target.ra),
             float(target.dec),
             float(execution_time),
             id(self.acs.ephem),
             id(self.config.solar_panel),
-            id(self.config.constraint),
+            id(constraint),
             id(telescope),
             self.acs.solar_array_drive_state.revision,
         )
@@ -4707,7 +4721,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 self.acs.ephem,
                 telescope,
                 self.config.solar_panel,
-                self.config.constraint,
+                constraint,
                 drive_state=self.acs.solar_array_drive_state,
             )
             if telescope is not None
@@ -4717,7 +4731,7 @@ class QueueDITL(DITLMixin, DITLStats):
                 execution_time,
                 self.acs.ephem,
                 self.config.solar_panel,
-                self.config.constraint,
+                constraint,
                 drive_state=self.acs.solar_array_drive_state,
             )
         )
@@ -5195,7 +5209,9 @@ class QueueDITL(DITLMixin, DITLStats):
             issubclass(type(target), PlanEntry) and target.uses_mounted_attitude()
         )
         if self.config.constraint.ignore_roll and not mounted_telescope:
-            _constraint_obj = self.config.constraint.constraint
+            _constraint_obj = observing_constraint_of(
+                target, self.config.constraint
+            ).constraint
             if _constraint_obj is not None:
                 # Snap to the nearest ephemeris timestamp — roll_range() requires
                 # an exact match and execution_time may be between grid points.

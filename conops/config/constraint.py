@@ -8,11 +8,12 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 from rust_ephem.constraints import (
     AndConstraint,
     AtLeastConstraint,
     BoresightOffsetConstraint,
+    CombinedConstraintConfig,
     ConstraintConfig,
     NotConstraint,
     OrConstraint,
@@ -42,6 +43,48 @@ _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
 
 _INTERVAL_ENDS = 2
 """An eclipse interval is a start and an end."""
+
+_STRAY_LIGHT_TYPE = "stray_light"
+"""The ``type`` of a rust_ephem stray-light constraint."""
+_VARIANT_IGNORED_FIELDS = frozenset({"bestroll", "bestpointing"})
+"""Scratch fields, which no constraint check reads."""
+
+
+class _TargetVariants(BaseModel):
+    """The constraints derived for targets with constraints of their own.
+
+    Each is kept with the state of the mission constraint it was built from,
+    and is discarded when a configuration is copied deeply."""
+
+    entries: dict[str, tuple[tuple[int, ...], object]] = Field(default_factory=dict)
+
+    def __deepcopy__(self, memo: dict[int, object] | None = None) -> "_TargetVariants":
+        result = type(self)()
+        if memo is not None:
+            memo[id(self)] = result
+        return result
+
+
+def _with_stray_light_ratio(node: object, max_ratio: float) -> tuple[object, int]:
+    """A dumped constraint tree with ``max_ratio`` set on every stray-light
+    node, and the number of nodes it was set on."""
+    if isinstance(node, list):
+        changed = [_with_stray_light_ratio(child, max_ratio) for child in node]
+        return [child for child, _ in changed], sum(count for _, count in changed)
+    if not isinstance(node, dict):
+        return node, 0
+    if node.get("type") == _STRAY_LIGHT_TYPE:
+        return {**node, "max_ratio": max_ratio}, 1
+    result: dict[object, object] = {}
+    found = 0
+    for name, value in node.items():
+        # The children of a combining node are under "constraints" (and, or,
+        # xor, at least) or "constraint" (not, boresight offset).
+        if name in ("constraints", "constraint"):
+            value, count = _with_stray_light_ratio(value, max_ratio)
+            found += count
+        result[name] = value
+    return result, found
 
 
 class AttitudeConstraintScope(str, Enum):
@@ -261,6 +304,7 @@ class Constraint(ConfigModel):
     _body_frame_source: object | None = PrivateAttr(default=None)
     _body_safety_key: tuple[object, ...] | None = PrivateAttr(default=None)
     _body_safety: ConstraintConfig | None = PrivateAttr(default=None)
+    _target_variants: _TargetVariants = PrivateAttr(default_factory=_TargetVariants)
     _held_over: list[float] | None = PrivateAttr(default=None)
     """The times a pointing is being checked over, while it is (see
     :meth:`held_over`): a miss then evaluates them all in one call."""
@@ -1120,6 +1164,75 @@ class Constraint(ConfigModel):
         return all_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
+
+    def _variant_state(self) -> tuple[int, ...]:
+        """What a target's constraint was derived from: the identity of every
+        configured component, the ephemeris and the bus frame's source."""
+        return (
+            *(
+                id(getattr(self, name))
+                for name in type(self).model_fields
+                if name not in _VARIANT_IGNORED_FIELDS
+            ),
+            id(self._body_frame_source),
+        )
+
+    def target_science_constraint(
+        self,
+        science_constraint: ConstraintConfig | None,
+        extra_constraint: ConstraintConfig | None,
+        stray_light_max_ratio: float | None,
+    ) -> ConstraintConfig | None:
+        """The explicit science constraint for one target.
+
+        ``science_constraint`` replaces the mission's, ``stray_light_max_ratio``
+        replaces the limit of every stray-light constraint in the result, and
+        ``extra_constraint`` is then applied as well.
+        """
+        science = (
+            science_constraint
+            if science_constraint is not None
+            else self.science_constraint
+        )
+        if stray_light_max_ratio is not None:
+            dumped = None if science is None else science.model_dump(mode="python")
+            changed, found = _with_stray_light_ratio(dumped, stray_light_max_ratio)
+            if not found:
+                raise ValueError(
+                    "stray_light_max_ratio is set for a target, but neither the "
+                    "target's nor the mission's science_constraint holds a "
+                    "stray-light constraint to apply it to"
+                )
+            science = CombinedConstraintConfig.validate_python(changed)
+        return self._combine_constraints([science, extra_constraint])
+
+    def for_target(
+        self,
+        key: str,
+        science_constraint: ConstraintConfig | None = None,
+        extra_constraint: ConstraintConfig | None = None,
+        stray_light_max_ratio: float | None = None,
+    ) -> "Constraint":
+        """This constraint with one target's own science constraints in place
+        of the mission's explicit science constraint (see
+        :meth:`target_science_constraint`). Everything else is shared.
+
+        Targets giving the same ``key`` share one derived constraint and its
+        lookup caches. It is rebuilt when a component of this constraint, its
+        ephemeris or the bus frame is replaced.
+        """
+        state = self._variant_state()
+        held = self._target_variants.entries.get(key)
+        if held is not None and held[0] == state:
+            return cast(Constraint, held[1])
+        values = {name: getattr(self, name) for name in type(self).model_fields}
+        values["science_constraint"] = self.target_science_constraint(
+            science_constraint, extra_constraint, stray_light_max_ratio
+        )
+        variant = type(self).model_construct(**values)
+        variant._body_frame_source = self._body_frame_source
+        self._target_variants.entries[key] = (state, variant)
+        return variant
 
     def instantaneous_field_of_regard(self, utime: float) -> float:
         """Calculate the instantaneous field of regard (FOR) solid angle at a given time.

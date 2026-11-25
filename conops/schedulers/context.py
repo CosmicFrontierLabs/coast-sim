@@ -35,6 +35,7 @@ from ..simulation.roll import optimum_body_roll, optimum_roll
 from ..simulation.slew import Slew
 from ..simulation.target_tracking import target_tracking
 from ..targets import MovingPointing, PlanEntry, Pointing
+from ..targets.plan_entry import observing_constraint_of
 from ..targets.track import TrackPoint, positions_along
 
 Attitude = tuple[float, float, float]
@@ -132,12 +133,12 @@ class SchedulingContext:
             attitude_control.slew_algorithm == SlewAlgorithm.CONSTRAINT_AVOIDING
         )
         self._window_cache: dict[
-            tuple[int, float, float, str | None, str | None],
+            tuple[int, float, float, str | None, str | None, str | None],
             tuple[list[TrackPoint], int, list[tuple[float, float]]],
         ] = {}
-        """Targets' visibility windows by obsid, pointing, step and
-        instrument: a visit's step pointings are asked for again at every
-        selection of a window."""
+        """Targets' visibility windows by obsid, pointing, step, instrument
+        and the target's own constraints: a visit's step pointings are asked
+        for again at every selection of a window."""
         self._hold_cache: dict[
             tuple[Attitude, float, float, ACSMode], float | None
         ] = {}
@@ -219,7 +220,7 @@ class SchedulingContext:
             utime,
             self.ephem,
             self.config.solar_panel,
-            self.config.constraint,
+            observing_constraint_of(target, self.config.constraint),
             telescope=target.science_telescope(),
         )
 
@@ -341,7 +342,7 @@ class SchedulingContext:
             return "science_eclipse"
         if entry.moves:
             attitude = entry.target_body_attitude(entry.roll, at=utime)
-        if entry.uses_mounted_attitude():
+        if entry.uses_mounted_attitude() or entry.has_own_constraints():
             names = entry.attitude_constraint_names(
                 self.config.attitude_constraint_scopes_for_mode(ACSMode.SCIENCE),
                 attitude,
@@ -412,7 +413,8 @@ class SchedulingContext:
         )
         stop = end if eclipse is None else eclipse
         times = [float(utime) for utime in self.steps(begin, stop)]
-        with self.config.constraint.held_over(times):
+        constraint = observing_constraint_of(entry, self.config.constraint)
+        with constraint.held_over(times):
             for utime in times:
                 if self.science_violation(entry, attitude, utime) is not None:
                     return utime
@@ -442,6 +444,7 @@ class SchedulingContext:
             float(target.dec),
             getattr(target, "step", None),
             target.instrument_name,
+            target.own_constraints_key(),
         )
         cached = self._window_cache.get(key)
         if (

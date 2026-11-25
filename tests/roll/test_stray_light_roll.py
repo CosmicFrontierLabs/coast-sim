@@ -1,6 +1,7 @@
 """Stray light depends on the roll: it steers the roll optimiser and is left out
 of the roll-free field of regard."""
 
+from datetime import timedelta
 from typing import Any, cast
 
 import pytest
@@ -8,7 +9,11 @@ import rust_ephem
 from rust_ephem import TLEEphemeris
 
 from conops.config import Constraint, Telescope
+from conops.schedulers import SchedulingContext
 from conops.simulation.roll import optimum_body_roll
+from conops.targets import Pointing
+from tests.scheduler.planning_scenario import BEGIN as SCENARIO_BEGIN
+from tests.scheduler.planning_scenario import make_config, make_target
 
 from .test_science_roll_filter import UTIME, _constraint, _side_panel, _sun_north
 
@@ -189,6 +194,39 @@ class TestStrayLight:
         assert tree.evaluate(
             example_ephem, ra, dec + 18.0, times=[first]
         ).constraint_array[0]
+
+    def test_a_targets_own_ratio_decides_its_roll(self) -> None:
+        """Two targets at one position, under one mission stray-light
+        constraint. The mission's limit blocks the power-optimal roll, so a
+        target that keeps it is steered to a clear roll; a target given a
+        looser limit of its own has nothing to avoid and takes the
+        power-optimal roll."""
+        config = make_config(2, open_sky=True)
+        config.solar_panel = _side_panel()
+        config.constraint.science_constraint = _stray_light(0.0)
+        ephem = config.constraint.ephem
+        assert ephem is not None
+        ra, dec = _sun_north(ephem)
+        utime = SCENARIO_BEGIN.timestamp()
+        context = SchedulingContext(
+            config, SCENARIO_BEGIN, SCENARIO_BEGIN + timedelta(hours=2)
+        )
+        held = make_target(config, 1, ra, dec)
+        loosened = make_target(config, 2, ra, dec)
+        loosened.stray_light_max_ratio = 1.0e30
+
+        def blocked(target: Pointing, roll: float) -> bool:
+            constraint = target.observing_constraint()
+            assert constraint is not None
+            return constraint.in_explicit_science(ra, dec, utime, target_roll=roll)
+
+        assert blocked(held, 90.0) and not blocked(loosened, 90.0)
+        steered = context.optimum_roll(held, utime)
+        assert steered != pytest.approx(90.0)
+        assert not blocked(held, steered)
+        assert context.optimum_roll(loosened, utime) == pytest.approx(90.0)
+        # The mission's own limit is as it was.
+        assert config.constraint.science_constraint.max_ratio == 3.0
 
     def test_not_telescope_local(self) -> None:
         with pytest.raises(ValueError, match="roll-independent"):
