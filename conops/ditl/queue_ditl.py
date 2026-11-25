@@ -1125,7 +1125,8 @@ class QueueDITL(DITLMixin, DITLStats):
         full length. Returns whether the spacecraft's state changed."""
         changed = False
         active = self._active_activity
-        if active is not None and self.acs.in_safe_mode:
+        fault_safe = self.acs.in_safe_mode
+        if active is not None and fault_safe:
             self._activity_meets_safe_mode(utime, (ra, dec, roll))
         if active is not None and utime >= self._activity_end:
             self._end_activity(utime)
@@ -1145,10 +1146,12 @@ class QueueDITL(DITLMixin, DITLStats):
             self.acs.begin_desaturation()
         if self._active_activity is None:
             if self._paused_activity is not None:
+                waiting_for_recharge = not fault_safe and (
+                    self.charging_ppt is not None or self.battery.battery_alert
+                )
                 if (
-                    self.charging_ppt is not None
+                    waiting_for_recharge
                     or self._slew_under_way(utime)
-                    or self.battery.battery_alert
                     or self._gsp_activity_in_progress(utime)
                 ):
                     return changed
@@ -1178,13 +1181,13 @@ class QueueDITL(DITLMixin, DITLStats):
                 due = self._activity_needing_ingress(utime)
             if due is not None:
                 pending_source = due
-                if self.charging_ppt is not None:
+                if not fault_safe and self.charging_ppt is not None:
                     self._defer_activity_for_charging(due, utime)
                     return changed
                 if due.obsid in self._charge_deferred_activities:
-                    if self.battery.battery_alert or self._gsp_activity_in_progress(
-                        utime
-                    ):
+                    if (
+                        not fault_safe and self.battery.battery_alert
+                    ) or self._gsp_activity_in_progress(utime):
                         return changed
                     due = due.model_copy(
                         update={"begin": utime, "fixed": False, "slide_seconds": 0.0}
@@ -1205,7 +1208,9 @@ class QueueDITL(DITLMixin, DITLStats):
                     return changed
                 if self._reserve_activity_cleanup(due, utime):
                     return changed
-                if self._should_initiate_charging(utime):
+                if self._should_initiate_charging(
+                    utime
+                ) and not self._battery_fault_due(utime):
                     # Before starting a block, decide whether its whole hold
                     # can wait out the alert. Do not begin a zero-length
                     # calibration or generate its data just to cancel it.
@@ -3330,11 +3335,15 @@ class QueueDITL(DITLMixin, DITLStats):
         *,
         update_end: bool = False,
         preserve_collection_window: bool = False,
+        preserve_begin: bool = False,
     ) -> None:
         """Copy slew timing and physical attitude onto a plan entry."""
         collection_begin, collection_end = entry.collection_begin, entry.collection_end
-        entry.begin = int(slew.slewstart)
-        entry.slewtime = int(round(slew.slewtime))
+        if preserve_begin:
+            entry.slewtime = ceil(float(slew.slewend) - float(entry.begin))
+        else:
+            entry.begin = int(slew.slewstart)
+            entry.slewtime = int(round(slew.slewtime))
         entry.slew_rate_fraction = slew.rate_fraction
         entry.slewdist = float(slew.slewdist)
         entry.slewpath = slew.slewpath
@@ -3434,15 +3443,17 @@ class QueueDITL(DITLMixin, DITLStats):
             return
 
         if slew.obstype == ObsType.CHARGE:
+            # Charging takes control at its command time. Its physical slew
+            # can start later while the previous motion safely brakes.
             if self.charging_ppt is not None and self.charging_ppt.obsid == slew.obsid:
-                self._apply_slew_metadata(self.charging_ppt, slew)
+                self._apply_slew_metadata(self.charging_ppt, slew, preserve_begin=True)
             for entry in reversed(list(self.plan)):
                 if (
                     entry.obstype == ObsType.CHARGE
                     and entry.obsid == slew.obsid
                     and float(entry.begin) <= float(slew.slewstart) < float(entry.end)
                 ):
-                    self._apply_slew_metadata(entry, slew)
+                    self._apply_slew_metadata(entry, slew, preserve_begin=True)
                     break
             return
 
@@ -3748,6 +3759,31 @@ class QueueDITL(DITLMixin, DITLStats):
             utime, "No path-validated safe-IDLE recovery found before hold expiry"
         )
 
+    def _battery_fault_due(self, utime: float) -> bool:
+        """Whether this tick's battery sample already calls for fault safe mode."""
+        faults = self.fault_management
+        if faults.safe_mode_requested:
+            return True
+        if not faults.safe_mode_on_red:
+            return False
+        state = faults.states.get("battery_level")
+        red_seconds = (
+            state.continuous_red_seconds + self.step_size
+            if state is not None and state.current == "red"
+            else 0.0
+        )
+        return any(
+            threshold.name == "battery_level"
+            and threshold.triggers_safe_mode
+            and threshold.safe_mode_delay_seconds <= red_seconds
+            and threshold.classify(self.battery.battery_level) == "red"
+            and (
+                threshold.acs_modes is None
+                or self.acs.get_mode(utime) in threshold.acs_modes
+            )
+            for threshold in faults.thresholds
+        )
+
     def _should_initiate_charging(self, utime: float) -> bool:
         """Check if emergency charging should be initiated.
 
@@ -3766,6 +3802,8 @@ class QueueDITL(DITLMixin, DITLStats):
         activity = self._active_activity
         if not eligible or activity is None:
             return eligible
+        if self._battery_fault_due(utime):
+            return False
         can_finish = self._activity_fits_before_recharge(
             activity,
             utime,
