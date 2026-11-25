@@ -213,7 +213,7 @@ class TestStrayLight:
         )
         held = make_target(config, 1, ra, dec)
         loosened = make_target(config, 2, ra, dec)
-        loosened.stray_light_max_ratio = 1.0e30
+        loosened.constraint_overrides = {"stray_light": {"max_ratio": 1.0e30}}
 
         def blocked(target: Pointing, roll: float) -> bool:
             constraint = target.observing_constraint()

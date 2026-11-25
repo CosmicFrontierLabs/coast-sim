@@ -337,7 +337,7 @@ class SequentialScheduler:
             entry.science_data = target.science_data
             entry.science_constraint = target.science_constraint
             entry.extra_constraint = target.extra_constraint
-            entry.stray_light_max_ratio = target.stray_light_max_ratio
+            entry.constraint_overrides = target.constraint_overrides
         entry.spacecraft_attitude = target.spacecraft_attitude
         entry.begin = begin
         entry.slewtime = int(selection.slewtime)

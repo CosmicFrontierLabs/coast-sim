@@ -1,5 +1,6 @@
 """Constraints set on one target: a science constraint that replaces the
-mission's, an extra constraint applied as well, and a stray-light limit."""
+mission's, parameter values set on its constraints by type, and an extra
+constraint applied as well."""
 
 from datetime import timedelta
 
@@ -117,20 +118,53 @@ def test_the_derived_constraint_follows_a_change_to_the_missions():
     )
 
 
-# ── The stray-light limit ────────────────────────────────────────────────
+# ── Parameter overrides ──────────────────────────────────────────────────
 
 
-def test_a_targets_stray_light_ratio_replaces_the_limit_wherever_it_appears():
+def test_an_override_sets_a_parameter_on_every_constraint_of_its_type():
     config = make_config(6)
     config.constraint.science_constraint = MoonConstraint(min_angle=5) | stray_light(3)
     target = make_target(config, 1, *CONSTRAINED[0])
-    target.stray_light_max_ratio = 0.5
+    target.constraint_overrides = {"stray_light": {"max_ratio": 0.5}}
     science = target.observing_constraint().science_constraint
     moon, scattered = science.constraints
     assert moon == MoonConstraint(min_angle=5)
     assert scattered == stray_light(0.5)
     # The mission's own limit is untouched.
     assert config.constraint.science_constraint.constraints[1].max_ratio == 3
+
+
+def test_overrides_apply_to_any_constraint_type_and_several_at_once():
+    config = make_config(6)
+    config.constraint.science_constraint = MoonConstraint(min_angle=5) | WIDE
+    target = make_target(config, 1, *CONSTRAINED[0])
+    target.constraint_overrides = {
+        "moon": {"min_angle": 20.0},
+        "earth_limb": {"min_angle": 11.0, "include_refraction": True},
+    }
+    assert target.observing_constraint().science_constraint == MoonConstraint(
+        min_angle=20
+    ) | EarthLimbConstraint(min_angle=11, include_refraction=True)
+
+
+def test_an_override_changed_in_place_is_seen():
+    config = make_config(6)
+    config.constraint.science_constraint = WIDE
+    target = make_target(config, 1, *CONSTRAINED[0])
+    target.constraint_overrides = {"earth_limb": {"min_angle": 30.0}}
+    assert target.observing_constraint().science_constraint.min_angle == 30
+    target.constraint_overrides["earth_limb"]["min_angle"] = 20.0
+    assert target.observing_constraint().science_constraint.min_angle == 20
+
+
+def test_an_override_applies_to_the_targets_own_science_constraint():
+    config = make_config(6)
+    target = make_target(config, 1, *CONSTRAINED[0])
+    target.science_constraint = WIDE
+    target.constraint_overrides = {"earth_limb": {"min_angle": 30.0}}
+    assert target.observing_constraint().science_constraint == EarthLimbConstraint(
+        min_angle=30
+    )
 
 
 def test_a_stray_light_ratio_decides_whether_an_attitude_is_allowed():
@@ -141,7 +175,7 @@ def test_a_stray_light_ratio_decides_whether_an_attitude_is_allowed():
 
     def names(max_ratio: float) -> list[str]:
         target = make_target(config, 1, 110.0, 10.0)
-        target.stray_light_max_ratio = max_ratio
+        target.constraint_overrides = {"stray_light": {"max_ratio": max_ratio}}
         return target.attitude_constraint_names(
             scopes, (110.0, 10.0, 0.0), utime, ACSMode.SCIENCE
         )
@@ -150,15 +184,34 @@ def test_a_stray_light_ratio_decides_whether_an_attitude_is_allowed():
     assert "Science" in names(1e-12)
 
 
-def test_a_stray_light_ratio_with_no_stray_light_constraint_is_refused():
+def test_a_looser_override_widens_only_its_own_targets_windows():
     config = make_config(6)
-    with pytest.raises(ValidationError, match="stray_light_max_ratio"):
+    config.constraint.science_constraint = WIDE
+    held = make_target(config, 1, *CONSTRAINED[0])
+    loosened = make_target(config, 2, *CONSTRAINED[0])
+    loosened.constraint_overrides = {"earth_limb": {"min_angle": 11.0}}
+    assert visible_seconds(loosened) > visible_seconds(held) > 0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        # No constraint of that type applies to the target.
+        ({"stray_light": {"max_ratio": 2.0}}, "holds a constraint of that type"),
+        # The constraint has no parameter of that name.
+        ({"earth_limb": {"min_angle_deg": 20.0}}, "no such parameter"),
+        # The value is not one the constraint accepts.
+        ({"earth_limb": {"min_angle": "wide"}}, "does not give a valid"),
+    ],
+)
+def test_an_override_that_cannot_be_applied_is_refused_when_the_request_is_made(
+    overrides, message
+):
+    config = make_config(6)
+    config.constraint.science_constraint = WIDE
+    with pytest.raises(ValidationError, match=message):
         type(make_target(config, 1, 110.0, 10.0))(
-            config=config, obsid=1, ra=110.0, dec=10.0, stray_light_max_ratio=2.0
-        )
-    with pytest.raises(ValidationError):
-        type(make_target(config, 1, 110.0, 10.0))(
-            config=config, obsid=1, ra=110.0, dec=10.0, stray_light_max_ratio=0.0
+            config=config, obsid=1, ra=110.0, dec=10.0, constraint_overrides=overrides
         )
 
 
@@ -287,5 +340,5 @@ def test_a_target_without_constraints_writes_none_of_the_fields():
     assert not {
         "science_constraint",
         "extra_constraint",
-        "stray_light_max_ratio",
+        "constraint_overrides",
     } & set(dumped)

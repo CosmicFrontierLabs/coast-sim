@@ -8,7 +8,15 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+)
 from rust_ephem.constraints import (
     AndConstraint,
     AtLeastConstraint,
@@ -44,8 +52,6 @@ _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
 _INTERVAL_ENDS = 2
 """An eclipse interval is a start and an end."""
 
-_STRAY_LIGHT_TYPE = "stray_light"
-"""The ``type`` of a rust_ephem stray-light constraint."""
 _VARIANT_IGNORED_FIELDS = frozenset({"bestroll", "bestpointing"})
 """Scratch fields, which no constraint check reads."""
 
@@ -65,26 +71,41 @@ class _TargetVariants(BaseModel):
         return result
 
 
-def _with_stray_light_ratio(node: object, max_ratio: float) -> tuple[object, int]:
-    """A dumped constraint tree with ``max_ratio`` set on every stray-light
-    node, and the number of nodes it was set on."""
+ConstraintOverrides = dict[str, dict[str, JsonValue]]
+"""Parameter values by rust_ephem constraint ``type``, then by parameter
+name, to set on every constraint of that type in a tree."""
+
+
+def _with_overrides(
+    node: object, overrides: ConstraintOverrides, found: set[str]
+) -> object:
+    """A dumped constraint tree with the parameters in ``overrides`` set on
+    every node of each named type. The types met are added to ``found``."""
     if isinstance(node, list):
-        changed = [_with_stray_light_ratio(child, max_ratio) for child in node]
-        return [child for child, _ in changed], sum(count for _, count in changed)
+        return [_with_overrides(child, overrides, found) for child in node]
     if not isinstance(node, dict):
-        return node, 0
-    if node.get("type") == _STRAY_LIGHT_TYPE:
-        return {**node, "max_ratio": max_ratio}, 1
+        return node
     result: dict[object, object] = {}
-    found = 0
     for name, value in node.items():
         # The children of a combining node are under "constraints" (and, or,
         # xor, at least) or "constraint" (not, boresight offset).
         if name in ("constraints", "constraint"):
-            value, count = _with_stray_light_ratio(value, max_ratio)
-            found += count
+            value = _with_overrides(value, overrides, found)
         result[name] = value
-    return result, found
+    kind = node.get("type")
+    values = overrides.get(kind) if isinstance(kind, str) else None
+    if values is not None:
+        assert isinstance(kind, str)
+        unknown = sorted(set(values) - set(node))
+        if unknown:
+            raise ValueError(
+                f"constraint_overrides names {unknown} for a {kind!r} "
+                f"constraint, which has no such parameter; it has "
+                f"{sorted(str(name) for name in node if name != 'type')}"
+            )
+        found.add(kind)
+        result.update(values)
+    return result
 
 
 class AttitudeConstraintScope(str, Enum):
@@ -1181,29 +1202,37 @@ class Constraint(ConfigModel):
         self,
         science_constraint: ConstraintConfig | None,
         extra_constraint: ConstraintConfig | None,
-        stray_light_max_ratio: float | None,
+        overrides: ConstraintOverrides | None,
     ) -> ConstraintConfig | None:
         """The explicit science constraint for one target.
 
-        ``science_constraint`` replaces the mission's, ``stray_light_max_ratio``
-        replaces the limit of every stray-light constraint in the result, and
-        ``extra_constraint`` is then applied as well.
+        ``science_constraint`` replaces the mission's. ``overrides`` then sets
+        parameters on the constraints of the types it names, wherever they are
+        in the result, and ``extra_constraint`` is applied as well.
         """
         science = (
             science_constraint
             if science_constraint is not None
             else self.science_constraint
         )
-        if stray_light_max_ratio is not None:
+        if overrides:
+            found: set[str] = set()
             dumped = None if science is None else science.model_dump(mode="python")
-            changed, found = _with_stray_light_ratio(dumped, stray_light_max_ratio)
-            if not found:
+            changed = _with_overrides(dumped, overrides, found)
+            missing = sorted(set(overrides) - found)
+            if missing:
                 raise ValueError(
-                    "stray_light_max_ratio is set for a target, but neither the "
+                    f"constraint_overrides names {missing}, but neither the "
                     "target's nor the mission's science_constraint holds a "
-                    "stray-light constraint to apply it to"
+                    "constraint of that type to apply it to"
                 )
-            science = CombinedConstraintConfig.validate_python(changed)
+            try:
+                science = CombinedConstraintConfig.validate_python(changed)
+            except ValidationError as error:
+                raise ValueError(
+                    f"constraint_overrides {overrides} does not give a valid "
+                    f"science constraint: {error.errors()[0]['msg']}"
+                ) from error
         return self._combine_constraints([science, extra_constraint])
 
     def for_target(
@@ -1211,7 +1240,7 @@ class Constraint(ConfigModel):
         key: str,
         science_constraint: ConstraintConfig | None = None,
         extra_constraint: ConstraintConfig | None = None,
-        stray_light_max_ratio: float | None = None,
+        overrides: ConstraintOverrides | None = None,
     ) -> "Constraint":
         """This constraint with one target's own science constraints in place
         of the mission's explicit science constraint (see
@@ -1227,7 +1256,7 @@ class Constraint(ConfigModel):
             return cast(Constraint, held[1])
         values = {name: getattr(self, name) for name in type(self).model_fields}
         values["science_constraint"] = self.target_science_constraint(
-            science_constraint, extra_constraint, stray_light_max_ratio
+            science_constraint, extra_constraint, overrides
         )
         variant = type(self).model_construct(**values)
         variant._body_frame_source = self._body_frame_source

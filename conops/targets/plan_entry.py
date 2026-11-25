@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from ..config import (
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     AttitudeConstraintScope,
+    ConstraintOverrides,
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
@@ -241,15 +243,15 @@ class PlanEntry(BaseModel):
             "it is violated"
         ),
     )
-    stray_light_max_ratio: float | None = Field(
-        default=None,
-        gt=0.0,
-        exclude_if=lambda v: v is None,
+    constraint_overrides: ConstraintOverrides = Field(
+        default_factory=dict,
+        exclude_if=lambda v: not v,
         description=(
-            "The largest scattered light to zodiacal background ratio this "
-            "target is observed at: it replaces max_ratio in every stray-light "
-            "constraint of the science constraint that applies to this target. "
-            "None: each keeps its own"
+            "Parameter values for this target, by rust_ephem constraint type "
+            "and then by parameter name: each is set on every constraint of "
+            "that type in the science constraint that applies to this target. "
+            "{'stray_light': {'max_ratio': 0.5}} gives the target its own "
+            "stray-light limit. Empty: every constraint keeps its own values"
         ),
     )
     science_data: dict[str, ScienceData] = Field(
@@ -399,8 +401,7 @@ class PlanEntry(BaseModel):
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
     _frame_telescope: Telescope | None = PrivateAttr(default=None)
     _own_constraints: (
-        tuple[ConstraintConfig | None, ConstraintConfig | None, float | None, str]
-        | None
+        tuple[ConstraintConfig | None, ConstraintConfig | None, str, str] | None
     ) = PrivateAttr(default=None)
     """The entry's own constraints as last seen, and the key they are shared
     under (see :meth:`observing_constraint`)."""
@@ -457,7 +458,7 @@ class PlanEntry(BaseModel):
             self.constraint = self.config.constraint
         assert self.constraint is not None, "Constraint must be set for PlanEntry class"
         if self.has_own_constraints():
-            # A limit with no constraint to apply it to is reported here, when
+            # A value with no constraint to apply it to is reported here, when
             # the entry is made, and not during a run.
             self.observing_constraint()
         if self.ephem is None:
@@ -941,7 +942,7 @@ class PlanEntry(BaseModel):
         return (
             self.science_constraint is not None
             or self.extra_constraint is not None
-            or self.stray_light_max_ratio is not None
+            or bool(self.constraint_overrides)
         )
 
     def observing_constraint(self) -> Constraint | None:
@@ -954,22 +955,23 @@ class PlanEntry(BaseModel):
         if not self.has_own_constraints() or not isinstance(base, Constraint):
             return base
         science, extra = self.science_constraint, self.extra_constraint
-        ratio = self.stray_light_max_ratio
+        # Written out, so that a value changed in place is seen.
+        overrides = json.dumps(self.constraint_overrides, sort_keys=True)
         held = self._own_constraints
         if (
             held is None
             or held[0] is not science
             or held[1] is not extra
-            or held[2] != ratio
+            or held[2] != overrides
         ):
             digest = sha256()
             for part in (science, extra):
                 digest.update(b"-" if part is None else part.model_dump_json().encode())
                 digest.update(b"|")
-            digest.update(repr(ratio).encode())
-            held = (science, extra, ratio, digest.hexdigest())
+            digest.update(overrides.encode())
+            held = (science, extra, overrides, digest.hexdigest())
             self._own_constraints = held
-        return base.for_target(held[3], science, extra, ratio)
+        return base.for_target(held[3], science, extra, self.constraint_overrides)
 
     def own_constraints_key(self) -> str | None:
         """What identifies this entry's own constraints among entries: equal
