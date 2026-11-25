@@ -227,3 +227,27 @@ class TestOptimumRollSidemount:
         ra, dec, utime = 0.0, 0.0, 1700000000.0
         roll = optimum_roll_sidemount(ra, dec, utime, mock_ephem_sidemount)
         assert 0 <= roll < 360
+
+
+def test_a_pointing_at_the_sun_takes_a_defined_roll():
+    """With the Sun on the pointing axis no roll is better lit than another.
+    The roll is then zero, and not the angle of the rounding error in the
+    Sun's direction, which differs between ephemeris versions."""
+    from datetime import datetime, timedelta, timezone
+
+    from rust_ephem import TLEEphemeris
+
+    from conops.simulation.roll import optimum_body_roll
+
+    begin = datetime(2025, 11, 1, tzinfo=timezone.utc)
+    ephem = TLEEphemeris(
+        tle="examples/example.tle",
+        begin=begin,
+        end=begin + timedelta(hours=1),
+        step_size=60,
+    )
+    utime = (begin + timedelta(minutes=30)).timestamp()
+    ra, dec = float(ephem.sun_ra_deg[30]), float(ephem.sun_dec_deg[30])
+    assert optimum_body_roll(ra, dec, utime, ephem) == 0.0
+    # A degree away the roll is the one that faces +Y to the Sun.
+    assert optimum_body_roll(ra + 1.0, dec, utime, ephem) != 0.0
