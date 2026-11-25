@@ -21,7 +21,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from rust_ephem.constraints import ConstraintConfig
+from rust_ephem.constraints import CombinedConstraintConfig, ConstraintConfig
 
 from ..common import givename, unixtime2date, unixtime_from
 from ..common.enums import ACSMode, ObsType
@@ -400,14 +400,25 @@ class PlanEntry(BaseModel):
     _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
     _frame_telescope: Telescope | None = PrivateAttr(default=None)
-    _own_constraints: (
-        tuple[ConstraintConfig | None, ConstraintConfig | None, str, str] | None
-    ) = PrivateAttr(default=None)
-    """The entry's own constraints as last seen, and the key they are shared
-    under (see :meth:`observing_constraint`)."""
+    _own_constraints: tuple[str | None, str | None, str, str] | None = PrivateAttr(
+        default=None
+    )
+    """The entry's own constraints as serialized values, and their shared
+    key (see :meth:`observing_constraint`)."""
     _frame_axes: (
         tuple[tuple[float, float, float], tuple[float, float, float]] | None
     ) = PrivateAttr(default=None)
+
+    def __deepcopy__(self, memo: dict[int, object] | None = None) -> PlanEntry:
+        """Copy request constraints without their native evaluation caches."""
+        if memo is None:
+            memo = {}
+        for constraint in (self.science_constraint, self.extra_constraint):
+            if constraint is not None and id(constraint) not in memo:
+                memo[id(constraint)] = CombinedConstraintConfig.validate_python(
+                    constraint.model_dump(mode="python")
+                )
+        return super().__deepcopy__(memo)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -955,21 +966,24 @@ class PlanEntry(BaseModel):
         if not self.has_own_constraints() or not isinstance(base, Constraint):
             return base
         science, extra = self.science_constraint, self.extra_constraint
-        # Written out, so that a value changed in place is seen.
+        # Serialize values, including nested rules, so changes made in place
+        # select a new variant without changing another target's rules.
+        science_json = None if science is None else science.model_dump_json()
+        extra_json = None if extra is None else extra.model_dump_json()
         overrides = json.dumps(self.constraint_overrides, sort_keys=True)
         held = self._own_constraints
         if (
             held is None
-            or held[0] is not science
-            or held[1] is not extra
+            or held[0] != science_json
+            or held[1] != extra_json
             or held[2] != overrides
         ):
             digest = sha256()
-            for part in (science, extra):
-                digest.update(b"-" if part is None else part.model_dump_json().encode())
+            for part in (science_json, extra_json):
+                digest.update(b"-" if part is None else part.encode())
                 digest.update(b"|")
             digest.update(overrides.encode())
-            held = (science, extra, overrides, digest.hexdigest())
+            held = (science_json, extra_json, overrides, digest.hexdigest())
             self._own_constraints = held
         return base.for_target(held[3], science, extra, self.constraint_overrides)
 

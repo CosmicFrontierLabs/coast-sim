@@ -1255,8 +1255,17 @@ class Constraint(ConfigModel):
         if held is not None and held[0] == state:
             return cast(Constraint, held[1])
         values = {name: getattr(self, name) for name in type(self).model_fields}
-        values["science_constraint"] = self.target_science_constraint(
+        science = self.target_science_constraint(
             science_constraint, extra_constraint, overrides
+        )
+        # Runtime caches belong to the derived constraint, never to the
+        # mutable request whose values supplied this shared variant.
+        values["science_constraint"] = (
+            None
+            if science is None
+            else CombinedConstraintConfig.validate_python(
+                science.model_dump(mode="python")
+            )
         )
         variant = type(self).model_construct(**values)
         variant._body_frame_source = self._body_frame_source

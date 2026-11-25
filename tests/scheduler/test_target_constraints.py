@@ -12,7 +12,9 @@ from rust_ephem.constraints import PointSourceTransmittance, StrayLightConstrain
 from conops import create_ditl
 from conops.common.enums import ACSMode
 from conops.config.constraint import AttitudeConstraintScope
-from conops.targets import Plan
+from conops.schedulers import PriorityScheduler
+from conops.targets import ObservationSequence, Plan, SequenceStep
+from conops.targets.visits import VisitWindow
 
 from .planning_scenario import (
     BEGIN,
@@ -342,3 +344,104 @@ def test_a_target_without_constraints_writes_none_of_the_fields():
         "extra_constraint",
         "constraint_overrides",
     } & set(dumped)
+
+
+@pytest.mark.parametrize("kind", ["visit", "sequence"])
+@pytest.mark.parametrize("engine", ["dispatch", "priority"])
+def test_derived_pointings_keep_target_constraints(kind, engine):
+    config = make_config(3)
+    target = make_target(config, 1, *CONSTRAINED[0], minutes=120, snapshot=10)
+    target.science_constraint = EarthLimbConstraint(min_angle=5)
+    target.constraint_overrides = {"earth_limb": {"min_angle": 80}}
+    target.extra_constraint = MoonConstraint(min_angle=0)
+    if kind == "visit":
+        target.visit_windows = [
+            VisitWindow(
+                start=BEGIN,
+                deadline=BEGIN + timedelta(hours=2),
+                ra=target.ra,
+                dec=target.dec,
+            )
+        ]
+    else:
+        target.sequence = ObservationSequence(
+            steps=[
+                SequenceStep(name="first", duration_seconds=300),
+                SequenceStep(name="second", duration_seconds=300),
+            ]
+        )
+    target.visibility()
+    windows = list(target.windows)
+    end = BEGIN + timedelta(hours=3)
+    if engine == "dispatch":
+        run = create_ditl(config, [target], BEGIN, end)
+        run.step_size = 60
+        assert run.calc()
+        assert run.validate_plan_matches_execution() == []
+        plan = run.plan
+    else:
+        plan = PriorityScheduler(
+            config, [target], BEGIN, end, step_size=60, include_passes=False
+        ).schedule()
+        replay(config, plan, end=end)
+    spans = science_spans(plan, 1)
+    assert spans and all(inside(windows, *span) for span in spans)
+    fields = {"science_constraint", "extra_constraint", "constraint_overrides"}
+    expected = target.model_dump(mode="json", include=fields)
+    assert all(
+        entry.model_dump(mode="json", include=fields) == expected
+        for entry in plan
+        if entry.obsid == 1
+    )
+
+
+@pytest.mark.parametrize("field", ["science_constraint", "extra_constraint"])
+@pytest.mark.parametrize("evaluated", [False, True])
+def test_mutating_a_constraint_changes_only_its_target(field, evaluated):
+    config = make_config(3)
+    a = make_target(config, 1, *CONSTRAINED[0])
+    b = make_target(config, 2, *CONSTRAINED[0])
+    setattr(a, field, EarthLimbConstraint(min_angle=5))
+    setattr(b, field, EarthLimbConstraint(min_angle=5))
+    assert a.observing_constraint() is b.observing_constraint()
+    if evaluated:
+        a.visibility()
+    expected = visible_seconds(make_target(config, 3, *CONSTRAINED[0]))
+    getattr(a, field).min_angle = 80
+    assert visible_seconds(b) == expected
+    assert 0 < visible_seconds(a) < expected
+    assert a.own_constraints_key() != b.own_constraints_key()
+
+
+@pytest.mark.parametrize("field", ["science_constraint", "extra_constraint"])
+def test_dispatch_copies_an_evaluated_constraint_without_changing_the_request(field):
+    config = make_config(3)
+    target = make_target(config, 1, *CONSTRAINED[0], minutes=120, snapshot=10)
+    constraint = EarthLimbConstraint(min_angle=45) | MoonConstraint(min_angle=0)
+    setattr(target, field, constraint)
+    # Both a directly evaluated rule and a previously planned request can
+    # be passed to dispatch. Native evaluation caches are not request data.
+    constraint.in_constraint(BEGIN, config.constraint.ephem, target.ra, target.dec)
+    end = BEGIN + timedelta(hours=3)
+    PriorityScheduler(
+        config, [target], BEGIN, end, step_size=60, include_passes=False
+    ).schedule()
+    run = create_ditl(config, [target], BEGIN, end)
+    run.step_size = 60
+    assert run.calc()
+    assert run.validate_plan_matches_execution() == []
+    assert science_spans(run.plan, 1)
+    assert target.collected_seconds == 0
+
+
+@pytest.mark.parametrize("field", ["science_constraint", "extra_constraint"])
+def test_rolling_interruptions_preserve_evaluated_target_constraints(field):
+    from .planning_scenario import MIN, T0
+    from .test_rolling_horizon import GRB, _long_observation, _run
+
+    targets = _long_observation()
+    setattr(targets[0], field, EarthLimbConstraint(min_angle=10))
+    run = _run(2, targets, toos=({**GRB, "deadline": T0 + 30 * MIN},))
+    assert len(run.replans) == 2
+    assert run.validate_plan_matches_execution() == []
+    assert any(getattr(entry, field) is not None for entry in run.plan)
