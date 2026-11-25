@@ -417,7 +417,9 @@ def test_a_dump_that_safe_mode_stops_unloads_nothing(fault_minute: int) -> None:
     assert not [e for e in run.log.events if "unloads" in e.description]
     tracker = run._stored_momentum_tracker
     assert tracker is not None
-    assert tracker.stored_momentum_norm_n_m_s > 2.5
+    # A dump that fired would leave about 0.1 N m s of the 3 it began with;
+    # what the environment adds or takes meanwhile varies with the platform.
+    assert tracker.stored_momentum_norm_n_m_s > 1.0
     safe = (float(run.acs.ra), float(run.acs.dec))
     assert (entry.ra, entry.dec) == pytest.approx(safe, abs=0.5)
 
