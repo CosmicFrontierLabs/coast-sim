@@ -671,7 +671,7 @@ def test_capacity_fault_is_recorded_without_an_available_dump(
     assert faults[0].utime == BEGIN.timestamp()
 
 
-@pytest.mark.parametrize("minutes", [40, 50, 60])
+@pytest.mark.parametrize("minutes", [50, 60, 70])
 def test_a_dump_waits_for_a_fixed_firing_attitude_to_be_allowed(minutes: int) -> None:
     """A fixed firing attitude is blocked by the Earth's limb for part of
     every orbit. A dump called for then begins at the first time the slew
@@ -681,7 +681,9 @@ def test_a_dump_waits_for_a_fixed_firing_attitude_to_be_allowed(minutes: int) ->
     end = begin + timedelta(hours=3)
     config = _config(
         capacity_n_m_s=10.0,
-        initial_momentum_body_n_m_s=(7.0, 0.0, 0.0),
+        # Request the dump immediately; this test exercises its blocked
+        # attitude, independently of when environmental torque builds up.
+        initial_momentum_body_n_m_s=(8.5, 0.0, 0.0),
         thruster_dump=ThrusterDumpConfig(
             duration_seconds=600.0,
             attitude=ActivityAttitude(
