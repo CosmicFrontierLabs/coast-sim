@@ -45,6 +45,11 @@ def _score_tolerances(reference_roll: float | None) -> tuple[float, float]:
 
 _ROLL_DEGREES = np.arange(360.0, dtype=np.float64)
 
+_SUN_ON_AXIS = 1e-6
+"""The length of the Sun's unit vector across the pointing axis below which
+the Sun is on that axis and no roll is better lit than another: about 0.2
+arcseconds, far above the difference between two ephemeris evaluations."""
+
 
 def _candidate_sun_vectors(
     sun_at_zero_roll: npt.NDArray[np.float64],
@@ -235,6 +240,10 @@ def optimum_body_roll(
         and science_filter is None
     ):
         sun = sun_at_zero / np.linalg.norm(sun_at_zero)
+        if np.hypot(sun[1], sun[2]) < _SUN_ON_AXIS:
+            # The Sun is on the pointing axis, so every roll receives the
+            # same power and the angle below would be that of rounding error.
+            return 0.0
         return float((np.arctan2(sun[2], sun[1]) / DTOR) % 360.0)
 
     scores = _power_scores(
