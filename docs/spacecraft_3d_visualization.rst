@@ -18,12 +18,15 @@ Features
   without geometry of their own are placed on the box the hull plates bound,
   unless ``bus_half_dims`` is given: each face of that box is as far out as the
   furthest plate facing that way, so a wing seen edge-on or a hull away from
-  the body origin does not move them off it. The telescope tube is still drawn,
+  the body origin does not move them off it. Along an axis no plate faces, the
+  box takes the plates' own extent. The telescope tube is still drawn,
   with its boresight where ``show_normals`` is set. The tube is left out only
   where plates are marked as that telescope's by their ``instrument`` field, as
   :func:`~conops.config.surfaces.telescope_surfaces` marks the aperture; the
   boresight then starts at the telescope's foremost plate, and parts are not
-  placed on those plates. Coincident panel front/back plates are represented
+  placed on those plates. An ``instrument`` name must be one the payload has: a
+  configuration with any other is refused, and the plot warns of one assigned to
+  a configuration afterwards. Coincident panel front/back plates are represented
   once by the panel geometry. The plates share one legend entry, "Surfaces",
   and their normals another. Plot bounds include all components.
 * **Spacecraft bus fallback** — lit, solid-shaded box with configurable dimensions

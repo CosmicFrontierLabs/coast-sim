@@ -24,6 +24,7 @@ from .recorder import OnboardRecorder
 from .scheduler import SchedulerConfig
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
+from .surfaces import SurfaceModel
 from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
@@ -279,6 +280,33 @@ class MissionConfig(ConfigModel):
         # A test double's constraint or panels take nothing.
         if callable(take) and isinstance(constraint, Constraint):
             take(constraint.eclipse_intervals_unix)
+        return self
+
+    @model_validator(mode="after")
+    def _surface_instruments_exist(self) -> MissionConfig:
+        """A surface marked as part of an instrument names one the payload
+        has. A name that matches none, by a difference of case for one, would
+        otherwise be ignored: the plate would leave the hull and no telescope
+        would take it as its own."""
+        bus = getattr(self, "spacecraft_bus", None)
+        model = getattr(bus, "surfaces", None)
+        instruments = getattr(getattr(self, "payload", None), "instruments", None)
+        # A test double's bus or payload has neither.
+        if not isinstance(model, SurfaceModel) or not isinstance(instruments, list):
+            return self
+        names = {getattr(instrument, "name", None) for instrument in instruments}
+        unknown = sorted(
+            {
+                surface.instrument
+                for surface in model.surfaces
+                if surface.instrument is not None and surface.instrument not in names
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"surfaces name instruments the payload does not have: {unknown}; "
+                f"it has {sorted(str(name) for name in names)}"
+            )
         return self
 
     @model_validator(mode="after")

@@ -266,12 +266,17 @@ def _radiator(normal: tuple[float, float, float]) -> RadiatorConfiguration:
     )
 
 
-def _radiator_center(surfaces: list[Surface], normal: tuple[float, float, float]):
+def _radiator_center(
+    surfaces: list[Surface],
+    normal: tuple[float, float, float],
+    payload: Payload | None = None,
+):
     config = MissionConfig(
         spacecraft_bus=SpacecraftBus(
             surfaces=SurfaceModel(surfaces=surfaces), radiators=_radiator(normal)
         ),
-        payload=Payload(instruments=[]),
+        # The payload the surfaces' instrument plates belong to.
+        payload=payload or Payload(instruments=[]),
     )
     radiator = next(t for t in plot_spacecraft_3d(config).data if t.name == "Radiator")
     return vertices(radiator).mean(axis=0)
@@ -287,7 +292,7 @@ def test_an_aperture_plate_does_not_move_parts_off_the_hull():
     )
     # A 1.5 x 1.5 x 2 m box with the aperture 3 m out along +X.
     surfaces = guess_surfaces(None, payload).surfaces
-    center = _radiator_center(surfaces, (-1, 0, 0))
+    center = _radiator_center(surfaces, (-1, 0, 0), payload)
     np.testing.assert_allclose(center, (-0.755, 0, 0), atol=1e-9)
 
 
@@ -389,3 +394,88 @@ def test_a_plate_is_a_telescopes_only_when_marked_as_its_own():
         payload=Payload(instruments=payload.instruments[:1]),
     )
     assert "Near" in {t.name for t in plot_spacecraft_3d(config).data}
+
+
+def _with_wheels(surfaces: list[Surface]) -> MissionConfig:
+    from conops.config import (
+        AttitudeControlSystem,
+        MomentumWheel,
+        StoredMomentumConfig,
+    )
+
+    wheels = [
+        MomentumWheel(name=f"RW{i + 1}", spin_axis=axis, capacity_n_m_s=4.0)
+        for i, axis in enumerate([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)])
+    ]
+    return MissionConfig(
+        spacecraft_bus=SpacecraftBus(
+            surfaces=SurfaceModel(surfaces=surfaces),
+            attitude_control=AttitudeControlSystem(
+                stored_momentum=StoredMomentumConfig(wheels=wheels, capacity_n_m_s=4.0)
+            ),
+        ),
+        payload=Payload(instruments=[]),
+    )
+
+
+@pytest.mark.parametrize(
+    "surfaces",
+    [
+        # One plate: no other plate gives the hull a depth.
+        [Surface(name="drag", center_m=(0.5, 0, 0), normal=(1, 0, 0), area_m2=1.0)],
+        # Two plates facing each other's way, with centres on one line.
+        [
+            Surface(name="+X", center_m=(0.5, 0, 0), normal=(1, 0, 0), area_m2=1.0),
+            Surface(name="-X", center_m=(-0.5, 0, 0), normal=(-1, 0, 0), area_m2=1.0),
+        ],
+    ],
+)
+def test_wheels_are_drawn_on_a_hull_with_plates_in_one_line(surfaces):
+    """The plates' centres span nothing across the line they lie on. The hull
+    takes the plates' own extent there. Before, it had no thickness, the
+    wheels' positions were not numbers and the wheels were not drawn."""
+    fig = plot_spacecraft_3d(_with_wheels(surfaces))
+    wheels = [t for t in fig.data if getattr(t, "legendgroup", None) == "wheels"]
+    assert wheels
+    for trace in wheels:
+        for axis in (trace.x, trace.y, trace.z):
+            values = np.asarray([v for v in axis if v is not None], dtype=float)
+            assert np.isfinite(values).all()
+    # Each 1 m plate reaches 0.5 m either side of the line: a wheel that spins
+    # about Y or Z sits inside that.
+    rims = [t for t in wheels if t.type == "mesh3d"]
+    assert max(float(np.max(np.abs(t.y))) for t in rims) < 0.5 + 0.2
+    assert max(float(np.max(np.abs(t.y))) for t in rims) > 0.05
+
+
+def test_a_surface_cannot_name_an_instrument_the_payload_lacks():
+    """ "scope" is not "Scope". Before, the name was ignored: the plates left
+    the hull and the telescope's tube was still drawn over them."""
+    payload = Payload(instruments=[Telescope(name="Scope")])
+    plate = Surface(name="barrel", center_m=(2, 0, 0), normal=(1, 0, 0), area_m2=0.2)
+    with pytest.raises(ValidationError, match="scope"):
+        MissionConfig(
+            spacecraft_bus=SpacecraftBus(
+                surfaces=SurfaceModel(
+                    surfaces=[plate.model_copy(update={"instrument": "scope"})]
+                )
+            ),
+            payload=payload,
+        )
+    # Assigned to a configuration afterwards, it is not checked again: the
+    # plot says so.
+    config = MissionConfig(spacecraft_bus=SpacecraftBus(), payload=payload)
+    config.spacecraft_bus.surfaces = SurfaceModel(
+        surfaces=[plate.model_copy(update={"instrument": "scope"})]
+    )
+    with pytest.warns(UserWarning, match="scope"):
+        plot_spacecraft_3d(config)
+    # A name the payload has gives no warning.
+    config.spacecraft_bus.surfaces = SurfaceModel(
+        surfaces=[plate.model_copy(update={"instrument": "Scope"})]
+    )
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        plot_spacecraft_3d(config)

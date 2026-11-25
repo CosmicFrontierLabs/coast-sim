@@ -25,6 +25,7 @@ Component placement rules
 from __future__ import annotations
 
 import math
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -470,20 +471,29 @@ def _face_placement(
 
 
 def _hull_box(
-    centers: list[npt.NDArray[np.float64]], normals: list[npt.NDArray[np.float64]]
+    centers: list[npt.NDArray[np.float64]],
+    normals: list[npt.NDArray[np.float64]],
+    corners: list[npt.NDArray[np.float64]],
 ) -> tuple[npt.NDArray[np.float64], tuple[float, float, float]]:
     """The centre and half-dimensions of the box the hull plates bound.
 
     Each face of the box is as far out as the furthest plate facing that way,
     so a plate that sticks out edge-on, such as a wing, does not move it. An
-    axis no plate faces along takes the spread of the plate centres.
+    axis no plate faces along has no such face: it takes the spread of the
+    plates' corners, which is the plates' own extent across it. The spread of
+    their centres would give a single plate, or plates in line, no thickness
+    there.
     """
     points = np.asarray(centers, dtype=float)
     facing = np.asarray(normals, dtype=float)
+    edges = np.concatenate([np.asarray(c, dtype=float) for c in corners])
     low, high = points.min(axis=0), points.max(axis=0)
     for axis in range(3):
         outward = points[facing[:, axis] > _HULL_FACING, axis]
         inward = points[facing[:, axis] < -_HULL_FACING, axis]
+        if not outward.size and not inward.size:
+            low[axis], high[axis] = edges[:, axis].min(), edges[:, axis].max()
+            continue
         if outward.size:
             high[axis] = outward.max()
         if inward.size:
@@ -522,8 +532,12 @@ def _wheel_centers(
         )
         count = shared.get(key, 0)
         shared[key] = count + 1
-        with np.errstate(divide="ignore"):
-            to_surface = float(np.min(half / np.abs(canonical)))
+        # The surface is met along the axes the spin axis has a component on.
+        # A box with no thickness along one of them puts the wheel at its
+        # centre; before, 0 / 0 there gave a position that was not a number
+        # and the wheel was not drawn.
+        along = np.abs(canonical) > _AXIS_COMPONENT_TOLERANCE
+        to_surface = float(np.min(half[along] / np.abs(canonical[along])))
         side = 1.0 if count % 2 == 0 else -1.0
         centers.append(middle + canonical * to_surface * side * 0.5 / (1 + count // 2))
     return centers
@@ -623,6 +637,28 @@ def plot_spacecraft_3d(
     plate_names: list[str] = []
     hull_centers: list[npt.NDArray[np.float64]] = []
     hull_normals: list[npt.NDArray[np.float64]] = []
+    hull_corners: list[npt.NDArray[np.float64]] = []
+    instrument_names = {
+        getattr(instrument, "name", None)
+        for instrument in getattr(config.payload, "instruments", [])
+    }
+    unmatched = sorted(
+        {
+            surface.instrument
+            for surface in surfaces
+            if surface.instrument is not None
+            and surface.instrument not in instrument_names
+        }
+    )
+    if unmatched:
+        # A configuration built in one piece refuses this; one whose surfaces
+        # or payload were assigned afterwards is not checked again.
+        warnings.warn(
+            f"Surfaces name instruments the payload does not have: {unmatched}. "
+            "Their plates are drawn off the hull, and no telescope takes them "
+            "as its own.",
+            stacklevel=2,
+        )
     for surface in surfaces:
         # Panel front/back plates already have explicit display geometry below.
         if any(
@@ -669,6 +705,15 @@ def plot_spacecraft_3d(
             # placed on them.
             hull_centers.append(center)
             hull_normals.append(normal)
+            hull_corners.append(
+                np.asarray(
+                    [
+                        center + a * u * width / 2.0 + b * v * height / 2.0
+                        for a in (-1.0, 1.0)
+                        for b in (-1.0, 1.0)
+                    ]
+                )
+            )
     if plate_names:
         # One legend entry for the plates, under a name of its own.
         traces.append(
@@ -700,7 +745,7 @@ def plot_spacecraft_3d(
     if hull_centers and bus_half_dims is None:
         # Parts without geometry of their own are placed on the hull the
         # plates bound, not on the fallback box the plates replace.
-        hull_center, bus_hd = _hull_box(hull_centers, hull_normals)
+        hull_center, bus_hd = _hull_box(hull_centers, hull_normals, hull_corners)
         hx, hy, hz = bus_hd
     if not surfaces:
         traces.append(
