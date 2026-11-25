@@ -9,7 +9,28 @@ any browser or Jupyter notebook without running a full DITL simulation.
 Features
 --------
 
-* **Spacecraft bus** — lit, solid-shaded box with configurable dimensions.
+* **Spacecraft surfaces** — when ``spacecraft_bus.surfaces`` has plates, render
+  their configured centers, normals and areas in the declared body frame. A
+  plate's optional ``geometry`` supplies its rectangular outline; otherwise a
+  square of equal area illustrates it. Area and normal alone cannot recover a
+  facet's aspect ratio or the outline of a scarfed baffle. The configured model
+  replaces the synthetic bus. Radiators, star trackers, wheels and panels
+  without geometry of their own are placed on the box the hull plates bound,
+  unless ``bus_half_dims`` is given: each face of that box is as far out as the
+  furthest plate facing that way, so a wing seen edge-on or a hull away from
+  the body origin does not move them off it. Along an axis no plate faces, the
+  box takes the plates' own extent. The telescope tube is still drawn,
+  with its boresight where ``show_normals`` is set. The tube is left out only
+  where plates are marked as that telescope's by their ``instrument`` field, as
+  :func:`~conops.config.surfaces.telescope_surfaces` marks the aperture; the
+  boresight then starts at the telescope's foremost plate, and parts are not
+  placed on those plates. An ``instrument`` name must be one the payload has: a
+  configuration with any other is refused, and the plot warns of one assigned to
+  a configuration afterwards. Coincident panel front/back plates are represented
+  once by the panel geometry. The plates share one legend entry, "Surfaces",
+  and their normals another. Plot bounds include all components.
+* **Spacecraft bus fallback** — lit, solid-shaded box with configurable dimensions
+  when no surfaces are configured.
 * **Telescope assembly** — cylindrical baffle tube with aperture ring, mid-tube
   baffle rings, and secondary mirror housing.  Sized automatically from
   ``optics.aperture_m`` and ``optics.tube_length_m``.
@@ -24,8 +45,8 @@ Features
 * **Momentum wheels** — a copper disc per wheel in
   ``spacecraft_bus.attitude_control.stored_momentum.wheels``, turned to its spin
   axis and labelled with its capacity.  Drawn at ``position_m`` when configured,
-  otherwise inside the bus along the spin axis; the bus is drawn translucent so
-  the wheels show through it.
+  otherwise inside the bus along the spin axis. The configured surfaces or
+  fallback bus box become translucent so the wheels show through.
 * **Body-frame axes** — +X / +Y / +Z triad with labelled arrows (red, green,
   blue).
 * **Normal / boresight arrows** — outward-normal arrows for solar panels and
@@ -34,7 +55,9 @@ Features
 Coordinate system
 -----------------
 
-All geometry is expressed in the spacecraft body frame:
+All geometry is expressed directly in ``spacecraft_bus.frame``; vectors are not
+rotated a second time. The boresight label follows the declared frame. The
+following axes describe the default frame:
 
 .. list-table::
    :header-rows: 1

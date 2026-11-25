@@ -6,11 +6,9 @@ Jupyter.
 
 Coordinate system (spacecraft body frame)
 ------------------------------------------
-  +X  boresight / telescope pointing direction
-  +Y  spacecraft "up"
-  +Z  completes the right-handed system
+All component vectors are written in the configured spacecraft body frame.
+The default frame has +X boresight and +Y Sun-facing side.
 
-Component placement rules
 Component placement rules
 --------------------------
   Telescope   – cylinder extending in the boresight direction from the bus surface.
@@ -27,6 +25,7 @@ Component placement rules
 from __future__ import annotations
 
 import math
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -80,6 +79,9 @@ _NO_DIRECTION = 0.5
 _RADIAL_MIN = 0.1
 """A boresight component across the tube shorter than this gives no radial
 direction of its own."""
+_HULL_FACING = 0.7
+"""A plate whose normal has this much along a direction faces that way: from
+about 45 degrees of it."""
 
 
 def _unit(v: Any) -> npt.NDArray[np.float64]:
@@ -340,6 +342,75 @@ def _arrow_traces(
     return [line, cone]
 
 
+def _arrow_set_traces(
+    origins: list[npt.NDArray[np.float64]],
+    directions: list[npt.NDArray[np.float64]],
+    labels: list[str],
+    length: float,
+    color: str,
+    name: str,
+    legendgroup: str,
+    cone_sz: float = _CONE_SIZE,
+) -> list[Any]:
+    """Many arrows as one line trace and one cone trace, with one legend
+    entry; each arrow shows its own label on hover."""
+    xs: list[float | None] = []
+    ys: list[float | None] = []
+    zs: list[float | None] = []
+    texts: list[str | None] = []
+    tips: list[npt.NDArray[np.float64]] = []
+    units: list[npt.NDArray[np.float64]] = []
+    tip_labels: list[str] = []
+    for origin, direction, label in zip(origins, directions, labels, strict=True):
+        d = _unit(direction)
+        if np.linalg.norm(d) < _NO_DIRECTION:
+            continue
+        shaft_end = origin + d * (length - cone_sz * 1.2)
+        # None breaks the line between one arrow and the next.
+        xs += [float(origin[0]), float(shaft_end[0]), None]
+        ys += [float(origin[1]), float(shaft_end[1]), None]
+        zs += [float(origin[2]), float(shaft_end[2]), None]
+        texts += [label, label, None]
+        tips.append(origin + d * length)
+        units.append(d * cone_sz)
+        tip_labels.append(label)
+    if not tips:
+        return []
+    tip = np.stack(tips)
+    unit = np.stack(units)
+    line = go.Scatter3d(
+        x=xs,
+        y=ys,
+        z=zs,
+        mode="lines",
+        line=dict(color=color, width=4),
+        name=name,
+        text=texts,
+        showlegend=True,
+        legendgroup=legendgroup,
+        hoverinfo="text",
+    )
+    cone = go.Cone(
+        x=tip[:, 0].tolist(),
+        y=tip[:, 1].tolist(),
+        z=tip[:, 2].tolist(),
+        u=unit[:, 0].tolist(),
+        v=unit[:, 1].tolist(),
+        w=unit[:, 2].tolist(),
+        colorscale=[[0, color], [1, color]],
+        showscale=False,
+        name=name,
+        text=tip_labels,
+        showlegend=False,
+        legendgroup=legendgroup,
+        sizemode="absolute",
+        sizeref=cone_sz,
+        anchor="tip",
+        hoverinfo="text",
+    )
+    return [line, cone]
+
+
 def _axis_label(pos: npt.NDArray[np.float64], text: str, color: str) -> go.Scatter3d:
     return go.Scatter3d(
         x=[float(pos[0])],
@@ -362,10 +433,12 @@ def _face_placement(
     normal: npt.NDArray[np.float64],
     bus_hd: tuple[float, float, float],
     gap: float = 0.03,
+    origin: npt.NDArray[np.float64] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """
     Given a component normal/boresight, return (center, span_u, span_v)
     placing the component on the bus face whose outward normal best matches.
+    The bus box is centred at ``origin``, the body origin unless given.
     """
     hx, hy, hz = bus_hd
     face_n = np.array(
@@ -391,17 +464,56 @@ def _face_placement(
     best = int(np.argmax(face_n @ normal))
     fn = face_n[best]
     center = face_c[best] + fn * gap
+    if origin is not None:
+        center = center + origin
     u, v = _perp_pair(fn)
     return center, u, v
 
 
+def _hull_box(
+    centers: list[npt.NDArray[np.float64]],
+    normals: list[npt.NDArray[np.float64]],
+    corners: list[npt.NDArray[np.float64]],
+) -> tuple[npt.NDArray[np.float64], tuple[float, float, float]]:
+    """The centre and half-dimensions of the box the hull plates bound.
+
+    Each face of the box is as far out as the furthest plate facing that way,
+    so a plate that sticks out edge-on, such as a wing, does not move it. An
+    axis no plate faces along has no such face: it takes the spread of the
+    plates' corners, which is the plates' own extent across it. The spread of
+    their centres would give a single plate, or plates in line, no thickness
+    there.
+    """
+    points = np.asarray(centers, dtype=float)
+    facing = np.asarray(normals, dtype=float)
+    edges = np.concatenate([np.asarray(c, dtype=float) for c in corners])
+    low, high = points.min(axis=0), points.max(axis=0)
+    for axis in range(3):
+        outward = points[facing[:, axis] > _HULL_FACING, axis]
+        inward = points[facing[:, axis] < -_HULL_FACING, axis]
+        if not outward.size and not inward.size:
+            low[axis], high[axis] = edges[:, axis].min(), edges[:, axis].max()
+            continue
+        if outward.size:
+            high[axis] = outward.max()
+        if inward.size:
+            low[axis] = inward.min()
+        if low[axis] > high[axis]:
+            low[axis] = high[axis] = (low[axis] + high[axis]) / 2.0
+    half = (high - low) / 2.0
+    return (low + high) / 2.0, (float(half[0]), float(half[1]), float(half[2]))
+
+
 def _wheel_centers(
-    wheels: list[Any], bus_hd: tuple[float, float, float]
+    wheels: list[Any],
+    bus_hd: tuple[float, float, float],
+    origin: npt.NDArray[np.float64] | None = None,
 ) -> list[npt.NDArray[np.float64]]:
     """Where each wheel is drawn: its configured position, or halfway from the
     bus centre to the bus surface along its spin axis. Wheels sharing an axis
     take alternate sides of the centre, then sit further in."""
     half = np.asarray(bus_hd, dtype=float)
+    middle = np.zeros(3) if origin is None else origin
     shared: dict[tuple[float, float, float], int] = {}
     centers: list[npt.NDArray[np.float64]] = []
     for wheel in wheels:
@@ -420,10 +532,14 @@ def _wheel_centers(
         )
         count = shared.get(key, 0)
         shared[key] = count + 1
-        with np.errstate(divide="ignore"):
-            to_surface = float(np.min(half / np.abs(canonical)))
+        # The surface is met along the axes the spin axis has a component on.
+        # A box with no thickness along one of them puts the wheel at its
+        # centre; before, 0 / 0 there gave a position that was not a number
+        # and the wheel was not drawn.
+        along = np.abs(canonical) > _AXIS_COMPONENT_TOLERANCE
+        to_surface = float(np.min(half[along] / np.abs(canonical[along])))
         side = 1.0 if count % 2 == 0 else -1.0
-        centers.append(canonical * to_surface * side * 0.5 / (1 + count // 2))
+        centers.append(middle + canonical * to_surface * side * 0.5 / (1 + count // 2))
     return centers
 
 
@@ -458,7 +574,13 @@ def plot_spacecraft_3d(
         (default ``True``).
     bus_half_dims:
         ``(half_x, half_y, half_z)`` extents of the spacecraft bus box in
-        metres.  Defaults to ``(1.0, 0.55, 0.55)``.
+        metres. Defaults to ``(1.0, 0.55, 0.55)``. Configured surfaces
+        replace the box; parts without geometry of their own are then placed
+        on the box the hull plates bound, unless this is given. The telescope
+        tube is drawn unless plates are marked as that telescope's
+        (``Surface.instrument``). Surfaces
+        without geometry are illustrated as squares preserving center, normal
+        and area; their actual outlines are unknown.
     title:
         Figure title.  Falls back to the spacecraft bus name from config.
     show_wheels:
@@ -483,6 +605,9 @@ def plot_spacecraft_3d(
 
     bus_hd: tuple[float, float, float] = bus_half_dims or (1.0, 0.55, 0.55)
     hx, hy, hz = bus_hd
+    # Where the box parts are placed on is centred: the body origin, unless
+    # the configured hull is elsewhere.
+    hull_center = np.zeros(3)
 
     # Telescope geometry captured during section 2; used for ST mounting in section 5.
     # (tube_start, bore, outer_r, tube_len)
@@ -502,16 +627,130 @@ def plot_spacecraft_3d(
         None,
     )
     wheels = list(getattr(stored_momentum, "wheels", []) or []) if show_wheels else []
-    traces.append(
-        _box_mesh(
-            hx,
-            hy,
-            hz,
-            name=bus_name,
-            color=_C_BUS,
-            opacity=_BUS_OPACITY_WITH_WHEELS if wheels else 1.0,
-        )
+    bus_opacity = _BUS_OPACITY_WITH_WHEELS if wheels else 1.0
+    surface_model = config.spacecraft_bus.surfaces
+    surfaces = surface_model.surfaces if surface_model is not None else []
+    solar_set = getattr(config, "solar_panel", None)
+    panels = list(getattr(solar_set, "panels", []) or [])
+    plate_centers: list[npt.NDArray[np.float64]] = []
+    plate_normals: list[npt.NDArray[np.float64]] = []
+    plate_names: list[str] = []
+    hull_centers: list[npt.NDArray[np.float64]] = []
+    hull_normals: list[npt.NDArray[np.float64]] = []
+    hull_corners: list[npt.NDArray[np.float64]] = []
+    instrument_names = {
+        getattr(instrument, "name", None)
+        for instrument in getattr(config.payload, "instruments", [])
+    }
+    unmatched = sorted(
+        {
+            surface.instrument
+            for surface in surfaces
+            if surface.instrument is not None
+            and surface.instrument not in instrument_names
+        }
     )
+    if unmatched:
+        # A configuration built in one piece refuses this; one whose surfaces
+        # or payload were assigned afterwards is not checked again.
+        warnings.warn(
+            f"Surfaces name instruments the payload does not have: {unmatched}. "
+            "Their plates are drawn off the hull, and no telescope takes them "
+            "as its own.",
+            stacklevel=2,
+        )
+    for surface in surfaces:
+        # Panel front/back plates already have explicit display geometry below.
+        if any(
+            panel.geometry is not None
+            and np.allclose(
+                panel.geometry.center_m, surface.center_m, rtol=0, atol=1e-9
+            )
+            and np.isclose(
+                panel.geometry.width_m * panel.geometry.height_m, surface.area_m2
+            )
+            and np.isclose(abs(np.dot(_unit(panel.normal), surface.normal)), 1)
+            for panel in panels
+        ):
+            continue
+        center = np.asarray(surface.center_m, dtype=float)
+        normal = np.asarray(surface.normal, dtype=float)
+        if surface.geometry is not None:
+            surface_geom = surface.geometry
+            u, v = np.asarray(surface_geom.u), np.asarray(surface_geom.v)
+            width, height = surface_geom.width_m, surface_geom.height_m
+        else:
+            u, v = _perp_pair(normal)
+            width = height = math.sqrt(surface.area_m2)
+        if np.dot(np.cross(u, v), normal) < 0:
+            v = -v
+        plate = _flat_rect_mesh(
+            center,
+            u,
+            v,
+            width,
+            height,
+            _C_BUS,
+            surface.name,
+            opacity=bus_opacity,
+            show_legend=False,
+            legendgroup="surfaces",
+        )
+        traces.append(plate)
+        plate_centers.append(center)
+        plate_normals.append(normal)
+        plate_names.append(f"{surface.name} normal")
+        if surface.instrument is None:
+            # An instrument's plates stand out from the hull; parts are not
+            # placed on them.
+            hull_centers.append(center)
+            hull_normals.append(normal)
+            hull_corners.append(
+                np.asarray(
+                    [
+                        center + a * u * width / 2.0 + b * v * height / 2.0
+                        for a in (-1.0, 1.0)
+                        for b in (-1.0, 1.0)
+                    ]
+                )
+            )
+    if plate_names:
+        # One legend entry for the plates, under a name of its own.
+        traces.append(
+            go.Scatter3d(
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
+                marker=dict(color=_C_BUS, symbol="square"),
+                name="Surfaces",
+                legendgroup="surfaces",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+    if show_normals:
+        # One line trace and one cone trace however many plates there are.
+        traces.extend(
+            _arrow_set_traces(
+                plate_centers,
+                plate_normals,
+                plate_names,
+                _NORMAL_LEN,
+                _C_NORMAL,
+                "Surface normals",
+                "surface_normals",
+            )
+        )
+    if hull_centers and bus_half_dims is None:
+        # Parts without geometry of their own are placed on the hull the
+        # plates bound, not on the fallback box the plates replace.
+        hull_center, bus_hd = _hull_box(hull_centers, hull_normals, hull_corners)
+        hx, hy, hz = bus_hd
+    if not surfaces:
+        traces.append(
+            _box_mesh(hx, hy, hz, name=bus_name, color=_C_BUS, opacity=bus_opacity)
+        )
 
     # ------------------------------------------------------------------ #
     # 2. Telescope / payload instruments                                   #
@@ -529,6 +768,36 @@ def plot_spacecraft_3d(
         bore = _unit(bore)
         optics = getattr(inst, "optics", None)
         aperture_r: float = (getattr(optics, "aperture_m", None) or 0.5) / 2.0
+        # Plates marked as this telescope's are the telescope in the surface
+        # model (see ``telescope_surfaces``): the tube is then not drawn over
+        # them, and the boresight starts at the one furthest along it.
+        own_plates = [
+            surface
+            for surface in surfaces
+            if surface.instrument is not None
+            and surface.instrument == getattr(inst, "name", None)
+        ]
+        if own_plates:
+            if show_normals:
+                front = max(
+                    own_plates,
+                    key=lambda surface: (
+                        bool(np.dot(surface.normal, bore) > _HULL_FACING),
+                        float(np.dot(surface.center_m, bore)),
+                    ),
+                )
+                traces.extend(
+                    _arrow_traces(
+                        np.asarray(front.center_m, dtype=float) + bore * 0.05,
+                        bore,
+                        _NORMAL_LEN,
+                        color=_C_BORESIGHT,
+                        name=f"{getattr(inst, 'name', 'Telescope')} boresight",
+                        legendgroup="tel_normals",
+                        show_legend=True,
+                    )
+                )
+            continue
         tube_len: float = getattr(optics, "tube_length_m", None) or max(
             aperture_r * 5.0, 1.2
         )
@@ -543,7 +812,7 @@ def plot_spacecraft_3d(
             hz / abs(bore[2]) if abs(bore[2]) > eps else math.inf,
         ]
         face_offset: float = min(t_candidates)
-        tube_start = bore * face_offset
+        tube_start = hull_center + bore * face_offset
         outer_r = aperture_r + 0.06  # baffle slightly wider than aperture
         scope_name = getattr(inst, "name", "Telescope")
 
@@ -640,8 +909,6 @@ def plot_spacecraft_3d(
     # ------------------------------------------------------------------ #
     # 3. Solar panels                                                      #
     # ------------------------------------------------------------------ #
-    solar_set = getattr(config, "solar_panel", None)
-    panels = list(getattr(solar_set, "panels", []) or [])
     panel_legend_shown = False
     frame_legend_shown = False
 
@@ -666,7 +933,7 @@ def plot_spacecraft_3d(
             area_est = max_pwr / max(150.0 * eff, 1.0)
             pw = max(math.sqrt(area_est * 1.6), 0.8)
             ph = max(math.sqrt(area_est / 1.6), 0.5)
-            c, u, v = _face_placement(n_vec, bus_hd, gap=0.02)
+            c, u, v = _face_placement(n_vec, bus_hd, gap=0.02, origin=hull_center)
 
         show_sol = not panel_legend_shown
         traces.append(
@@ -738,7 +1005,7 @@ def plot_spacecraft_3d(
             rw = float(geom.width_m)
             rh = float(geom.height_m)
         else:
-            c, u, v = _face_placement(n_vec, bus_hd, gap=0.005)
+            c, u, v = _face_placement(n_vec, bus_hd, gap=0.005, origin=hull_center)
 
         show_r = not rad_legend_shown
         traces.append(
@@ -804,7 +1071,7 @@ def plot_spacecraft_3d(
             prism_end = c + radial * 0.08
         else:
             # No telescope — fall back to bus-face placement.
-            c, u, v = _face_placement(b_vec, bus_hd, gap=0.0)
+            c, u, v = _face_placement(b_vec, bus_hd, gap=0.0, origin=hull_center)
             prism_start = c
             prism_end = c + b_vec * 0.08
         traces.append(
@@ -858,7 +1125,7 @@ def plot_spacecraft_3d(
     # 6. Momentum wheels                                                   #
     # ------------------------------------------------------------------ #
     for widx, (wheel, c) in enumerate(
-        zip(wheels, _wheel_centers(wheels, bus_hd), strict=True)
+        zip(wheels, _wheel_centers(wheels, bus_hd, hull_center), strict=True)
     ):
         axis = _unit(np.asarray(wheel.spin_axis, dtype=float))
         radius = float(wheel.radius_m)
@@ -909,10 +1176,12 @@ def plot_spacecraft_3d(
     if show_axes:
         origin = np.zeros(3)
         for direction, color, label in [
-            (np.array([1.0, 0.0, 0.0]), _C_X, "+X (boresight)"),
-            (np.array([0.0, 1.0, 0.0]), _C_Y, "+Y (up)"),
+            (np.array([1.0, 0.0, 0.0]), _C_X, "+X"),
+            (np.array([0.0, 1.0, 0.0]), _C_Y, "+Y"),
             (np.array([0.0, 0.0, 1.0]), _C_Z, "+Z"),
         ]:
+            if np.allclose(direction, config.spacecraft_bus.frame.boresight):
+                label += " (boresight)"
             traces.extend(
                 _arrow_traces(
                     origin,
@@ -934,17 +1203,20 @@ def plot_spacecraft_3d(
     fig_title = title or f"{bus_name} — 3-D Configuration"
     fig = go.Figure(data=traces)
 
-    # Compute a sensible axis range
-    scope_reach = hx + 2.5  # telescope extends in +X
-    panel_reach = max(hy + 2.5, hz + 1.5)
-    wheel_reach = max(
+    # Fit the rendered hardware and its vector arrows within the scene.
+    extent = max(
         (
-            float(np.max(np.abs(c))) + float(wheel.radius_m)
-            for wheel, c in zip(wheels, _wheel_centers(wheels, bus_hd), strict=True)
+            abs(float(value))
+            for trace in traces
+            for axis in (trace.x, trace.y, trace.z)
+            if axis is not None
+            for value in axis
+            # None breaks a line between its segments.
+            if value is not None
         ),
-        default=0.0,
+        default=_AXIS_LEN,
     )
-    rng = max(scope_reach, panel_reach, wheel_reach, _AXIS_LEN + 0.5)
+    rng = max(extent * 1.1, _AXIS_LEN + 0.5)
 
     fig.update_layout(
         title=dict(
@@ -956,7 +1228,7 @@ def plot_spacecraft_3d(
         font=dict(color="white"),
         scene=dict(
             xaxis=dict(
-                title="X (boresight)",
+                title="X",
                 range=[-rng, rng],
                 backgroundcolor=_BG,
                 gridcolor="rgba(80,80,120,0.4)",
@@ -964,7 +1236,7 @@ def plot_spacecraft_3d(
                 color="rgba(200,200,220,0.8)",
             ),
             yaxis=dict(
-                title="Y (up)",
+                title="Y",
                 range=[-rng, rng],
                 backgroundcolor=_BG,
                 gridcolor="rgba(80,80,120,0.4)",
