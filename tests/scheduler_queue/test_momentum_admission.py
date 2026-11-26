@@ -1348,6 +1348,9 @@ def test_idle_certificate_reuse_preserves_environmental_torques(
     executor.momentum.max_external_torque = 1
     sim._momentum_idle_certificate = None
     reference = AttitudeExecutor(sim.ustart, executor.state.attitude)
+    # Compare reuse from the exact state, without an Euler round-trip.
+    reference._state = executor.state
+    reference._flown[0] = (sim.ustart, executor.state)
     reference.momentum = MomentumBudget(sim.config, sim.ephem, reference.state)
     assert MomentumObservationPlanner(sim).idle_recovery(sim.ustart) is None
     certificate = sim._momentum_idle_certificate
