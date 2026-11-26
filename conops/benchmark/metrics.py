@@ -2,6 +2,8 @@
 
 from collections.abc import Iterable, Mapping
 
+from ..common.numerics import MIN_SAMPLES
+
 Collection = tuple[int, float, float]
 """One step's science: obsid, step start (Unix seconds) and seconds collected."""
 
@@ -39,7 +41,7 @@ def cadence_error(
     errors = []
     for obsid, interval in cadence.items():
         visits = sorted(starts.get(obsid, []))
-        if len(visits) < 2 or interval <= 0:
+        if len(visits) < MIN_SAMPLES or interval <= 0:
             continue
         mean_gap = (visits[-1] - visits[0]) / (len(visits) - 1)
         errors.append(abs(mean_gap - interval) / interval)

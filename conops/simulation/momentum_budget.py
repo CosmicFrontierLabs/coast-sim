@@ -17,8 +17,9 @@ from math import floor
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field
 
+from ..common.ephemeris import orbit_at
 from ..common.vector import quaternion_to_rotation_matrix
 from ..config import MissionConfig
 from .attitude import AttitudeExecutionError, AttitudeState, AttitudeTrajectory
@@ -59,11 +60,10 @@ class _MomentumPath(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Trajectories are validated by the executor and retained by identity.
-    # Their protocol-based internals are not another record-validation boundary.
-    trajectory: SkipValidation[AttitudeTrajectory | None]
+    # Typed trajectory records retain the executor's physical command checks.
+    trajectory: AttitudeTrajectory | None
     state_at: Callable[[float], AttitudeState]
-    signature: tuple[float, float, bytes]
+    signature: tuple[float, float, bytes, bytes | None]
     nodes: list[MomentumForecast]
     times: list[float]
 
@@ -87,14 +87,20 @@ class MomentumBudget:
         self.config = config
         acs = config.spacecraft_bus.attitude_control
         settings = acs.stored_momentum
-        assert settings.capacity_n_m_s is not None
+        assert settings.total_capacity_n_m_s is not None
         inertia = config.spacecraft_bus.inertia_tensor_body_kg_m2
         if inertia is None:
             raise ValueError("Momentum capacity enforcement requires an inertia tensor")
         self.inertia = np.asarray(inertia, dtype=float).copy()
-        self.capacity = settings.capacity_n_m_s
+        self.capacity = settings.total_capacity_n_m_s
         if not np.isfinite(self.capacity) or self.capacity <= 0:
             raise ValueError("Momentum capacity must be finite and positive")
+        self.wheels = settings.wheel_limits
+        """The wheels, where each one's own capacity is the limit: what they
+        hold is then checked as the fullest wheel's share, not the norm."""
+        self.wheel_limit_rows: npt.NDArray[np.float64] | None = (
+            self.wheels.fractions if self.wheels is not None else None
+        )
         fastest = max(acs.max_slew_rate_body or (acs.max_slew_rate,))
         if not np.isfinite(fastest) or fastest <= 0:
             raise ValueError("Momentum enforcement requires finite positive slew rates")
@@ -102,9 +108,9 @@ class MomentumBudget:
             settings.max_sample_interval_s, settings.max_attitude_step_deg / fastest
         )
         orbit = OrbitTables.from_ephem(ephem)
-        # np.interp requires contiguous coordinate arrays. Own and pack each
-        # table once, including the environmental torque inputs, rather than
-        # copying whole columns on every scalar lookup.
+        # Own read-only snapshots of the environmental inputs used to bound
+        # torque during a retained idle proof. Physical samples still use
+        # the ephemeris's native interpolation through orbit_at.
         tables = {}
         for name in type(orbit).model_fields:
             values = getattr(orbit, name)
@@ -113,6 +119,7 @@ class MomentumBudget:
                 table.flags.writeable = False
                 tables[name] = table
         self.orbit = orbit.model_copy(update=tables)
+        self.ephem = ephem
         self.times = self.orbit.times
         self.positions = self.orbit.positions_eci_km
         if (
@@ -130,6 +137,8 @@ class MomentumBudget:
                 self.inertia,
                 settings.initial_momentum_body_n_m_s,
                 sources=build_torque_sources(config),
+                wheels=settings.wheel_array,
+                limit_by_wheels=self.wheels is not None,
             )
         # Do not pretend sub-sampling motion repairs an under-sampled orbit.
         if (
@@ -152,8 +161,8 @@ class MomentumBudget:
             sum(source.torque_bound_n_m(self.orbit) for source in tracker.sources)
         )
         sample = self._sample(self.live, initial)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        peak = sample.actuator_momentum_norm_n_m_s
+        assert sample.actuator_momentum_load_n_m_s is not None
+        peak = sample.actuator_momentum_load_n_m_s
         self.current = MomentumForecast(
             tracker=self.live,
             sample=sample,
@@ -162,13 +171,13 @@ class MomentumBudget:
             first_violation=initial.utime if peak > self.capacity else None,
         )
         self.require(self.current)
-        # Give the initial coast a stable integration grid too. Speculative
-        # holds and subsequent execution then share cells without advancing
-        # or replacing the live forecast during planning.
+        # Share the initial coast's integration grid with speculative holds,
+        # as well as subsequent execution. Keep both path construction sites
+        # on the same signature, including any per-wheel limit rows.
         path = _MomentumPath(
             trajectory=None,
             state_at=initial.coast,
-            signature=(self.capacity, self.step, self.inertia.tobytes()),
+            signature=self._path_signature(),
             nodes=[self.current.model_copy(update={"tracker": tracker.copy()})],
             times=[initial.utime],
         )
@@ -189,6 +198,15 @@ class MomentumBudget:
             fastest * slowest_fraction
         )
 
+    def _path_signature(self) -> tuple[float, float, bytes, bytes | None]:
+        """All limits that must match before reusing an integration path."""
+        return (
+            self.capacity,
+            self.step,
+            self.inertia.tobytes(),
+            None if self.wheel_limit_rows is None else self.wheel_limit_rows.tobytes(),
+        )
+
     def adopt(self, tracker: StoredMomentumTracker, state: AttitudeState) -> None:
         """Integrate into ``tracker`` from now on, as the simulation's live
         tracker, starting the forecast from what it holds at ``state``."""
@@ -202,8 +220,8 @@ class MomentumBudget:
         holds at ``state``, and any certified path is dropped."""
         tracker = self.live.copy()
         sample = self._sample(tracker, state)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        norm = sample.actuator_momentum_norm_n_m_s
+        assert sample.actuator_momentum_load_n_m_s is not None
+        norm = sample.actuator_momentum_load_n_m_s
         self.current = MomentumForecast(
             tracker=tracker,
             sample=sample,
@@ -213,11 +231,6 @@ class MomentumBudget:
         )
         self.live.assign(tracker)
         return self.current
-
-    def _interpolate(self, table: np.ndarray, utime: float) -> np.ndarray:
-        return np.array(
-            [np.interp(utime, self.times, table[:, i]) for i in range(3)], dtype=float
-        )
 
     def _sunlit(self, utime: float) -> bool:
         """Whether the Sun shines on the spacecraft at the nearest ephemeris
@@ -242,28 +255,15 @@ class MomentumBudget:
     ) -> MomentumSample:
         if not self.times[0] <= state.utime <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        position = self._interpolate(self.positions, state.utime)
-        orbit = self.orbit
+        orbit = orbit_at(self.ephem, state.utime)
         return tracker.update(
             utime=state.utime,
-            position_eci_km=position,
+            position_eci_km=orbit.position_eci_km,
             attitude_quaternion_eci_to_body=state.quaternion,
-            sun_eci_km=(
-                self._interpolate(orbit.sun_positions_eci_km, state.utime) - position
-                if orbit.sun_positions_eci_km is not None
-                else None
-            ),
+            sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
             sunlit=self._sunlit(state.utime),
-            velocity_eci_km_s=(
-                self._interpolate(orbit.velocities_eci_km_s, state.utime)
-                if orbit.velocities_eci_km_s is not None
-                else None
-            ),
-            position_ecef_km=(
-                self._interpolate(orbit.positions_ecef_km, state.utime)
-                if orbit.positions_ecef_km is not None
-                else None
-            ),
+            velocity_eci_km_s=orbit.velocity_eci_km_s,
+            position_ecef_km=orbit.position_ecef_km,
             angular_velocity_body_rad_s=np.deg2rad(state.angular_velocity_body),
             torque_eci_n_m=torque,
         )
@@ -305,7 +305,13 @@ class MomentumBudget:
             demand = rotation @ total - self.inertia @ np.deg2rad(
                 state.angular_velocity_body
             )
-            norm = float(np.linalg.norm(demand))
+            # With wheel limits this is the fullest wheel's share, which never
+            # changes by more than the demand does: the bound below holds.
+            norm = (
+                self.wheels.load_n_m_s(demand)
+                if self.wheels is not None
+                else float(np.linalg.norm(demand))
+            )
             if norm > self.capacity * (1 + 1e-10):
                 return False
             rates = [first_rate + f * duration * acceleration for f in (left, right)]
@@ -344,10 +350,10 @@ class MomentumBudget:
         previous, state = path.state_at(base.utime), path.state_at(end)
         tracker = base.tracker.copy()
         sample = self._sample(tracker, state, torque)
-        assert sample.actuator_momentum_norm_n_m_s is not None
-        peak = max(base.peak_n_m_s, sample.actuator_momentum_norm_n_m_s)
+        assert sample.actuator_momentum_load_n_m_s is not None
+        peak = max(base.peak_n_m_s, sample.actuator_momentum_load_n_m_s)
         violation, uncertified = base.first_violation, base.uncertified_interval
-        if sample.actuator_momentum_norm_n_m_s > self.capacity and violation is None:
+        if sample.actuator_momentum_load_n_m_s > self.capacity and violation is None:
             violation = end
         elapsed = end - base.utime
         if elapsed > 0 and violation is None:
@@ -370,7 +376,12 @@ class MomentumBudget:
             if interval is not None:
                 curve, first, last = interval
                 safe = curve.within_momentum_limit(
-                    first, last, self.inertia, momentum, self.capacity
+                    first,
+                    last,
+                    self.inertia,
+                    momentum,
+                    self.capacity,
+                    self.wheel_limit_rows,
                 )
             else:
                 safe = self._fixed_axis_within_limit(
@@ -408,7 +419,7 @@ class MomentumBudget:
             raise ValueError("Momentum forecast time must be finite and monotonic")
         if not self.times[0] <= end <= self.times[-1]:
             raise ValueError("Momentum prediction is outside ephemeris coverage")
-        signature = (self.capacity, self.step, self.inertia.tobytes())
+        signature = self._path_signature()
         path = base.path
         if (
             path is None
@@ -421,14 +432,14 @@ class MomentumBudget:
             )
             tracker = base.tracker.copy()
             sample = self._sample(tracker, state)
-            assert sample.actuator_momentum_norm_n_m_s is not None
+            assert sample.actuator_momentum_load_n_m_s is not None
             peak = max(
                 base.peak_n_m_s if initial is not None else 0.0,
-                sample.actuator_momentum_norm_n_m_s,
+                sample.actuator_momentum_load_n_m_s,
             )
             violation = base.first_violation if initial is not None else None
             if (
-                sample.actuator_momentum_norm_n_m_s > self.capacity
+                sample.actuator_momentum_load_n_m_s > self.capacity
                 and violation is None
             ):
                 violation = base.utime

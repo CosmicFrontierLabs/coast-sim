@@ -7,7 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from conops import DITL, QueueDITL, create_ditl
-from conops.config import MissionConfig, ObservationTiming, TargetConfig
+from conops.config import (
+    MissionConfig,
+    ObservationCategory,
+    ObservationTiming,
+    TargetConfig,
+)
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
 from conops.targets import (
@@ -316,8 +321,11 @@ class TestDispatch:
         ]
         assert len(visits) == 3
         _in_windows(visits)
-        assert targets[0].visits_done == {0, 1, 2}
-        assert targets[0].done
+        executed = next(t for t in ditl.queue.targets if t.obsid == 900)
+        assert executed.visits_done == {0, 1, 2}
+        assert executed.done
+        assert targets[0].visits_done == frozenset()
+        assert not targets[0].done
 
     def test_a_window_points_and_rolls_on_its_own(self) -> None:
         """Windows with their own pointing are observed there, in dispatch
@@ -403,12 +411,32 @@ class TestDispatch:
         assert not VisitWindow(start=T0, deadline=T0 + SLACK).own_request
         assert VisitWindow(start=T0, deadline=T0 + SLACK, roll_deg=10.0).own_request
 
-    def test_a_visit_cut_short_is_taken_again_in_its_window(self) -> None:
+    @pytest.mark.parametrize("cadence", [False, True])
+    def test_a_visit_cut_short_is_taken_again_in_its_window(
+        self, cadence: bool
+    ) -> None:
         """A target of opportunity cuts the first visit: the window counts
         as unvisited, the visit is taken again whole while the window is
         open, the cut science still counts, and the retries do not end the
-        target before its last window."""
-        config = _config(HOURS)
+        target before its last window.
+        The same with cadence counting for the target: the cut visit does
+        not wait a cadence, which would outlast its window."""
+        config = (
+            _config(
+                HOURS,
+                weights=TargetConfig(cadence_weight=1.0),
+                categories=[
+                    ObservationCategory(
+                        name="Monitor",
+                        obsid_min=900,
+                        obsid_max=901,
+                        cadence_seconds=2 * HOUR,
+                    )
+                ],
+            )
+            if cadence
+            else _config(HOURS)
+        )
         target = _timed_target(config)
         ditl = create_ditl(config, [target, *_fillers(config)], BEGIN, END)
         assert isinstance(ditl, QueueDITL)
@@ -527,6 +555,61 @@ class TestDispatch:
         assert target.visits_done == {0}
         assert target.collected_seconds == 960.0
 
+    def test_a_later_interruption_leaves_a_visit_that_ended_itself(self) -> None:
+        """Visit 0 ends short without an interruption, as when its target
+        becomes constrained; visit 1 is later cut before it collects
+        anything. The cut is of visit 1: visit 0 stays as it was."""
+        config = _config(HOURS)
+        target = _timed_target(config)
+        first = target.visit_pointing(0)
+        first.record_collection(STARTS[0] + 4 * MIN, 3 * MIN, visit=0)
+        first.end_visit_attempt()
+        assert target.visits_done == {0}
+        exposure = target.exptime
+        second = target.visit_pointing(1)
+        second.record_interruption(STARTS[1] + 60.0)
+        assert target.visits_done == {0}
+        assert target.exptime == exposure
+        # Known by its number alone, without the attempt having been ended.
+        other = _timed_target(config)
+        other.record_collection(STARTS[0] + 4 * MIN, 3 * MIN, visit=0)
+        other.record_interruption(STARTS[1] + 60.0, visit=1)
+        assert other.visits_done == {0}
+
+    def test_the_cadence_gate_lets_a_cut_visit_be_taken_again(self) -> None:
+        """With cadence counting, a visit cut short is due again at once,
+        inside its own window, as the planners take it; a whole visit
+        waits a cadence. Likewise a remainder cut short without windows."""
+        monitor = ObservationCategory(
+            name="Monitor", obsid_min=900, obsid_max=902, cadence_seconds=2 * HOUR
+        )
+        config = _config(
+            HOURS, weights=TargetConfig(cadence_weight=1.0), categories=[monitor]
+        )
+        queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        target = _timed_target(config)
+        queue.append(target)
+        cut = STARTS[0] + 6 * MIN
+        target.record_collection(cut, 198.0, visit=0)
+        target.record_interruption(cut, visit=0)
+        assert target.visits_done == set()
+        assert queue._open_at(target, cut + 2 * MIN)
+        whole = cut + 2 * MIN + VISIT * MIN
+        target.record_collection(whole, VISIT * MIN, visit=0)
+        target.end_visit_attempt()
+        assert target.visits_done == {0}
+        assert not queue._cadence_due(target, whole + MIN)
+        assert queue._cadence_due(target, whole + 2 * HOUR)
+
+        plain = _target(config, 901, *PATCH[1], minutes=40, snapshot=20)
+        queue.append(plain)
+        plain.record_collection(T0 + 5 * MIN, 5 * MIN)
+        assert not queue._cadence_due(plain, T0 + 10 * MIN)
+        plain.record_interruption(T0 + 5 * MIN)
+        assert queue._cadence_due(plain, T0 + 10 * MIN)
+        plain.record_collection(T0 + 30 * MIN, 20 * MIN)
+        assert not queue._cadence_due(plain, T0 + 35 * MIN)
+
     def test_a_window_is_done_only_by_one_uninterrupted_attempt(self) -> None:
         """Two cut attempts that together exceed a visit do not complete
         the window; the science of both still counts."""
@@ -543,6 +626,130 @@ class TestDispatch:
         target.record_collection(begin + 1600.0, VISIT * MIN)
         target.record_interruption(begin + 1600.0)
         assert target.visits_done == {0}
+
+    @pytest.mark.parametrize("own_pointing", [False, True])
+    def test_an_interruption_after_the_next_window_opens_reopens_the_visit(
+        self, own_pointing: bool
+    ) -> None:
+        target = Pointing(
+            ss_min=600,
+            ss_max=600,
+            visit_windows=[
+                VisitWindow(
+                    start=100,
+                    deadline=200,
+                    **({"ra": 105, "dec": 10} if own_pointing else {}),
+                ),
+                VisitWindow(start=300, deadline=400),
+            ],
+        )
+        target.visit = 0
+        selected = target.visit_pointing(0)
+        # Still under way when the second window opens: a start window limits admission only.
+        selected.record_collection(350, 200, visit=0)
+        selected.record_interruption(350)
+        assert target.visits_done == set()
+        assert target.collected_seconds == 200
+        assert target.exptime == 1200
+
+    def test_a_cut_visit_log_names_the_flown_window_after_the_next_opens(self) -> None:
+        config = _config(3)
+        target = Pointing(
+            config=config,
+            ra=PATCH[0][0],
+            dec=PATCH[0][1],
+            obsid=900,
+            name="Windowed target",
+            ss_min=600,
+            ss_max=600,
+            visit_windows=[
+                VisitWindow(start=T0 + 100, deadline=T0 + 200),
+                VisitWindow(start=T0 + 300, deadline=T0 + 400),
+            ],
+        )
+        run = create_ditl(config, [target])
+        assert isinstance(run, QueueDITL)
+        selected = run.queue.targets[0]
+        selected.visit = 0
+        selected.record_collection(T0 + 350, 200, visit=0)
+        run.ppt = selected
+        run._terminate_ppt(T0 + 350, "Interrupted", interrupted=True)
+        events = [
+            e.description for e in run.log.events if "cut short:" in e.description
+        ]
+        assert events == [
+            "Visit 1 of Windowed target cut short: its window has closed, so it is missed"
+        ]
+
+    @pytest.mark.parametrize(
+        "own_request", [{"roll_offset_deg": 0}, {"ra": 105, "dec": 10}]
+    )
+    def test_window_pointing_keeps_custom_timing_and_opening_protection(
+        self, own_request
+    ):
+        config = _config(3)
+        timing = ObservationTiming(setup_seconds=600, cleanup_seconds=90)
+        target = Pointing(
+            config=config,
+            own_timing=timing,
+            protect_opening=True,
+            ss_min=600,
+            ss_max=600,
+            visit_windows=[
+                VisitWindow(start=T0 + HOUR, deadline=T0 + 2 * HOUR, **own_request)
+            ],
+        )
+        visit = target.visit_pointing(0)
+        assert visit is not target
+        assert visit.own_timing == timing
+        assert visit.observation_timing.setup_seconds == 600
+        assert visit.observation_timing.cleanup_seconds == 90
+        assert visit.protect_opening is True
+
+    def test_protected_opening_uses_the_window_pointing_visibility(self):
+        config = _config(3)
+        target = Pointing(
+            config=config,
+            obsid=900,
+            ra=210,
+            dec=-15,
+            protect_opening=True,
+            ss_min=600,
+            ss_max=600,
+            visit_windows=[
+                VisitWindow(
+                    start=T0 + HOUR,
+                    deadline=T0 + 2 * HOUR,
+                    ra=PATCH[0][0],
+                    dec=PATCH[0][1],
+                )
+            ],
+        )
+        queue = TargetQueue(config=config, ephem=config.constraint.ephem)
+        queue.append(target)
+        assert target.visible(T0 + HOUR, T0 + HOUR) is False
+        assert target.visit_pointing(0).visible(T0 + HOUR, T0 + HOUR + 10 * MIN)
+        openings = queue.request_openings(T0)
+        assert len(openings) == 1
+        assert openings[0][0] == T0 + HOUR
+        assert openings[0][2] == target.obsid
+
+    @pytest.mark.parametrize("windows", [1, 2])
+    def test_querying_done_cannot_prevent_an_interrupted_visit_from_reopening(
+        self, windows
+    ):
+        target = _timed_target(_config(HOURS))
+        target.visit_windows = target.visit_windows[:windows]
+        begin = STARTS[0] + 60
+        target.record_collection(begin + 120, 120)
+        # Public status queries and serialization must not make a provisional
+        # final visit permanently complete before a later interruption.
+        target.model_dump()
+        target.record_interruption(begin + 120)
+        assert target.visits_done == set()
+        assert target.done is False
+        assert target.next_visit(begin + 120) == 0
+        assert target.collected_seconds == 120
 
     def test_a_visit_pointing_keeps_the_targets_own_timing(self) -> None:
         config = _config(HOURS)

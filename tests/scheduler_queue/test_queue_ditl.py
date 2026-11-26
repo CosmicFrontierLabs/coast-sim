@@ -728,6 +728,7 @@ class TestManagePPTLifecycle:
         self, queue_ditl: QueueDITL
     ) -> None:
         mock_ppt = Mock()
+        mock_ppt.obsid = 1
         mock_ppt.exptime = 300.0
         mock_ppt.ra = 10.0
         mock_ppt.dec = 20.0
@@ -2874,8 +2875,9 @@ class TestPlanExecutionValidation:
 
         assert any("unplanned_science" in str(m) for m in mismatches)
 
-    def test_close_last_plan_entry_records_dropped_science_window(
-        self, queue_ditl: QueueDITL
+    @pytest.mark.parametrize("collection_seconds", [0, 100])
+    def test_close_last_plan_entry_records_only_empty_windows_as_dropped(
+        self, queue_ditl: QueueDITL, collection_seconds: int
     ) -> None:
         entry = PlanEntry(config=queue_ditl.config)
         entry.obstype = ObsType.AT
@@ -2888,10 +2890,16 @@ class TestPlanExecutionValidation:
         queue_ditl.plan = Plan()
         queue_ditl.plan.append(entry)
 
-        queue_ditl._close_last_plan_entry(1200.0)
+        end = 1100.0 + collection_seconds
+        queue_ditl._close_last_plan_entry(end)
 
-        assert len(queue_ditl.plan) == 0
-        assert (1000.0, 1200.0, 42) in queue_ditl._dropped_science_windows
+        if collection_seconds:
+            assert list(queue_ditl.plan) == [entry]
+            assert entry.end == end
+            assert queue_ditl._dropped_science_windows == []
+        else:
+            assert len(queue_ditl.plan) == 0
+            assert queue_ditl._dropped_science_windows == [(1000.0, end, 42)]
 
     def test_validation_fails_for_science_constraint_violation(
         self, queue_ditl: QueueDITL
@@ -3693,7 +3701,7 @@ class TestCalcMethod:
         ]
         assert "START_BATTERY_CHARGE" in command_types
 
-    def test_initiate_charging_leaves_short_science_target_retryable(
+    def test_initiate_charging_preserves_short_science_and_leaves_target_retryable(
         self, queue_ditl
     ) -> None:
         science_ppt = Mock()
@@ -3740,9 +3748,10 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1250.0, 10.0, 20.0)
 
         assert science_ppt.done is False
-        # The under-collected entry (50s collected < 300s required) is dropped.
-        assert plan_entry not in queue_ditl.plan
+        assert list(queue_ditl.plan) == [plan_entry]
+        assert plan_entry.end == 1250.0
         assert queue_ditl.ppt is charging_ppt
+        queue_ditl.acs.end_science_observation.assert_called_once_with(1250.0)
         queue_ditl.acs.enqueue_command.assert_called_once()
 
     def test_initiate_charging_rejects_constraint_unsafe_slew_path(
@@ -3759,6 +3768,8 @@ class TestCalcMethod:
         )
 
         science_ppt = Mock()
+        science_ppt.obsid = 12345
+        science_ppt.collection_begin = None
         science_ppt.end = 5000.0
         science_ppt.done = False
         queue_ditl.ppt = science_ppt
@@ -3779,6 +3790,7 @@ class TestCalcMethod:
         queue_ditl._initiate_charging(1000.0, 10.0, 20.0)
 
         cast(Mock, queue_ditl.acs.enqueue_command).assert_not_called()
+        cast(Mock, queue_ditl.acs.end_science_observation).assert_not_called()
         assert queue_ditl.charging_ppt is None
         assert queue_ditl.ppt is science_ppt
         assert science_ppt.end == 5000.0
@@ -3787,7 +3799,7 @@ class TestCalcMethod:
         assert "Skipping emergency charge slew" in log_text
         assert "ST Hard" in log_text
 
-    def test_calc_drops_short_science_entry_when_charging_interrupts(
+    def test_calc_drops_empty_science_entry_when_charging_interrupts(
         self, queue_ditl
     ) -> None:
         from datetime import timedelta
@@ -4121,8 +4133,8 @@ class TestCalcMethod:
         assert "Dropping under-collected science entry 1001" in log_text
         assert "collected 0s" in log_text
 
-    def test_track_ppt_drops_science_entry_below_ss_min(self, queue_ditl) -> None:
-        """A science entry with less than ss_min collection is not kept as AT."""
+    def test_track_ppt_keeps_executed_science_below_ss_min(self, queue_ditl) -> None:
+        """Keep the time actually collected even when it falls below ss_min."""
         previous_ppt = Mock()
         previous_ppt.obstype = "AT"
         previous_ppt.begin = 1000.0
@@ -4144,10 +4156,9 @@ class TestCalcMethod:
 
         queue_ditl._track_ppt_in_timeline()
 
-        assert previous_ppt not in queue_ditl.plan
-        assert queue_ditl.plan == [current_ppt]
+        assert queue_ditl.plan == [previous_ppt, current_ppt]
         log_text = "\n".join(event.description for event in queue_ditl.log.events)
-        assert "Dropping under-collected science entry 1002" in log_text
+        assert "Keeping under-collected science entry 1002" in log_text
         assert "collected 250s of required 300s" in log_text
 
     def test_close_ppt_timeline_if_needed_closes_when_ppt_none(
@@ -5998,7 +6009,13 @@ class TestTOOFunctionality:
             created.append(target)
             return target
 
+        def add_request(request: Pointing) -> Pointing:
+            # A ToO's request arrives built; the queue keeps it as it is.
+            created.append(request)
+            return request
+
         queue_ditl.queue.add = Mock(side_effect=add)
+        queue_ditl.queue.add_request = Mock(side_effect=add_request)
         queue_ditl.queue.targets = created
         return created
 
@@ -6029,17 +6046,16 @@ class TestTOOFunctionality:
         queue_ditl._check_too_interrupt(utime=1000.0, ra=180.0, dec=45.0)
         queue_ditl._check_too_interrupt(utime=1060.0, ra=180.0, dec=45.0)
 
-        queue_ditl.queue.add.assert_called_once_with(
-            ra=180.0,
-            dec=45.0,
-            obsid=1000001,
-            name="Successful TOO",
-            merit=10000.0,
-            exptime=3600,
-            deadline=5000.0,
-            science_data={},
-            instrument_modes={},
+        queue_ditl.queue.add_request.assert_called_once()
+        [request] = queue_ditl.queue.add_request.call_args.args
+        assert (request.ra, request.dec, request.obsid) == (180.0, 45.0, 1000001)
+        assert (request.name, request.merit, request.exptime) == (
+            "Successful TOO",
+            10000.0,
+            3600,
         )
+        assert request.deadline == 5000.0
+        assert request.science_data == {} and request.instrument_modes == {}
 
     def test_queued_too_carries_its_science_data(
         self, mock_pointing_visibility, queue_ditl, queued_targets
@@ -6154,7 +6170,7 @@ class TestTOOFunctionality:
         assert result is False
         assert not too.interrupt
         mock_too_interrupt_success["terminate"].assert_not_called()
-        queue_ditl.queue.add.assert_called_once()
+        queue_ditl.queue.add_request.assert_called_once()
 
     def test_check_too_interrupt_observation_not_interruptible(
         self,
@@ -6176,7 +6192,7 @@ class TestTOOFunctionality:
 
         assert result is False
         mock_too_interrupt_success["terminate"].assert_not_called()
-        queue_ditl.queue.add.assert_called_once()
+        queue_ditl.queue.add_request.assert_called_once()
 
     def test_check_too_interrupt_executed_when_too_is_selected(
         self,
@@ -6361,20 +6377,22 @@ class TestTOOFunctionality:
         )
 
         data = too.model_dump()
-        expected = {
-            "obsid": 1000001,
-            "ra": 180.0,
-            "dec": 45.0,
-            "merit": 10000.0,
-            "exptime": 3600,
-            "name": "Test TOO",
-            "submit_time": 1234567890.0,
-            "deadline": None,
-            "science_data": {},
-            "interrupt": True,
-            "executed": True,
-        }
-        assert data == expected
+        # The ToO holds its request; its run state is not written.
+        assert set(data) == {"request", "submit_time", "deadline", "interrupt"}
+        assert (data["submit_time"], data["deadline"], data["interrupt"]) == (
+            1234567890.0,
+            None,
+            True,
+        )
+        request = data["request"]
+        assert (request["obsid"], request["ra"], request["dec"], request["name"]) == (
+            1000001,
+            180.0,
+            45.0,
+            "Test TOO",
+        )
+        assert request["merit"] == 10000.0 and request["exptime"] == 3600
+        assert too.executed
 
 
 class TestQueueDITLCoverage:
@@ -6514,6 +6532,35 @@ class TestQueueDITLCoverage:
                 mock_manage_ppt.assert_not_called()
                 mock_fetch_ppt.assert_not_called()
 
+    @pytest.mark.parametrize("charging_started", [True, False])
+    def test_only_accepted_charging_preempts_science_bookkeeping(
+        self, queue_ditl: QueueDITL, charging_started: bool
+    ) -> None:
+        queue_ditl.ppt = Pointing()
+        queue_ditl.acs.current_slew = None
+
+        def initiate_charging(utime: float, ra: float, dec: float) -> None:
+            if charging_started:
+                queue_ditl.charging_ppt = Pointing(obstype=ObsType.CHARGE)
+
+        with (
+            patch.object(queue_ditl, "_should_initiate_charging", return_value=True),
+            patch.object(
+                queue_ditl, "_initiate_charging", side_effect=initiate_charging
+            ) as initiate,
+            patch.object(queue_ditl, "_check_too_interrupt", return_value=False) as too,
+            patch.object(queue_ditl, "_manage_ppt_lifecycle") as manage,
+        ):
+            queue_ditl._handle_science_mode(1000.0, 0.0, 0.0, ACSMode.SCIENCE)
+
+        initiate.assert_called_once_with(1000.0, 0.0, 0.0)
+        if charging_started:
+            too.assert_not_called()
+            manage.assert_not_called()
+        else:
+            too.assert_called_once_with(1000.0, 0.0, 0.0)
+            manage.assert_called_once_with(1000.0, ACSMode.SCIENCE)
+
     def test_pass_ending_logic_triggered(self, mock_config, mock_ephem) -> None:
         """Test pass ending logic when previous pass existed but current doesn't (lines 631-642)."""
         with (
@@ -6596,6 +6643,8 @@ class TestQueueDITLCoverage:
         interrupted_ppt = Mock()
         interrupted_ppt.done = False
         interrupted_ppt.obsid = 12345
+        interrupted_ppt.collection_begin = None
+        interrupted_ppt.end = 5000.0
         queue_ditl.ppt = interrupted_ppt
         queue_ditl.emergency_charging.create_charging_pointing = Mock(
             return_value=charging_ppt
@@ -6681,6 +6730,7 @@ class TestQueueDITLCoverage:
             mock_charging_ppt = Mock()
             mock_charging_ppt.ra = 10.0
             mock_charging_ppt.dec = 20.0
+            mock_charging_ppt.roll = 33.0
             mock_charging_ppt.obsid = 12345  # Fix: use int instead of Mock
             ditl.charging_ppt = mock_charging_ppt
             ditl.ppt = mock_charging_ppt  # Currently charging
@@ -6691,7 +6741,7 @@ class TestQueueDITLCoverage:
             # Verify scoped constraint check and termination.
             mock_config.constraint.in_constraint.assert_not_called()
             mock_config.constraint.in_panel.assert_called_once_with(
-                10.0, 20.0, 1000.0, target_roll=mock_acs.roll
+                10.0, 20.0, 1000.0, target_roll=33.0
             )
             mock_terminate.assert_called_once_with("constraint", 1000.0)
 

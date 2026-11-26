@@ -1,5 +1,5 @@
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, NamedTuple, cast
 
@@ -13,12 +13,14 @@ from conops.common.enums import ACSMode, ObsType
 from conops.common.vector import attitude_to_quat, quaternion_attitude_delta
 from conops.config.groundstation import GroundStation, effective_downlink_rate_mbps
 
-from ..common.ephemeris import position_vectors, velocity_vectors
+from ..common.ephemeris import orbit_at, position_vectors, velocity_vectors
 from ..config import (
     FaultManagementRun,
     MissionConfig,
     OnboardRecorder,
+    ScienceData,
     SolarArrayDriveState,
+    SpacecraftFrame,
 )
 from ..config.data_storage import DataStorage, RecorderSummary, RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
@@ -36,49 +38,14 @@ from ..simulation.momentum import (
 from ..simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from ..simulation.passes import Pass, PassTimes
 from ..simulation.slew import Slew
-from ..targets import Plan, PlanEntry
+from ..targets import AttitudeTimeseriesSchema, Plan, PlanEntry
 from ..targets.plan_entry import extra_data_gb, instrument_modes_of
+from ..targets.too import TOORequest
 from .ditl_log import DITLLog
+from .plan_validator import PlanExecutionValidator
 from .telemetry import SolarArrayDriveAngle, Telemetry
 
 ATTITUDE_RATE_NUMERICAL_TOLERANCE_DEG = 1e-9
-
-
-class _MomentumInputs:
-    """The orbit at one momentum sample: what the tracker was given at a
-    step, kept so the orbit can be interpolated along a slew within the next."""
-
-    def __init__(
-        self,
-        utime: float,
-        position_eci_km: npt.NDArray[np.float64],
-        sun_eci_km: npt.NDArray[np.float64] | None,
-        position_ecef_km: npt.NDArray[np.float64] | None,
-        velocity_eci_km_s: npt.NDArray[np.float64] | None = None,
-    ) -> None:
-        self.utime = float(utime)
-        self.position_eci_km = position_eci_km
-        self.sun_eci_km = sun_eci_km
-        self.position_ecef_km = position_ecef_km
-        self.velocity_eci_km_s = velocity_eci_km_s
-
-    def between(self, later: "_MomentumInputs", fraction: float) -> "_MomentumInputs":
-        """The orbit ``fraction`` of the way from this sample to ``later``."""
-
-        def lerp(
-            a: npt.NDArray[np.float64] | None, b: npt.NDArray[np.float64] | None
-        ) -> npt.NDArray[np.float64] | None:
-            if a is None or b is None:
-                return None
-            return a + fraction * (b - a)
-
-        return _MomentumInputs(
-            self.utime + fraction * (later.utime - self.utime),
-            np.asarray(lerp(self.position_eci_km, later.position_eci_km)),
-            lerp(self.sun_eci_km, later.sun_eci_km),
-            lerp(self.position_ecef_km, later.position_ecef_km),
-            lerp(self.velocity_eci_km_s, later.velocity_eci_km_s),
-        )
 
 
 class MomentumProfile(NamedTuple):
@@ -244,6 +211,8 @@ class DITLMixin:
     telemetry: Telemetry
     calculate_field_of_regard: bool
     _stored_momentum_tracker: StoredMomentumTracker | None
+    too_register: list[TOORequest]
+    _plan_validator: Callable[[], PlanExecutionValidator]
 
     def __init__(
         self,
@@ -341,6 +310,85 @@ class DITLMixin:
         # Initialize common subsystems (can be overridden by subclasses)
         self._init_subsystems()
         self._stored_momentum_tracker = self._build_stored_momentum_tracker()
+
+    def submit_too(
+        self,
+        obsid: int | TOORequest,
+        ra: float = 0.0,
+        dec: float = 0.0,
+        merit: float = 0.0,
+        exptime: int = 0,
+        name: str = "",
+        submit_time: float | datetime | None = None,
+        deadline: float | datetime | None = None,
+        science_data: Mapping[str, ScienceData] | None = None,
+        interrupt: bool = True,
+        instrument_modes: Mapping[str, str] | None = None,
+    ) -> TOORequest:
+        """Submit a Target of Opportunity (TOO) request: a
+        :class:`~conops.targets.TOORequest` holding any request, or the
+        fields of a plain pointing. It joins the target pool once its
+        ``submit_time`` is reached.
+
+        Args:
+            obsid: Unique observation identifier, or a ready TOORequest
+            ra: Right ascension in degrees
+            dec: Declination in degrees
+            merit: Base merit. A TOO interrupts only if its value exceeds the
+                current observation's.
+            exptime: Requested exposure time in seconds
+            name: Human-readable name for the TOO target
+            submit_time: When the TOO becomes active, as a Unix timestamp or a
+                datetime. None means active from the start of the simulation.
+            deadline: Latest time science collection may begin, as a Unix
+                timestamp or a datetime. None means no deadline.
+            science_data: Science data observing the TOO generates, keyed by
+                instrument name; other instruments generate their own.
+            interrupt: Whether the TOO may interrupt the observation in
+                progress; if False it is chosen when that observation ends.
+            instrument_modes: The instruments observing the TOO uses and the
+                mode each is in, by name; None: every instrument with modes,
+                in SCIENCE.
+
+        Returns:
+            The submitted TOORequest
+
+        Example:
+            >>> # TOO active immediately, to be observed within 4 hours
+            >>> ditl.submit_too(
+            ...     obsid=1000001,
+            ...     ra=180.0,
+            ...     dec=45.0,
+            ...     merit=10000.0,
+            ...     exptime=3600,
+            ...     name="GRB 250101A",
+            ...     deadline=ditl.ustart + 4 * 3600,
+            ... )
+        """
+        if isinstance(obsid, TOORequest):
+            too = obsid
+            self.config.payload.check_request(dict(too.instrument_modes))
+            self.too_register.append(too)
+            return too
+        self.config.payload.check_request(dict(instrument_modes or {}))
+        too = TOORequest.model_validate(
+            {
+                "config": self.config,
+                "obsid": obsid,
+                "ra": ra,
+                "dec": dec,
+                "merit": merit,
+                "exptime": exptime,
+                "name": name,
+                "submit_time": submit_time,
+                "deadline": deadline,
+                "science_data": dict(science_data or {}),
+                "interrupt": interrupt,
+                "instrument_modes": dict(instrument_modes or {}),
+            }
+        )
+        self.too_register.append(too)
+        return too
 
     @property
     def fault_management(self) -> FaultManagementRun:
@@ -479,6 +527,8 @@ class DITLMixin:
             inertia_tensor_body_kg_m2=inertia,
             initial_momentum_body_n_m_s=(momentum_config.initial_momentum_body_n_m_s),
             sources=build_torque_sources(self.config),
+            wheels=getattr(momentum_config, "wheel_array", None),
+            limit_by_wheels=getattr(momentum_config, "wheel_limits", None) is not None,
         )
 
     def _reset_stored_momentum_tracker(self) -> None:
@@ -487,7 +537,7 @@ class DITLMixin:
         it before the budget exists, or the budget adopts it."""
         tracker = self._build_stored_momentum_tracker()
         self._stored_momentum_tracker = tracker
-        self._momentum_previous: _MomentumInputs | None = None
+        self._momentum_previous_utime: float | None = None
         acs = getattr(self, "acs", None)
         if acs is None:
             return
@@ -545,31 +595,28 @@ class DITLMixin:
             ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
             if ecef is not None and index < len(ecef):
                 position_ecef_km = np.asarray(ecef[index], dtype=np.float64)
-        inputs = _MomentumInputs(
-            utime, position_eci_km, sun_eci_km, position_ecef_km, velocity_eci_km_s
-        )
-        previous = getattr(self, "_momentum_previous", None)
-        self._momentum_previous = inputs
-        elapsed = utime - previous.utime if previous is not None else 0.0
+        previous = getattr(self, "_momentum_previous_utime", None)
+        self._momentum_previous_utime = utime
+        elapsed = utime - previous if previous is not None else 0.0
         if (
             previous is not None
             and elapsed > self._momentum_slew_sample_s
-            and self.acs.attitude_moved(previous.utime, utime)
+            and self.acs.attitude_moved(previous, utime)
         ):
             count = math.ceil(elapsed / self._momentum_slew_sample_s)
             for k in range(1, count):
-                fraction = k / count
-                between = previous.between(inputs, fraction)
-                ra, dec, roll = self.acs.executed_attitude(between.utime)
+                at = previous + k / count * elapsed
+                orbit = orbit_at(self.ephem, at)
+                ra, dec, roll = self.acs.executed_attitude(at)
                 tracker.update(
-                    utime=between.utime,
-                    position_eci_km=between.position_eci_km,
+                    utime=at,
+                    position_eci_km=orbit.position_eci_km,
                     attitude_quaternion_eci_to_body=attitude_to_quat(ra, dec, roll),
-                    sun_eci_km=between.sun_eci_km,
+                    sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                     sunlit=sunlit,
-                    velocity_eci_km_s=between.velocity_eci_km_s,
-                    position_ecef_km=between.position_ecef_km,
-                    angular_velocity_body_rad_s=self._body_rate_rad_s(between.utime),
+                    velocity_eci_km_s=orbit.velocity_eci_km_s,
+                    position_ecef_km=orbit.position_ecef_km,
+                    angular_velocity_body_rad_s=self._body_rate_rad_s(at),
                 )
         return tracker.update(
             utime=utime,
@@ -605,10 +652,11 @@ class DITLMixin:
 
     def _momentum_demand_n_m_s(self, tracker: StoredMomentumTracker) -> float:
         """What is checked against the capacity: what the wheels hold where
-        the momentum of slews counts, the stored momentum otherwise."""
+        the momentum of slews counts, the stored momentum otherwise; with
+        wheel limits, the fullest wheel's share of it."""
         if self._slew_momentum_enabled():
-            return tracker.actuator_momentum_norm_n_m_s
-        return tracker.stored_momentum_norm_n_m_s
+            return tracker.actuator_momentum_load_n_m_s
+        return tracker.stored_momentum_load_n_m_s
 
     def _dump_level_n_m_s(self) -> float | None:
         """The stored momentum at which a thruster dump is called for, if
@@ -650,16 +698,21 @@ class DITLMixin:
         the observation under way if any: an emergency dump interrupting an
         observation is what the planning level exists to prevent."""
         tracker = self._stored_momentum_tracker
-        capacity = (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
         if tracker is None or capacity is None:
             return False
         stored = self._momentum_demand_n_m_s(tracker)
         if stored < capacity:
             return False
         self.fault_management.report_momentum_capacity(
-            utime=utime, stored_n_m_s=stored, capacity_n_m_s=capacity, obsid=obsid
+            utime=utime,
+            stored_n_m_s=tracker.stored_momentum_norm_n_m_s,
+            capacity_n_m_s=capacity,
+            obsid=obsid,
+            wheel_utilisation=stored / capacity if tracker.limit_by_wheels else None,
+            actuator_n_m_s=tracker.actuator_momentum_norm_n_m_s
+            if self._slew_momentum_enabled()
+            else None,
         )
         return True
 
@@ -686,7 +739,9 @@ class DITLMixin:
         """Forecast the stored momentum from ``begin`` to ``end`` at the
         attitudes ``attitude_at`` gives, from ``start_eci_n_m_s`` or empty
         wheels where None: the sample times, the norm at each, what the
-        wheels hold at each, and the momentum at the end in inertial
+        wheels hold at each (both as checked against the capacity: with
+        wheel limits, the fullest wheel's share), and the momentum at the
+        end in inertial
         coordinates. Held attitudes are sampled at the run's step and
         ``slew`` at the configured attitude step, with the orbit interpolated
         between ephemeris samples, as the run integrates; where the momentum
@@ -700,7 +755,7 @@ class DITLMixin:
             forecast.start_from_eci(start_eci_n_m_s)
         else:
             forecast.start_from_eci((0.0, 0.0, 0.0))
-        samples = np.arange(begin, end, self.step_size)
+        samples: npt.NDArray[np.floating] = np.arange(begin, end, self.step_size)
         if len(samples) == 0 or samples[-1] < end:
             samples = np.append(samples, end)
         slew_sample = getattr(self, "_momentum_slew_sample_s", 0.0)
@@ -725,23 +780,10 @@ class DITLMixin:
             return np.zeros(3, dtype=np.float64)
 
         utimes = self._momentum_ephem_utimes()
-        positions = np.asarray(position_vectors(self.ephem, "gcrs"), dtype=np.float64)
-        suns = np.asarray(position_vectors(self.ephem, "sun"), dtype=np.float64)
-        ecef = getattr(getattr(self.ephem, "itrs_pv", None), "position", None)
-        ecefs = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
-        velocities = velocity_vectors(self.ephem)
-
-        def interpolate(
-            table: npt.NDArray[np.float64], at: float
-        ) -> npt.NDArray[np.float64]:
-            return np.array(
-                [np.interp(at, utimes, table[:, k]) for k in range(3)], dtype=np.float64
-            )
-
         norms: list[float] = []
         demands: list[float] = []
         for at in samples:
-            position = interpolate(positions, float(at))
+            orbit = orbit_at(self.ephem, float(at))
             # Eclipse is known at the ephemeris samples: the nearest one.
             nearest = int(np.clip(np.searchsorted(utimes, at), 0, len(utimes) - 1))
             if nearest > 0 and abs(utimes[nearest - 1] - at) < abs(
@@ -750,29 +792,23 @@ class DITLMixin:
                 nearest -= 1
             sample = forecast.update(
                 utime=float(at),
-                position_eci_km=position,
+                position_eci_km=orbit.position_eci_km,
                 attitude_quaternion_eci_to_body=attitude_to_quat(
                     *attitude_at(float(at))
                 ),
-                sun_eci_km=interpolate(suns, float(at)) - position,
+                sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                 sunlit=not self.config.constraint.in_eclipse(
                     0.0, 0.0, float(utimes[nearest])
                 ),
-                velocity_eci_km_s=(
-                    interpolate(velocities, float(at))
-                    if velocities is not None
-                    else None
-                ),
-                position_ecef_km=(
-                    interpolate(ecefs, float(at)) if ecefs is not None else None
-                ),
+                velocity_eci_km_s=orbit.velocity_eci_km_s,
+                position_ecef_km=orbit.position_ecef_km,
                 angular_velocity_body_rad_s=(rate_at(float(at)) if rates else None),
             )
-            norms.append(sample.stored_momentum_norm_n_m_s)
+            norms.append(sample.stored_momentum_load_n_m_s)
             demands.append(
-                sample.actuator_momentum_norm_n_m_s
-                if sample.actuator_momentum_norm_n_m_s is not None
-                else sample.stored_momentum_norm_n_m_s
+                sample.actuator_momentum_load_n_m_s
+                if sample.actuator_momentum_load_n_m_s is not None
+                else sample.stored_momentum_load_n_m_s
             )
         return MomentumProfile(
             np.asarray(samples, dtype=np.float64),
@@ -940,6 +976,37 @@ class DITLMixin:
         self._attach_attitude_timeseries_to_plan()
         self._attach_orbit_state_timeseries_to_plan()
 
+    def sample_attitude(
+        self,
+        *,
+        begin: float | int | str | datetime | None = None,
+        end: float | int | str | datetime | None = None,
+        interval_seconds: float = 1.0,
+        include_transitions: bool = True,
+        origin_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> AttitudeTimeseriesSchema:
+        """Resample the flown trajectory while this simulation is retained.
+
+        The default endpoint is the last physically advanced executor time,
+        which may precede the requested run end by one simulation step. Export
+        before discarding the run; a saved coarse series cannot reconstruct it.
+        """
+        from ..targets.attitude_export import sample_executed_attitude
+
+        executor = self.acs._executor
+        if executor is None:
+            raise ValueError("Run the simulation before sampling executed attitude")
+        return sample_executed_attitude(
+            executor,
+            self.ephem,
+            self.config.spacecraft_bus.frame,
+            begin=begin,
+            end=end,
+            interval_seconds=interval_seconds,
+            include_transitions=include_transitions,
+            origin_offset_m=origin_offset_m,
+        )
+
     def _attach_attitude_timeseries_to_plan(self) -> None:
         """Attach the executed attitude timeline to the current plan for export."""
         from ..targets import AttitudeSampleSchema, AttitudeTimeseriesSchema
@@ -966,7 +1033,13 @@ class DITLMixin:
                 )
             )
 
-        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(samples=samples)
+        frame = getattr(self.config.spacecraft_bus, "frame", None)
+        self.plan.attitude_timeseries = AttitudeTimeseriesSchema(
+            samples=samples,
+            spacecraft_frame=frame
+            if isinstance(frame, SpacecraftFrame)
+            else SpacecraftFrame(),
+        )
 
     def _attach_orbit_state_timeseries_to_plan(self) -> None:
         """Attach GCRS spacecraft position/velocity samples to the current plan."""
@@ -1093,9 +1166,15 @@ class DITLMixin:
             start = max(start, slew.slewend + setup)
         elif mode == ACSMode.SLEWING:
             return utime, utime
-        return self.ppt.collection_interval_between(
+        begin, end = self.ppt.collection_interval_between(
             start, min(utime + self.step_size, self.uend)
         )
+        eclipse = (
+            self.ppt.eclipse_violation(begin, end)
+            if self.ppt.forbids_eclipse() is True
+            else None
+        )
+        return (begin, end if eclipse is None else max(begin, eclipse))
 
     def _add_activity_data(self, data_gb: float, entry: object | None = None) -> None:
         """Store an activity's fixed data now and report it on the next step."""

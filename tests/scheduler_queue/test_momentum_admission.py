@@ -16,6 +16,7 @@ from conops import (
     StoredMomentumConfig,
 )
 from conops.common import ObsType
+from conops.common.vector import quaternion_attitude_delta
 from conops.config import (
     ObservationTiming,
     RadiatorConfiguration,
@@ -28,7 +29,7 @@ from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 from conops.simulation.momentum_planning import MomentumObservationPlanner
 from conops.simulation.passes import Pass
 from conops.simulation.slew import Slew
-from conops.targets import PlanEntry
+from conops.targets import Plan, PlanEntry, track_from_table
 from scripts.check_default_plan_output import (
     SCENARIO_BEGIN,
     DeterministicConstraint,
@@ -110,6 +111,38 @@ def test_admission_slows_only_when_needed_and_keeps_settling(scenario):
     assert sim.acs.momentum_budget.current.sample.actuator_momentum_norm_n_m_s <= 20
     sim.acs._start_slew(plan.recovery, plan.end)
     sim.acs._advance_attitude(plan.recovery._momentum_hold_end)
+
+
+def test_admitted_moving_target_keeps_tracking_and_momentum_limits(scenario):
+    sim, target = scenario
+    target.track = track_from_table([sim.ustart, sim.uend], [40.0, 41.0], [15.0, 15.0])
+    plan = MomentumObservationPlanner(sim).observation(target, sim.ustart)
+    assert plan is not None
+    assert plan.slew.rate_fraction == 0.5
+    assert plan.slew.endra == pytest.approx(target.position_at(plan.slew.slewend)[0])
+    target.end = plan.end
+    assert sim.acs._start_slew(plan.slew, sim.ustart) is plan.slew
+    assert sim.acs._tracked_slew is plan.slew
+    sample_time = plan.slew.slewend + 180
+    sim.acs._advance_attitude(sample_time)
+    angle, _ = quaternion_attitude_delta(
+        *sim.acs.predicted_attitude(sample_time),
+        *target.target_body_attitude(plan.slew.instrument_roll, at=sample_time),
+    )
+    assert angle < 1e-5
+    assert sim.acs.momentum_budget.current.sample.actuator_momentum_norm_n_m_s <= 20
+    sim.acs.end_science_observation(sample_time)
+    assert sim.acs._tracked_slew is None
+    assert sim.acs.motion_ready_time(sample_time) < plan.end
+
+
+def test_moving_target_keeps_explicit_admission_roll(scenario):
+    sim, target = scenario
+    target.track = track_from_table([sim.ustart, sim.uend], [40.0, 41.0], [15.0, 15.0])
+    slew = sim._new_ppt_slew(target, sim.ustart)
+    sim._complete_ppt_slew(slew, target, sim.ustart, sim.ustart, instrument_roll=90.0)
+    assert slew.instrument_roll == 90.0
+    assert slew.endroll == 90.0
 
 
 def test_delayed_admission_is_replanned_from_actual_state_and_time(scenario):
@@ -275,7 +308,7 @@ def test_reduced_speed_survives_plan_entry_roundtrip_and_dispatch(scenario):
     assert plan is not None
     target.end = plan.end
     sim._apply_slew_metadata(target, plan.slew)
-    restored = PlanEntry.model_validate_json(target.model_dump_json())
+    restored = Plan.model_validate_json(Plan(entries=[target]).model_dump_json())[0]
     assert restored.slew_rate_fraction == 0.5
     assert "slew_rate_fraction" not in PlanEntry().model_dump()
     restored.config = sim.config
@@ -549,7 +582,7 @@ def test_exact_exposure_survives_padded_hold_execution_and_export(scenario, expo
         hk.collection_seconds for hk in sim.telemetry.housekeeping
     ) == pytest.approx(exposure)
     assert not sim.validate_plan_matches_execution()
-    restored = PlanEntry.model_validate_json(entry.model_dump_json())
+    restored = Plan.model_validate_json(Plan(entries=[entry]).model_dump_json())[0]
     assert restored.collection_begin == entry.collection_begin
     assert restored.collection_end == entry.collection_end
 
@@ -730,6 +763,7 @@ def test_idle_escape_tries_destination_solar_roll_first(scenario, monkeypatch):
     assert recovery.call_args.args[2] == (180.0, 10.0, 123.0)
     assert optimum.call_args.args[:3] == (180.0, 10.0, sim.ustart)
     assert optimum.call_args.kwargs["drive_state"] is sim.acs.solar_array_drive_state
+    assert optimum.call_args.kwargs["science_attitude"] is False
 
 
 def test_pass_conflict_allows_safe_idle_wait_with_torque_enabled(scenario, monkeypatch):
@@ -1219,6 +1253,7 @@ def test_idle_certificate_reuses_fixed_departure_and_recertifies_at_expiry(
     [
         "capacity",
         "inertia",
+        "wheel_limits",
         "motion_config",
         "constraint_config",
         "orbit",
@@ -1240,7 +1275,6 @@ def test_idle_certificate_reuses_fixed_departure_and_recertifies_at_expiry(
 def test_idle_certificate_invalidates_changed_dependencies(
     idle_certificate_scenario, monkeypatch, change
 ):
-    from dataclasses import replace
     from conops.simulation.attitude import AttitudeTrajectory
 
     sim, _ = idle_certificate_scenario
@@ -1251,6 +1285,8 @@ def test_idle_certificate_invalidates_changed_dependencies(
         executor.momentum.capacity *= 0.9
     elif change == "inertia":
         executor.momentum.inertia[0, 0] += 1
+    elif change == "wheel_limits":
+        executor.momentum.wheel_limit_rows = np.eye(3)
     elif change == "motion_config":
         sim.config.spacecraft_bus.attitude_control.max_slew_rate *= 0.9
     elif change == "constraint_config":
@@ -1284,7 +1320,9 @@ def test_idle_certificate_invalidates_changed_dependencies(
             update={"path": None}
         )
     elif change == "attitude":
-        executor._state = replace(executor.state, quaternion=(0.0, 1.0, 0.0, 0.0))
+        executor._state = executor.state.model_copy(
+            update={"quaternion": (0.0, 1.0, 0.0, 0.0)}
+        )
     elif change == "momentum_vector":
         # Same norm, different inertial vector: cannot reuse the certificate.
         executor.momentum.current.tracker._momentum_eci_n_m_s *= -1

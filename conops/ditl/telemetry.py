@@ -74,6 +74,7 @@ class Housekeeping(BaseModel):
         stored_momentum_norm_n_m_s: Norm of accumulated stored momentum (N m s)
         actuator_momentum_body_n_m_s: What the wheels hold in body coordinates, the stored momentum less the body's own while it turns (N m s)
         actuator_momentum_norm_n_m_s: Norm of what the wheels hold (N m s)
+        wheel_momentum_n_m_s: Each configured wheel's momentum along its spin axis (N m s)
     """
 
     timestamp: datetime = Field(description="UTC timestamp")
@@ -95,7 +96,14 @@ class Housekeeping(BaseModel):
         default=None,
         ge=0,
         allow_inf_nan=False,
-        description="Useful science collection in the timestep starting at this timestamp; excludes setup and teardown",
+        description=(
+            "Collection in the timestep starting at this timestamp; excludes setup "
+            "and teardown. Calibration collection is identified by calibration=True"
+        ),
+    )
+    calibration: bool = Field(
+        default=False,
+        description="Whether the active observation step collects calibration rather than science",
     )
     panel_illumination: float | None = Field(
         default=None, description="Solar panel illumination fraction (0-1)"
@@ -265,6 +273,14 @@ class Housekeeping(BaseModel):
     actuator_momentum_norm_n_m_s: float | None = Field(
         default=None,
         description="Norm of what the wheels hold, in N m s",
+    )
+    wheel_momentum_n_m_s: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each configured wheel's momentum along its spin axis, in N m s, in "
+            "the order the wheels are configured: its share of what the wheels "
+            "hold; None without wheels"
+        ),
     )
     disturbance_torques_body_n_m: dict[str, list[float]] | None = Field(
         default=None,
@@ -593,6 +609,11 @@ class HousekeepingList(list[Housekeeping]):
     def actuator_momentum_norm_n_m_s(self) -> list[float | None]:
         """Get the norms of what the wheels hold from all records."""
         return [hk.actuator_momentum_norm_n_m_s for hk in self]
+
+    @property
+    def wheel_momentum_n_m_s(self) -> list[list[float] | None]:
+        """Get each wheel's momentum along its spin axis from all records."""
+        return [hk.wheel_momentum_n_m_s for hk in self]
 
     @property
     def disturbance_torques_body_n_m(self) -> list[dict[str, list[float]] | None]:

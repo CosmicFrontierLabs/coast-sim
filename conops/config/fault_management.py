@@ -143,6 +143,12 @@ _RECORDER_THRESHOLD_PATH_PARTS = 3
 FaultEventMetadataValue = str | float | int | None
 
 
+_METADATA_PREVIEW_ITEMS = 3
+"""How many metadata items a fault's summary shows."""
+_METADATA_PREVIEW_CHARS = 80
+"""How long a metadata value may be in that summary before it is cut."""
+
+
 class FaultEvent(BaseModel):
     """Records a single fault management event.
 
@@ -177,12 +183,12 @@ class FaultEvent(BaseModel):
         # Build a short preview of metadata: show up to 3 key=repr(value) pairs, truncating long values
         parts: list[str] = []
         for i, (k, v) in enumerate(self.metadata.items()):
-            if i >= 3:
+            if i >= _METADATA_PREVIEW_ITEMS:
                 parts.append("...")
                 break
             v_repr = repr(v)
-            if len(v_repr) > 80:
-                v_repr = v_repr[:77] + "..."
+            if len(v_repr) > _METADATA_PREVIEW_CHARS:
+                v_repr = v_repr[: _METADATA_PREVIEW_CHARS - 3] + "..."
             parts.append(f"{k}={v_repr}")
 
         return f"{base} | " + ", ".join(parts)
@@ -522,6 +528,8 @@ class FaultManagementRun(FaultManagement):
         stored_n_m_s: float,
         capacity_n_m_s: float,
         obsid: int | None,
+        wheel_utilisation: float | None = None,
+        actuator_n_m_s: float | None = None,
     ) -> None:
         """Latch the reaction wheels at their capacity: the ``stored_momentum``
         state goes red and an event records it, saying whether an observation
@@ -538,21 +546,39 @@ class FaultManagementRun(FaultManagement):
             if obsid is not None
             else "; emergency thruster dump"
         )
+        metadata: dict[str, FaultEventMetadataValue] = {
+            "stored_n_m_s": stored_n_m_s,
+            "capacity_n_m_s": capacity_n_m_s,
+            "obsid": obsid,
+            "during_observation": int(obsid is not None),
+        }
+        if actuator_n_m_s is not None:
+            metadata["actuator_n_m_s"] = actuator_n_m_s
+        if wheel_utilisation is not None:
+            metadata["wheel_utilisation"] = wheel_utilisation
+            cause = (
+                f"Fullest wheel at {wheel_utilisation:.1%} of its capacity "
+                f"(stored momentum {stored_n_m_s:.3f} N m s"
+                + (
+                    f"; actuator momentum {actuator_n_m_s:.3f} N m s"
+                    if actuator_n_m_s is not None
+                    else ""
+                )
+                + ")"
+            )
+        else:
+            cause = (
+                f"Actuator momentum {actuator_n_m_s:.3f}"
+                if actuator_n_m_s is not None
+                else f"Stored momentum {stored_n_m_s:.3f}"
+            ) + f" N m s reached the {capacity_n_m_s} N m s capacity"
         self.events.append(
             FaultEvent(
                 utime=utime,
                 event_type="momentum_capacity",
                 name="stored_momentum",
-                cause=(
-                    f"Stored momentum {stored_n_m_s:.3f} N m s reached the "
-                    f"{capacity_n_m_s} N m s capacity{during}"
-                ),
-                metadata={
-                    "stored_n_m_s": stored_n_m_s,
-                    "capacity_n_m_s": capacity_n_m_s,
-                    "obsid": obsid,
-                    "during_observation": int(obsid is not None),
-                },
+                cause=cause + during,
+                metadata=metadata,
             )
         )
 

@@ -1,98 +1,40 @@
 """The planners within the wheels' momentum: the forecast along a plan and
 the thruster dumps reserved where it reaches the level."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import numpy as np
 import pytest
-from rust_ephem import EarthLimbConstraint, SunConstraint, TLEEphemeris
+from rust_ephem import TLEEphemeris
 
 from conops import DITL
 from conops.common import ObsType
 from conops.config import (
-    AttitudeControlSystem,
-    Battery,
-    Constraint,
-    GroundStationRegistry,
-    MissionConfig,
-    RadiatorConfiguration,
-    SolarPanelSet,
-    SpacecraftBus,
-    StarTrackerConfiguration,
     StoredMomentumConfig,
     ThrusterDumpConfig,
 )
 from conops.ditl import RollingHorizonDITL
 from conops.schedulers import LocalSearchScheduler, PriorityScheduler
+from conops.schedulers.context import SchedulingContext
 from conops.schedulers.momentum import MomentumForecast
+from conops.simulation.attitude import Attitude
+from conops.simulation.slew import Slew
 from conops.targets import Plan, PlanEntry, Pointing, ScheduledActivity
 from conops.targets.sequence import ObservationSequence, SequenceStep
 
-BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
-HOURS = 6
-END = BEGIN + timedelta(hours=HOURS)
-T0 = BEGIN.timestamp()
-CAPACITY = 1.0
-LEVEL = 0.6
-DUMP = ThrusterDumpConfig(duration_seconds=120.0)
-
-
-def _config(**momentum: object) -> MissionConfig:
-    ephem = TLEEphemeris(tle="examples/example.tle", begin=BEGIN, end=END, step_size=10)
-    config = MissionConfig(
-        constraint=Constraint(
-            sun_constraint=SunConstraint(min_angle=45),
-            earth_constraint=EarthLimbConstraint(min_angle=10),
-        ),
-        ground_stations=GroundStationRegistry(stations=[]),
-        solar_panel=SolarPanelSet(panels=[]),
-        battery=Battery(watthour=100_000.0),
-        spacecraft_bus=SpacecraftBus(
-            inertia_tensor_body_kg_m2=np.diag([1000.0, 1200.0, 800.0]),
-            attitude_control=AttitudeControlSystem(
-                max_slew_rate=0.5,
-                slew_acceleration=0.25,
-                settle_time=30.0,
-                stored_momentum=StoredMomentumConfig(
-                    gravity_gradient_enabled=True,
-                    **momentum,  # type: ignore[arg-type]
-                ),
-            ),
-            star_trackers=StarTrackerConfiguration(
-                star_trackers=[], min_functional_trackers=0, modes_require_lock=[]
-            ),
-            radiators=RadiatorConfiguration(radiators=[]),
-        ),
-    )
-    config.constraint.ephem = ephem
-    return config
-
-
-def _dumping() -> MissionConfig:
-    return _config(capacity_n_m_s=CAPACITY, planning_level=LEVEL, thruster_dump=DUMP)
-
-
-def _targets(config: MissionConfig) -> list[Pointing]:
-    """Three targets close together, held long enough to fill the wheels."""
-    targets = []
-    for i, (ra, dec) in enumerate([(80.0, -20.0), (85.0, -22.0), (75.0, -18.0)]):
-        target = Pointing(
-            config=config,
-            obsid=100 + i,
-            name=f"T{i}",
-            ra=ra,
-            dec=dec,
-            merit=90.0 - i,
-            ss_min=1200,
-            ss_max=3600,
-        )
-        target.exptime = 4 * 3600
-        targets.append(target)
-    return targets
-
-
-def _dumps(plan: Plan | list) -> list:
-    return sorted((e for e in plan if e.desaturation), key=lambda e: float(e.begin))
+from .momentum_scenario import (
+    BEGIN,
+    CAPACITY,
+    DUMP,
+    END,
+    HOURS,
+    LEVEL,
+    T0,
+    dump_entries,
+    dumping_config,
+    momentum_config,
+    momentum_targets,
+)
 
 
 def _science(plan: Plan | list) -> list:
@@ -109,12 +51,12 @@ class TestPriorityScheduler:
         in, or before it where the capacity would be reached inside it. The
         final plan's forecast stays within the capacity, no dump cuts an
         observation, and the executed plan matches the forecast."""
-        config = _dumping()
+        config = dumping_config()
         scheduler = PriorityScheduler(
-            config, _targets(config), BEGIN, END, step_size=60
+            config, momentum_targets(config), BEGIN, END, step_size=60
         )
         plan = scheduler.schedule()
-        dumps = _dumps(plan)
+        dumps = dump_entries(plan)
         assert len(dumps) >= 4
         assert [e.obsid for e in dumps] == [d.obsid for d in scheduler.dumps]
         assert all(float(e.end) - float(e.begin) == pytest.approx(120.0) for e in dumps)
@@ -160,7 +102,7 @@ class TestPriorityScheduler:
                 )
         replay = Plan.model_validate_json(plan.model_dump_json())
         ditl = DITL(
-            config=_dumping(),
+            config=dumping_config(),
             ephem=config.constraint.ephem,
             plan=replay,
             begin=BEGIN,
@@ -182,7 +124,9 @@ class TestPriorityScheduler:
         """The planner's loading of a visit from empty wheels integrates
         every step, so a visit of three short steps that together exceed
         the capacity is not planned, on the loading of all three."""
-        config = _config(capacity_n_m_s=0.3, planning_level=0.6, thruster_dump=DUMP)
+        config = momentum_config(
+            capacity_n_m_s=0.3, planning_level=0.6, thruster_dump=DUMP
+        )
         step = 15 * 60.0
 
         def visit(obsid: int, steps: int) -> Pointing:
@@ -215,14 +159,27 @@ class TestPriorityScheduler:
         # Three steps' worth: one step of this hold stores about 0.2 N m s.
         assert loading > 0.5
 
-    def test_the_forecast_reads_integrated_spans_from_its_cache(self) -> None:
+    @pytest.mark.parametrize("kind", ["priority", "local_search"])
+    def test_the_forecast_reads_integrated_spans_from_its_cache(
+        self, kind: str
+    ) -> None:
         """A plan's passes share the spans integrated so far: the profile
         from the cache is the profile integrated afresh, and a pass
         integrates only from the dump it reserves onwards."""
-        config = _dumping()
-        scheduler = PriorityScheduler(
-            config, _targets(config), BEGIN, END, step_size=60
-        )
+        config = dumping_config()
+        if kind == "priority":
+            scheduler = PriorityScheduler(
+                config, momentum_targets(config), BEGIN, END, step_size=60
+            )
+        else:
+            scheduler = LocalSearchScheduler(
+                config,
+                momentum_targets(config),
+                BEGIN,
+                END,
+                step_size=60,
+                max_iterations=0,
+            )
         scheduler.schedule()
         assert scheduler._momentum is not None
         cache = scheduler._momentum.cache
@@ -238,14 +195,16 @@ class TestPriorityScheduler:
         # starts from, so the passes hit the same entries.
         spans = scheduler._momentum._spans(scheduler.timeline)
         assert len(cache) < 2 * len(spans) * len(scheduler.dumps)
+        scheduler.schedule()
+        assert scheduler._momentum_cache is not cache
 
     def test_without_thrusters_the_forecast_past_the_capacity_is_logged(self) -> None:
-        config = _config(capacity_n_m_s=CAPACITY)
+        config = momentum_config(capacity_n_m_s=CAPACITY)
         scheduler = PriorityScheduler(
-            config, _targets(config), BEGIN, END, step_size=60
+            config, momentum_targets(config), BEGIN, END, step_size=60
         )
         plan = scheduler.schedule()
-        assert _dumps(plan) == [] and scheduler.dumps == []
+        assert dump_entries(plan) == [] and scheduler.dumps == []
         assert any(
             "no thrusters to dump it" in e.description for e in scheduler.log.events
         )
@@ -253,25 +212,32 @@ class TestPriorityScheduler:
         assert norms.max() > CAPACITY
 
     def test_without_tracking_nothing_changes(self) -> None:
-        config = _config()
+        config = momentum_config()
         config.spacecraft_bus.attitude_control.stored_momentum = StoredMomentumConfig()
         scheduler = PriorityScheduler(
-            config, _targets(config), BEGIN, END, step_size=60
+            config, momentum_targets(config), BEGIN, END, step_size=60
         )
         plan = scheduler.schedule()
-        assert scheduler._momentum is None and _dumps(plan) == []
+        assert scheduler._momentum is None and dump_entries(plan) == []
 
 
 class TestLocalSearch:
     def test_the_search_keeps_within_the_level(self) -> None:
-        config = _dumping()
+        config = dumping_config()
         scheduler = LocalSearchScheduler(
-            config, _targets(config), BEGIN, END, step_size=60, time_limit=1.0
+            config, momentum_targets(config), BEGIN, END, step_size=60, time_limit=1.0
         )
         plan = scheduler.schedule()
-        assert len(_dumps(plan)) >= 4
+        assert len(dump_entries(plan)) >= 4
+        # The forecast reads the plan returned, searched and charged.
+        assert [
+            e for b in scheduler.timeline for e in (b.steps or [b.entry])
+        ] == plan.entries
         _, norms = scheduler._momentum.profile(scheduler.timeline)
         assert norms.max() < CAPACITY
+        # Each pass after a dump kept the searched plan before it.
+        assert scheduler._kept
+        assert all(block.entry in plan.entries for block in scheduler._kept)
 
 
 class TestRolling:
@@ -279,10 +245,10 @@ class TestRolling:
         """Replans forecast from the stored momentum at the replan, so the
         executed run stays within the capacity with the dumps the plans
         reserved, and the planned simulation unloads at each."""
-        config = _dumping()
+        config = dumping_config()
         ditl = RollingHorizonDITL(
             config,
-            _targets(config),
+            momentum_targets(config),
             begin=BEGIN,
             end=END,
             horizon=timedelta(hours=3),
@@ -291,7 +257,7 @@ class TestRolling:
         ditl.step_size = 10
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
-        dumps = _dumps(ditl.plan)
+        dumps = dump_entries(ditl.plan)
         assert len(dumps) >= 4
         norm = np.array(
             ditl.telemetry.housekeeping.stored_momentum_norm_n_m_s, dtype=float
@@ -312,13 +278,13 @@ class TestResolution:
         each step, and each replan forecasts from the attitude held and the
         momentum stored when its horizon starts, the committed entries'
         contribution included."""
-        config = _dumping()
+        config = dumping_config()
         config.constraint.ephem = TLEEphemeris(
             tle="examples/example.tle", begin=BEGIN, end=END, step_size=step
         )
         ditl = RollingHorizonDITL(
             config,
-            _targets(config),
+            momentum_targets(config),
             begin=BEGIN,
             end=END,
             horizon=timedelta(hours=3),
@@ -333,7 +299,7 @@ class TestResolution:
         assert len(norm) == HOURS * 3600 // step
         assert norm.max() < CAPACITY
         assert norm.max() < LEVEL + 0.15
-        assert len(_dumps(ditl.plan)) >= 5
+        assert len(dump_entries(ditl.plan)) >= 5
 
 
 class TestDumpsAroundBlocks:
@@ -343,27 +309,29 @@ class TestDumpsAroundBlocks:
         """Where the forecast reaches the level inside a scheduled activity,
         the dump goes before the block where the capacity would be reached
         inside it, else after; dumps are never stacked after the block."""
-        config = _dumping()
-        bare = PriorityScheduler(config, _targets(config), BEGIN, END, step_size=60)
+        config = dumping_config()
+        bare = PriorityScheduler(
+            config, momentum_targets(config), BEGIN, END, step_size=60
+        )
         bare.schedule()
-        first = _dumps(bare.plan)[0]
+        first = dump_entries(bare.plan)[0]
         crossing = float(first.begin)
         block = ScheduledActivity(
             name="Calibration",
             begin=crossing - 20 * 60.0,
             duration_seconds=60 * 60.0,
         )
-        config = _dumping()
+        config = dumping_config()
         scheduler = PriorityScheduler(
             config,
-            _targets(config),
+            momentum_targets(config),
             BEGIN,
             END,
             step_size=60,
             activities=[block],
         )
         plan = scheduler.schedule()
-        dumps = _dumps(plan)
+        dumps = dump_entries(plan)
         assert dumps
         for dump in dumps:
             assert float(dump.end) <= block.begin or float(dump.begin) >= block.end
@@ -421,7 +389,7 @@ class TestDumpsAroundBlocks:
         plan = scheduler.schedule()
         for entry in plan:
             assert float(entry.end) > float(entry.begin), entry
-        assert _dumps(plan)
+        assert dump_entries(plan)
         ditl = DITL(
             config=config,
             ephem=config.constraint.ephem,
@@ -433,10 +401,180 @@ class TestDumpsAroundBlocks:
         assert ditl.calc()
         assert ditl.validate_plan_matches_execution() == []
 
+    def test_a_slew_timed_into_a_late_block_leaves_its_settled_times(self) -> None:
+        """A block that may begin late begins and ends where it settled,
+        whatever start the slew into it was timed at: the slew was timed
+        against the block where it was reserved, the settle moved it."""
+        from conops.schedulers.priority_scheduler import PriorityScheduler, _Block
+        from conops.simulation.slew import Slew
+
+        config = dumping_config()
+        dump = ScheduledActivity(
+            name="Desaturation",
+            begin=T0 + 7200.0,
+            duration_seconds=120.0,
+            desaturation=True,
+            obsid=998000,
+        )
+        entry = dump.plan_entry(config, (80.0, -20.0, 0.0))
+        block = _Block(
+            entry=entry,
+            attitude_in=(80.0, -20.0, 0.0),
+            attitude_out=(80.0, -20.0, 0.0),
+            ready=T0 + 7200.0,
+            end=T0 + 7320.0,
+            follows=True,
+            activity=dump,
+            latest_ready=T0 + 7200.0 + 3600.0,
+        )
+        slew = Slew(config=config)
+        slew.slewstart = T0 + 10800.0
+        slew.slewend = T0 + 10800.0
+        slew.slewtime = 0.0
+        slew.slewdist = 0.0
+        slew.endra, slew.enddec, slew.endroll = 80.0, -20.0, 0.0
+        PriorityScheduler._apply_slew(block, slew)
+        assert float(block.entry.begin) == T0 + 7200.0
+        assert float(block.entry.end) == T0 + 7320.0
+        assert float(block.entry.end) > float(block.entry.begin)
+
+
+def _science_key(plan: Plan) -> list[tuple[int, float, float, float, float]]:
+    return [
+        (
+            int(e.obsid),
+            float(e.begin),
+            float(e.collection_begin or 0.0),
+            float(e.collection_end or 0.0),
+            float(e.end),
+        )
+        for e in _science(plan)
+    ]
+
+
+def _given_dumps(plan: Plan) -> list[ScheduledActivity]:
+    """The plan's dumps as activities a configuration could schedule."""
+    return [
+        ScheduledActivity(
+            name="Desaturation",
+            begin=float(d.begin),
+            duration_seconds=float(d.end) - float(d.begin),
+            desaturation=True,
+        )
+        for d in dump_entries(plan)
+    ]
+
+
+class TestPlanningOnFromADump:
+    """A pass after a dump keeps the science before the dump and plans on."""
+
+    HORIZON = BEGIN + timedelta(hours=2)
+
+    def test_the_pass_after_a_dump_keeps_the_plan_before_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With one dump, the plan is the plan a single pass builds with that
+        dump scheduled as an activity; the science before the dump is kept
+        from the pass before, and the pass after the dump searches no slew
+        start before the first slew it let go."""
+        config = dumping_config()
+        targets = momentum_targets(config)
+        science = {int(t.obsid) for t in targets}
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, self.HORIZON, step_size=60
+        )
+        searched: list[tuple[float | None, float]] = []
+        original = SchedulingContext.slew
+
+        def slew(
+            ctx: SchedulingContext,
+            start: Attitude,
+            end: Attitude,
+            slewstart: float,
+            *,
+            obstype: ObsType = ObsType.PPT,
+            obsid: int = 0,
+        ) -> Slew:
+            if obsid in science:
+                searched.append((scheduler._resume_from, float(slewstart)))
+            return original(ctx, start, end, slewstart, obstype=obstype, obsid=obsid)
+
+        monkeypatch.setattr(SchedulingContext, "slew", slew)
+        plan = scheduler.schedule()
+        dumps = dump_entries(plan)
+        assert len(dumps) == 1
+        assert len(scheduler._kept) == 1
+        kept = scheduler._kept[0]
+        assert float(kept.end) <= float(dumps[0].begin)
+        assert kept.entry in plan.entries
+        assert scheduler._resume_from is not None
+        assert scheduler._resume_from >= float(dumps[0].end)
+        # The second pass placed only from where the first pass let go.
+        floored = [(floor, start) for floor, start in searched if floor is not None]
+        assert floored
+        assert all(start >= floor for floor, start in floored)
+        assert min(start for _, start in floored) == scheduler._resume_from
+
+        whole = PriorityScheduler(
+            config,
+            momentum_targets(config),
+            BEGIN,
+            self.HORIZON,
+            step_size=60,
+            activities=_given_dumps(plan),
+        )
+        whole_plan = whole.schedule()
+        assert whole.dumps == []
+        assert _science_key(whole_plan) == _science_key(plan)
+        assert [float(d.begin) for d in dump_entries(whole_plan)] == [
+            float(d.begin) for d in dumps
+        ]
+
+    def test_a_kept_visit_counts_for_its_steps(self) -> None:
+        """A sequence visit before the dump is kept whole and counts as its
+        science steps: the pass after the dump does not plan it again."""
+        config = dumping_config()
+        visit = Pointing(
+            config=config,
+            obsid=2,
+            name="Visit",
+            ra=80.0,
+            dec=-20.0,
+            merit=100.0,
+            sequence=ObservationSequence(
+                steps=[
+                    SequenceStep(name=f"s{k}", duration_seconds=600.0) for k in range(3)
+                ]
+            ),
+            visits=1,
+        )
+        targets = [visit, *momentum_targets(config)]
+        scheduler = PriorityScheduler(
+            config, targets, BEGIN, self.HORIZON, step_size=60
+        )
+        plan = scheduler.schedule()
+        dumps = dump_entries(plan)
+        assert len(dumps) >= 1
+        steps = [e for e in plan if int(e.obsid) == 2]
+        assert [e.step for e in steps] == ["s0", "s1", "s2"]
+        assert all(float(e.end) <= float(dumps[0].begin) for e in steps)
+        assert [b.is_visit for b in scheduler._kept].count(True) == 1
+        assert visit.obsid not in {int(t.obsid) for t in scheduler.unplaced}
+
+        whole = PriorityScheduler(
+            config,
+            [visit, *momentum_targets(config)],
+            BEGIN,
+            self.HORIZON,
+            step_size=60,
+            activities=_given_dumps(plan),
+        )
+        assert _science_key(whole.schedule()) == _science_key(plan)
+
 
 @pytest.mark.parametrize("offset", [0.0, 1.0])
 def test_dump_at_replan_boundary_unloads_once(offset: float) -> None:
-    config = _config(
+    config = momentum_config(
         capacity_n_m_s=10.0,
         initial_momentum_body_n_m_s=(6.0, 0.0, 0.0),
         thruster_dump=ThrusterDumpConfig(duration_seconds=120, residual_fraction=0.5),
@@ -447,7 +585,7 @@ def test_dump_at_replan_boundary_unloads_once(offset: float) -> None:
     config.spacecraft_bus.attitude_control.stored_momentum.slew_momentum_enabled = True
     ditl = RollingHorizonDITL(
         config,
-        _targets(config),
+        momentum_targets(config),
         begin=BEGIN,
         end=END,
         horizon=timedelta(hours=3),

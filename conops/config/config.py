@@ -14,14 +14,17 @@ from .constraint import AttitudeConstraintScope, Constraint, DefaultConstraint
 from .data_generator import ScienceData
 from .data_storage import DataStorage, RecorderView
 from .fault_management import FaultManagement
+from .frame import SpacecraftFrame
 from .groundstation import GroundStationRegistry
-from .instrument import Payload
+from .instrument import Payload, Telescope
 from .observation_categories import ObservationCategories
+from .observation_groups import ObservationGroups
 from .observation_timing import ObservationTiming
 from .recorder import OnboardRecorder
 from .scheduler import SchedulerConfig
 from .solar_panel import SolarPanelSet
 from .spacecraft_bus import SpacecraftBus
+from .surfaces import SurfaceModel
 from .targets import TargetConfig
 from .visualization import VisualizationConfig
 
@@ -168,6 +171,13 @@ class MissionConfig(ConfigModel):
         default_factory=ObservationCategories.default_categories,
         description="Observation Categories. Defines categories for different observation types with ID ranges",
     )
+    observation_groups: ObservationGroups = Field(
+        default_factory=ObservationGroups,
+        description=(
+            "Observation Groups. Named sets of targets observed under one window "
+            "and one time budget, and preferred one after another"
+        ),
+    )
     visualization: VisualizationConfig = Field(
         default_factory=VisualizationConfig,
         exclude=True,
@@ -237,6 +247,29 @@ class MissionConfig(ConfigModel):
         return _normalize_attitude_constraint_scopes(value)
 
     @model_validator(mode="after")
+    def _telescopes_take_the_bus_frame(self) -> MissionConfig:
+        """A telescope given no mounting of its own points along the bus
+        frame's boresight, with its zero-roll reference completing the
+        frame; one given a mounting, or a legacy boresight, keeps it."""
+        bus = getattr(self, "spacecraft_bus", None)
+        if isinstance(self.constraint, Constraint):
+            self.constraint._body_frame_source = bus
+        frame = getattr(bus, "frame", None)
+        payload = getattr(self, "payload", None)
+        # A test double's configuration has no frame or payload.
+        if not isinstance(frame, SpacecraftFrame) or frame.is_identity:
+            return self
+        instruments = getattr(payload, "instruments", None)
+        if not isinstance(instruments, list):
+            return self
+        for instrument in instruments:
+            if isinstance(instrument, Telescope) and (
+                "mounting" not in instrument.model_fields_set
+            ):
+                instrument.mounting = frame.mounting
+        return self
+
+    @model_validator(mode="after")
     def _panels_see_the_given_eclipses(self) -> MissionConfig:
         """The solar panels take the intervals the constraint gives as
         eclipse, read as the constraint's list stands."""
@@ -247,6 +280,33 @@ class MissionConfig(ConfigModel):
         # A test double's constraint or panels take nothing.
         if callable(take) and isinstance(constraint, Constraint):
             take(constraint.eclipse_intervals_unix)
+        return self
+
+    @model_validator(mode="after")
+    def _surface_instruments_exist(self) -> MissionConfig:
+        """A surface marked as part of an instrument names one the payload
+        has. A name that matches none, by a difference of case for one, would
+        otherwise be ignored: the plate would leave the hull and no telescope
+        would take it as its own."""
+        bus = getattr(self, "spacecraft_bus", None)
+        model = getattr(bus, "surfaces", None)
+        instruments = getattr(getattr(self, "payload", None), "instruments", None)
+        # A test double's bus or payload has neither.
+        if not isinstance(model, SurfaceModel) or not isinstance(instruments, list):
+            return self
+        names = {getattr(instrument, "name", None) for instrument in instruments}
+        unknown = sorted(
+            {
+                surface.instrument
+                for surface in model.surfaces
+                if surface.instrument is not None and surface.instrument not in names
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"surfaces name instruments the payload does not have: {unknown}; "
+                f"it has {sorted(str(name) for name in names)}"
+            )
         return self
 
     @model_validator(mode="after")
@@ -271,6 +331,13 @@ class MissionConfig(ConfigModel):
                 if step.instrument_modes:
                     check(step.instrument_modes)
         return self
+
+    def science_in_eclipse_for(self, obsid: int) -> bool:
+        """The category override, or the mission's eclipse observing default."""
+        override = self.observation_categories.get_category(
+            int(obsid)
+        ).science_in_eclipse
+        return self.constraint.science_in_eclipse if override is None else override
 
     def observation_timing_for(self, obsid: int) -> ObservationTiming:
         """The setup, cleanup and handoff budgets of the observation ``obsid``:

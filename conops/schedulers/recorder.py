@@ -40,6 +40,16 @@ class DataFlow(NamedTuple):
 RecorderAmount = float | tuple[DataFlow, ...]
 
 
+def activity_data_time(entry: PlanEntry) -> float:
+    """Activity frames are generated when its stationary hold starts."""
+    hold = getattr(entry, "activity_hold_begin", None)
+    return (
+        float(hold)
+        if hold is not None
+        else float(entry.begin) + max(0.0, float(entry.slewtime or 0))
+    )
+
+
 def amount_total(amount: RecorderAmount) -> float:
     return amount if isinstance(amount, (int, float)) else sum(f.volume for f in amount)
 
@@ -278,11 +288,11 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         return science + extra_data_gb(entry, self.config)
 
     def activity_additions(self, entry: PlanEntry) -> list[tuple[int, RecorderAmount]]:
-        """An activity's frames, stored at its start in this recorder."""
+        """An activity's frames, stored at its hold start in this recorder."""
         fixed = extra_data_gb(entry, self.config)
         if fixed <= 0.0:
             return []
-        begin = float(entry.begin)
+        begin = activity_data_time(entry)
         amount: RecorderAmount = (
             (DataFlow(begin, begin, fixed),) if self._timed_science else fixed
         )
@@ -594,8 +604,13 @@ class RecorderLedger(ConsumableLedger[RecorderAmount, RecorderAmount]):
         last = min(self.grid_step(slew_end), self.bounds[-1])
         if last <= first:
             return 0.0
+        mode = (
+            ACSMode.SLEWING
+            if getattr(entry, "contact_ingress", None) == "reposition"
+            else ACSMode.PASS
+        )
         return self.config.housekeeping_generated(
-            last - first, mode=ACSMode.PASS
+            last - first, mode=mode
         ) - self.config.housekeeping_generated(last - first)
 
     def ingress_segment(self, entry: PlanEntry, *, begin: float | None = None) -> int:
@@ -769,6 +784,14 @@ class RecorderLedgers:
             (offset + segment, volume)
             for _, ledger, offset in self.members
             for segment, volume in ledger.science_additions(entry, seconds, time)
+        ]
+
+    def activity_additions(self, entry: PlanEntry) -> list[tuple[int, RecorderAmount]]:
+        """An activity's data at its hold start, in each destination store."""
+        return [
+            (offset + segment, volume)
+            for _, ledger, offset in self.members
+            for segment, volume in ledger.activity_additions(entry)
         ]
 
     def ingress_additions(

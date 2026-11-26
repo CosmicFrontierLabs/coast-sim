@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
@@ -30,18 +31,28 @@ from ..common.vector import (
 from ..config import (
     AttitudeControlSystem,
     Constraint,
+    Instrument,
     MissionConfig,
     ScienceData,
+    SpacecraftFrame,
     Telescope,
 )
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
+    AttitudeConstraintScope,
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
 from ..config.data_storage import RecorderView
 from ..config.observation_timing import ObservationTiming, timing_for
 from ..simulation.saa import SAA
+from .track import (
+    TrackPoint,
+    position_along,
+    positions_along,
+    rate_along,
+    validate_track,
+)
 
 BodyAxis = Literal["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 RollSource = Literal["planned", "defaulted_from_unconstrained_sentinel"]
@@ -137,6 +148,51 @@ class PlanEntry(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    EXECUTION_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "begin",
+            "end",
+            "slewtime",
+            "insaa",
+            "roll",
+            "slewdist",
+            "done",
+            "exposure",
+            "exporig",
+            "target_attitude",
+            "isat",
+            "obstype",
+            "collection_begin",
+            "collection_end",
+            "spacecraft_attitude",
+            "visit",
+            "slewpath",
+            # Contact and tracking end points are run state too.
+            "station",
+            "station_lat_deg",
+            "station_lon_deg",
+            "station_alt_m",
+            "contact_begin",
+            "contact_end",
+            "activity_hold_begin",
+            "activity_hold_end",
+            "track_start_ra",
+            "track_start_dec",
+            "track_start_roll",
+            "track_end_ra",
+            "track_end_dec",
+            "track_end_roll",
+            "contact_ingress",
+        }
+    )
+    """The fields a run fills in as it schedules and executes an entry; a
+    request written to a program file leaves them out."""
+
+    kind: Literal["entry"] = Field(
+        default="entry",
+        description="The entry's class, for a file to read it back as that class",
+    )
+
     _STATIC_TARGET_OBSTYPES: ClassVar[frozenset[ObsType]] = frozenset(
         {ObsType.PPT, ObsType.AT, ObsType.TOO}
     )
@@ -181,6 +237,24 @@ class PlanEntry(BaseModel):
             "which the wheels hold the dump's residual"
         ),
     )
+    activity_hold_begin: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold start, including any part before this run",
+    )
+    activity_hold_end: float | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Full activity hold end, including any part after this run",
+    )
+    activity_requires_stationary: bool = Field(
+        default=False,
+        exclude_if=lambda v: v is False,
+        description=(
+            "Whether this activity reserves a stationary hold after ingress; "
+            "slewing or an unexpected hold mode violates the plan"
+        ),
+    )
     own_timing: ObservationTiming | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
@@ -193,6 +267,16 @@ class PlanEntry(BaseModel):
     ra: float = 0.0
     dec: float = 0.0
     roll: float = -1.0
+    track: list[TrackPoint] = Field(
+        default_factory=list,
+        exclude_if=lambda v: not v,
+        description=(
+            "The target's sky position at a series of times, for a target "
+            "that moves across the sky: its pointing is taken from the track "
+            "at the end of the slew to it, and the attitude follows the track "
+            "while it is observed. Empty for a fixed target"
+        ),
+    )
     spacecraft_attitude: tuple[float, float, float] | None = None
     begin: float = 0  # start of window, not observation
     slewtime: int = 0
@@ -229,6 +313,9 @@ class PlanEntry(BaseModel):
     track_end_ra: float | None = None
     track_end_dec: float | None = None
     track_end_roll: float | None = None
+    contact_ingress: Literal["reposition"] | None = None
+    """How a contact's ingress is flown where not as a ``PASS`` slew: as a
+    reposition, in ``SLEWING`` and then holding in ``IDLE`` until the contact."""
     saa: SAA | None = Field(default=None, exclude=True)
     merit: float = 101
     step: str | None = Field(
@@ -270,6 +357,10 @@ class PlanEntry(BaseModel):
     _last_collection_time: float | None = PrivateAttr(default=None)
     _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
+    _frame_telescope: Telescope | None = PrivateAttr(default=None)
+    _frame_axes: (
+        tuple[tuple[float, float, float], tuple[float, float, float]] | None
+    ) = PrivateAttr(default=None)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -290,6 +381,9 @@ class PlanEntry(BaseModel):
         instance = handler(data)
         if exptime is not None:
             instance._exptime = exptime
+            # Without run state, the original exposure is the exposure.
+            if exporig is None:
+                instance._exporig = exptime
         if exporig is not None:
             instance._exporig = exporig
         if target_attitude is not None:
@@ -407,6 +501,24 @@ class PlanEntry(BaseModel):
         return f"{unixtime2date(self.begin)} Target: {self.name} ({self.obsid}) Exp: {self.exposure}s "
 
     @property
+    def activity_partial(self) -> bool:
+        """Whether this entry covers only part of its full activity hold."""
+        return (
+            self.activity_hold_begin is not None
+            and float(self.begin) > self.activity_hold_begin
+        ) or (
+            self.activity_hold_end is not None
+            and float(self.end) < self.activity_hold_end
+        )
+
+    @property
+    def activity_finishes(self) -> bool:
+        """Whether the reserved interval reaches the full hold's end."""
+        return (
+            self.activity_hold_end is None or float(self.end) >= self.activity_hold_end
+        )
+
+    @property
     def collected_seconds(self) -> float:
         """Science collection credited to this target so far."""
         return self._collected_seconds
@@ -416,21 +528,32 @@ class PlanEntry(BaseModel):
         """When this target last collected science, or None if never."""
         return self._last_collection_time
 
-    def record_collection(self, utime: float, seconds: float) -> None:
+    def record_collection(
+        self, utime: float, seconds: float, *, step: float = 0.0
+    ) -> None:
         """Credit executed science collection to this target.
 
         Reduces the remaining exposure time and records when the target was
-        last observed.
+        last observed. A remainder shorter than ``step``, the step the
+        simulation runs at, ends the target: it is rounding, not science.
+        Not so while the remainder is more than the target has collected: a
+        request shorter than two steps, cut short before half of it, still
+        owes the rest.
 
         Args:
             utime: Time the collection ended.
             seconds: Seconds of science collected.
+            step: The simulation step, in seconds; 0 keeps any remainder.
         """
         if seconds <= 0:
             return
+        self._collected_seconds += seconds
         if self.exptime is not None:
             self.exptime = max(0, self.exptime - seconds)
-        self._collected_seconds += seconds
+            if 0 < self.exptime < min(step, self._collected_seconds):
+                # A remainder shorter than a simulation step is rounding,
+                # unless it is most of the request.
+                self.exptime = 0
         self._last_collection_time = utime
 
     @property
@@ -466,6 +589,10 @@ class PlanEntry(BaseModel):
     def record_interruption(self, utime: float) -> None:
         """Record that an observation of this target was cut short at ``utime``."""
         self._interruptions.append(utime)
+
+    def end_visit_attempt(self) -> None:
+        """The observation under way has ended. Nothing to do without visit
+        windows; see :meth:`Pointing.end_visit_attempt`."""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -575,9 +702,7 @@ class PlanEntry(BaseModel):
                 ra_deg=float(self.ra),
                 dec_deg=float(self.dec),
                 roll_deg=roll_deg,
-                instrument_name=(
-                    telescope.name if telescope is not None else self.instrument_name
-                ),
+                instrument_name=self.science_instrument_name(),
                 boresight_axis=(
                     _cardinal_body_axis(boresight_body)
                     if boresight_body is not None
@@ -652,24 +777,83 @@ class PlanEntry(BaseModel):
         return dict(modes) if isinstance(modes, dict) else {}
 
     def science_telescope(self) -> Telescope | None:
-        """Return the telescope assigned to this target, if configured."""
+        """Resolve the pointing mount, including the bus frame for plain instruments.
+
+        A plain instrument has no independent mount. Its target follows the
+        declared bus boresight, which is +X only in the canonical frame.
+        The cached frame adapter supplies geometry, not another payload device.
+        """
         if self.config is None or self.obstype not in self._STATIC_TARGET_OBSTYPES:
             return None
         instrument = self.config.payload.telescope_for_target(self.instrument_name)
-        return instrument if isinstance(instrument, Telescope) else None
+        if isinstance(instrument, Telescope):
+            return instrument
+        frame = getattr(self.config.spacecraft_bus, "frame", None)
+        if not isinstance(frame, SpacecraftFrame) or frame.is_identity:
+            return None
+        axes = (frame.boresight, frame.sun_side)
+        if self._frame_telescope is None or axes != self._frame_axes:
+            self._frame_telescope = Telescope(mounting=frame.mounting)
+            self._frame_axes = axes
+        return self._frame_telescope
+
+    def science_instrument_name(self) -> str | None:
+        """Configured instrument identity, independent of a frame-only adapter."""
+        if self.config is None:
+            return self.instrument_name
+        instrument = self.config.payload.telescope_for_target(self.instrument_name)
+        return (
+            instrument.name
+            if isinstance(instrument, Instrument)
+            else self.instrument_name
+        )
 
     def uses_mounted_attitude(self) -> bool:
         """Return whether science coordinates differ from the body attitude."""
         telescope = self.science_telescope()
         return bool(telescope is not None and not telescope.mounting.is_identity)
 
+    @field_validator("track")
+    @classmethod
+    def _track_in_time_order(cls, track: list[TrackPoint]) -> list[TrackPoint]:
+        return validate_track(track)
+
+    @property
+    def moves(self) -> bool:
+        """Whether the target moves across the sky: it has a track."""
+        return bool(self.track)
+
+    def position_at(self, utime: float) -> tuple[float, float]:
+        """The target's RA and Dec at ``utime``, in degrees: along its track
+        for a moving target, its own for a fixed one."""
+        if not self.track:
+            return float(self.ra), float(self.dec)
+        return position_along(self.track, utime)
+
+    def track_rate_deg_per_s(self, utime: float) -> float:
+        """How fast a moving target crosses the sky at ``utime``, in degrees
+        per second; zero for a fixed one."""
+        return rate_along(self.track, utime) if self.track else 0.0
+
+    def point_at(self, utime: float) -> None:
+        """Take the pointing a moving target has at ``utime``, where the slew
+        to it ends; nothing for a fixed target."""
+        if self.track:
+            self.ra, self.dec = position_along(self.track, utime)
+
     def target_body_attitude(
-        self, instrument_roll_deg: float | None = None
+        self, instrument_roll_deg: float | None = None, at: float | None = None
     ) -> tuple[float, float, float]:
-        """Return physical body +X RA/Dec/roll for this science target."""
+        """Return physical body +X RA/Dec/roll for this science target; for
+        a moving target with ``at`` given, at its position then."""
         roll = self.roll if instrument_roll_deg is None else instrument_roll_deg
         if roll == -1.0:
             roll = 0.0
+        ra, dec = (
+            self.position_at(at)
+            if at is not None and self.track
+            else (self.ra, self.dec)
+        )
         telescope = self.science_telescope()
         if telescope is None:
             if self.config is None and self._serialized_target_attitude is not None:
@@ -679,8 +863,28 @@ class PlanEntry(BaseModel):
                         dtype=np.float64,
                     )
                 )
-            return self.ra, self.dec, float(roll)
-        return telescope.target_body_attitude(self.ra, self.dec, float(roll))
+            return ra, dec, float(roll)
+        return telescope.target_body_attitude(ra, dec, float(roll))
+
+    def forbids_eclipse(self) -> bool:
+        """Whether this observation inherits or requests an eclipse prohibition."""
+        return (
+            self.config is not None
+            and self.config.science_in_eclipse_for(int(self.obsid)) is False
+        )
+
+    def eclipse_violation(self, begin: float, end: float) -> float | None:
+        if self.forbids_eclipse() and self.constraint is not None:
+            return self.constraint.first_eclipse_overlap(begin, end)
+        return None
+
+    def observing_windows(
+        self, windows: Sequence[Sequence[float]]
+    ) -> list[tuple[float, float]]:
+        """Geometric windows filtered by this request's eclipse policy."""
+        if self.forbids_eclipse() and self.constraint is not None:
+            return self.constraint.without_eclipses(windows)
+        return [(a, b) for a, b in windows]
 
     def attitude_constraint_names(
         self,
@@ -693,23 +897,33 @@ class PlanEntry(BaseModel):
         if self.constraint is None:
             return []
         if self.uses_mounted_attitude():
-            return mounted_science_attitude_constraint_names(
+            science_ra, science_dec = self.position_at(utime)
+            names = mounted_science_attitude_constraint_names(
                 self.constraint,
                 scopes,
-                (self.ra, self.dec, self.roll),
+                (science_ra, science_dec, self.roll),
                 spacecraft_attitude,
                 utime,
                 acs_mode,
             )
-        return attitude_constraint_names_for_scopes(
-            self.constraint,
-            scopes,
-            spacecraft_attitude[0],
-            spacecraft_attitude[1],
-            utime,
-            target_roll=spacecraft_attitude[2],
-            acs_mode=acs_mode,
-        )
+        else:
+            names = attitude_constraint_names_for_scopes(
+                self.constraint,
+                scopes,
+                spacecraft_attitude[0],
+                spacecraft_attitude[1],
+                utime,
+                target_roll=spacecraft_attitude[2],
+                acs_mode=acs_mode,
+            )
+        if (
+            acs_mode == ACSMode.SCIENCE
+            and AttitudeConstraintScope.IMAGING_QUALITY in scopes
+            and self.forbids_eclipse() is True
+            and self.constraint.in_eclipse(0, 0, utime)
+        ):
+            names.append("science_eclipse")
+        return names
 
     def givename(self, stem: str = "") -> None:
         self.name = givename(self.ra, self.dec, stem=stem)
@@ -739,16 +953,48 @@ class PlanEntry(BaseModel):
             return combined
         return combined | telescope_constraint
 
-    def visibility(
+    def visibility(self) -> int:
+        """Calculate the visibility windows over the whole ephemeris range and
+        store them on :attr:`windows`."""
+        self.windows = [
+            list(window)
+            for window in self.observing_windows(self._visibility_windows())
+        ]
+        return 0
+
+    def visibility_in(
         self,
-    ) -> int:
-        """Calculate the visibility windows for a target for a given day(s).
+        begin: float | int | str | datetime,
+        end: float | int | str | datetime,
+    ) -> list[list[float]]:
+        """Visibility windows within ``[begin, end]`` only, leaving
+        :attr:`windows` untouched.
 
-        Note: year, day, length, and hires parameters are kept for backwards
-        compatibility but are no longer used. The visibility is calculated over
-        the entire ephemeris time range.
+        Only the ephemeris samples inside the interval, plus one sample of halo
+        on each side, are evaluated, so the result equals the whole-ephemeris
+        windows clipped to the interval. Bounds are UTC datetimes, ISO strings
+        or Unix seconds.
         """
+        assert self.ephem is not None, "Ephemeris must be set to calculate visibility"
+        first, last = unixtime_from(begin), unixtime_from(end)
+        if not (np.isfinite(first) and np.isfinite(last)) or first > last:
+            raise ValueError("Visibility bounds must be finite and begin <= end")
+        times = list(self.ephem.timestamp)
+        grid = [t.timestamp() for t in times]
+        left = max(0, bisect_left(grid, first) - 1)
+        right = min(len(grid), bisect_right(grid, last) + 1)
+        return [
+            [max(a, first), min(b, last)]
+            for a, b in self.observing_windows(
+                self._visibility_windows(times[left:right])
+            )
+            if a <= last and b >= first
+        ]
 
+    def _visibility_windows(
+        self, times: list[datetime] | None = None
+    ) -> list[list[float]]:
+        """Windows over the whole ephemeris, or over the given grid samples."""
         assert self.config is not None, "Config must be set to calculate visibility"
         assert self.config.constraint is not None, (
             "Constraint must be set to calculate visibility"
@@ -788,28 +1034,44 @@ class PlanEntry(BaseModel):
             effective_roll = self.roll
 
         if combined_constraint is None:
-            self.windows = [
+            return [
                 [
-                    float(self.ephem.begin.timestamp()),
-                    float(self.ephem.end.timestamp()),
+                    float((times[0] if times else self.ephem.begin).timestamp()),
+                    float((times[-1] if times else self.ephem.end).timestamp()),
                 ]
             ]
-            return 0
+
+        if self.track:
+            # A moving target: the constraint along its track, resampled on
+            # the ephemeris grid, which the moving-body evaluation wants.
+            if times is None:
+                times = list(self.ephem.timestamp)
+            ras, decs = positions_along(
+                self.track, [float(t.timestamp()) for t in times]
+            )
+            moving = combined_constraint.evaluate_moving_body(
+                self.ephem,
+                target_ras=[float(ra) for ra in ras],
+                target_decs=[float(dec) for dec in decs],
+                times=times,
+                target_roll=effective_roll,
+            )
+            return [
+                [v.start_time.timestamp(), v.end_time.timestamp()]
+                for v in moving.visibility
+            ]
 
         in_constraint = combined_constraint.evaluate(
             ephemeris=self.ephem,
             target_ra=self.ra,  # already in degrees
             target_dec=self.dec,
             target_roll=effective_roll,
+            times=times,
         )
-        # Construct the visibility windows
-
-        self.windows = [
+        return [
             [v.start_time.timestamp(), v.end_time.timestamp()]
             for v in in_constraint.visibility
         ]
-
-        return 0
 
     def visible(self, begin: float, end: float) -> list[float] | Literal[False]:
         """Is the target visible between these two times, if yes, return the visibility window"""
@@ -903,15 +1165,17 @@ class PlanEntry(BaseModel):
         )
 
 
-def snapshot_min_seconds(entry: PlanEntry) -> float:
+def snapshot_min_seconds(entry: PlanEntry, step: float = 0.0) -> float:
     """The least a snapshot of ``entry`` may collect, in seconds.
 
     ``ss_min`` for its first snapshot; once it has collected anything, the
     smaller of ``ss_min`` and what remains, so a target cut short by an
     interruption, or left with a remainder, finishes its exposure instead
-    of losing what is below ``ss_min``. Reads the public attributes, so a
-    test double with a numeric ``ss_min`` and no collection record gets its
-    ``ss_min``.
+    of losing what is below ``ss_min``. A remainder shorter than ``step``,
+    the step the simulation runs at, is rounding rather than science and
+    gets no snapshot: the minimum stays ``ss_min``. Reads the public
+    attributes, so a test double with a numeric ``ss_min`` and no
+    collection record gets its ``ss_min``.
     """
     ss_min = float(entry.ss_min)
     collected = getattr(entry, "collected_seconds", 0.0)
@@ -920,6 +1184,7 @@ def snapshot_min_seconds(entry: PlanEntry) -> float:
         not isinstance(collected, (int, float))
         or collected <= 0.0
         or not isinstance(remaining, (int, float))
+        or float(remaining) < step
     ):
         return ss_min
     return min(ss_min, max(0.0, float(remaining)))

@@ -65,6 +65,16 @@ class TestSchedulerOptions:
         assert options["solver_time_limit"] == 10.0
         assert "chunk_seconds" not in options
 
+    def test_the_deterministic_budget_is_a_scheduler_option(self) -> None:
+        settings = SchedulerConfig(
+            kind=SchedulerKind.CP_SAT, solver_deterministic_time=20.0, workers=1, seed=7
+        )
+
+        options = settings.scheduler_options()
+
+        assert options["solver_deterministic_time"] == 20.0
+        assert options["workers"] == 1 and options["seed"] == 7
+
     @pytest.mark.parametrize(
         ("kind", "field"),
         [
@@ -74,6 +84,7 @@ class TestSchedulerOptions:
             # with random_seed, and fails if given a seed.
             (SchedulerKind.PRIORITY, "seed"),
             (SchedulerKind.LOCAL_SEARCH, "workers"),
+            (SchedulerKind.LOCAL_SEARCH, "solver_deterministic_time"),
         ],
     )
     def test_settings_for_another_scheduler_are_rejected(
@@ -88,6 +99,7 @@ class TestSchedulerOptions:
             {"kind": "local_search", "earliness_weight": 1.5},
             {"kind": "local_search", "time_limit": -1},
             {"kind": "cp_sat", "solver_time_limit": 0},
+            {"kind": "cp_sat", "solver_deterministic_time": 0},
             {"successor_retries": -1},
             {"successor_retries": "all"},
             # Null would mean no limit here but the default once saved as YAML,
@@ -124,6 +136,7 @@ class TestSerialization:
                 mode=SchedulerMode.ROLLING,
                 kind=SchedulerKind.CP_SAT,
                 solver_time_limit=8.0,
+                solver_deterministic_time=16.0,
                 workers=2,
                 replanning=ReplanSettings(commit_lead_time_seconds=1800),
             )

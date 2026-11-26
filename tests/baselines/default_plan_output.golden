@@ -5,12 +5,19 @@
     "frame": "GCRS",
     "num_samples": 288,
     "order": "wxyz",
+    "origin_offset_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "pointing_parameterization": "body_x_ra_dec_roll",
     "quaternion_product": "hamilton",
     "representation": "quaternion",
     "roll_axis": "+X",
     "roll_convention": "right_handed_body_rotation",
     "roll_reference": "projected_celestial_north",
     "roll_reference_axis": "+Z",
+    "sample_source": "telemetry",
     "samples": [
       {
         "dec": 0.0,
@@ -3757,6 +3764,18 @@
         "utime": 1767311700.0
       }
     ],
+    "spacecraft_frame": {
+      "boresight": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sun_side": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
     "vector_action": "q_v_q_conjugate",
     "version": 0
   },
@@ -3833,6 +3852,7 @@
         "exptime": 600.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 95.0,
         "name": "coast-default-3",
         "obsid": 10003,
@@ -3884,6 +3904,7 @@
         "exptime": 900.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 92.0,
         "name": "coast-default-1",
         "obsid": 10001,
@@ -3935,6 +3956,7 @@
         "exptime": 900.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 90.0,
         "name": "coast-default-0",
         "obsid": 10000,
@@ -3986,6 +4008,7 @@
         "exptime": 1200.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 88.0,
         "name": "coast-default-2",
         "obsid": 10002,
@@ -4037,6 +4060,7 @@
         "exptime": 300.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 88.0,
         "name": "coast-default-2",
         "obsid": 10002,
@@ -4088,6 +4112,7 @@
         "exptime": 900.0,
         "insaa": 0,
         "isat": false,
+        "kind": "pointing",
         "merit": 85.0,
         "name": "coast-default-4",
         "obsid": 10004,

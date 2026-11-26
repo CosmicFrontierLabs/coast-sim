@@ -1,10 +1,10 @@
 """Physical execution invariants, independently of mode and sampling cadence."""
 
-from dataclasses import FrozenInstanceError
 from unittest.mock import patch
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from conops import (
     ACSCommand,
@@ -136,7 +136,7 @@ def test_executor_rejects_discontinuity_and_time_reversal(limits):
     with pytest.raises(AttitudeExecutionError, match="monotonic"):
         executor.advance(9)
     assert executor.state == state
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises(ValidationError, match="frozen_instance"):
         executor.state.utime = 11
 
 
@@ -452,7 +452,9 @@ def test_acs_pole_handoffs_preserve_executed_quaternion(physical_acs, dec, hando
 
 def test_antipodal_quaternion_handoff_is_accepted(limits):
     executor = AttitudeExecutor(0, (10, 90, 10))
-    state = AttitudeState(0, tuple(-value for value in executor.state.quaternion))
+    state = AttitudeState(
+        utime=0, quaternion=tuple(-value for value in executor.state.quaternion)
+    )
     executor.install(AttitudeTrajectory.turn_from_state(state, (0, 0, 0), limits))
     assert executor.state.quaternion == tuple(-value for value in state.quaternion)
 

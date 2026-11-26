@@ -272,6 +272,7 @@ class TestVisibility:
             target_ra=123.0,
             target_dec=-20.0,
             target_roll=None,
+            times=None,
         )
         mock_constraint.constraint.evaluate.assert_not_called()
 

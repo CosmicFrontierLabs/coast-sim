@@ -1,6 +1,7 @@
 """Shared pytest fixtures for test suite."""
 
 import os
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import matplotlib
@@ -16,6 +17,17 @@ matplotlib.use("Agg")
 def pytest_xdist_auto_num_workers(config):
     """Bound concurrency so solver threads and CI hosts are not oversubscribed."""
     return min(8, os.cpu_count() or 1)
+
+
+@pytest.fixture(scope="session")
+def example_ephem() -> rust_ephem.TLEEphemeris:
+    """Three hours of the example orbit at one-minute steps from 2025-11-01."""
+    return rust_ephem.TLEEphemeris(
+        tle="examples/example.tle",
+        begin=datetime(2025, 11, 1, tzinfo=timezone.utc),
+        end=datetime(2025, 11, 1, 3, tzinfo=timezone.utc),
+        step_size=60,
+    )
 
 
 @pytest.fixture

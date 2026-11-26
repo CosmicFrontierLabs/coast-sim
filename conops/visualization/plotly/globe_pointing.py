@@ -26,6 +26,7 @@ import plotly.graph_objects as go
 import rust_ephem
 
 from ...common import dtutcfromtimestamp
+from ...common.numerics import ROUNDOFF
 from ...config.observation_categories import ObservationCategories
 from ...config.star_tracker import StarTracker
 from ...config.visualization import VisualizationConfig
@@ -110,7 +111,7 @@ def _build_st_boresights(
     ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     y0 = np.cross(ref, x_hat)
     y0_norm = np.linalg.norm(y0)
-    if y0_norm < 1e-12:
+    if y0_norm < ROUNDOFF:
         ref = np.array([0.0, 1.0, 0.0], dtype=np.float64)
         y0 = np.cross(ref, x_hat)
         y0_norm = np.linalg.norm(y0)
@@ -134,7 +135,7 @@ def _build_st_boresights(
         b = np.asarray(boresight, dtype=np.float64)
         v_st = b[0] * x_hat + b[1] * y_hat + b[2] * z_hat
         v_norm = np.linalg.norm(v_st)
-        if v_norm < 1e-12:
+        if v_norm < ROUNDOFF:
             continue
         v_st = v_st / v_norm
         st_ra = (np.degrees(np.arctan2(v_st[1], v_st[0])) + 360.0) % 360.0

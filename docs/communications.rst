@@ -92,7 +92,7 @@ direction to re-point and a body-fixed one moves with the spacecraft.
 For omni and gimballed antennas, ``contact_policy="continuous"`` is the
 communications default. :class:`~conops.simulation.PassTimes` retains
 all available visibility windows, including their overlapping tails and
-windows shorter than eight minutes. It selects the station with the highest
+windows shorter than the whole-pass minimum. It selects the station with the highest
 instantaneous effective downlink rate, then highest elevation and station
 code for a stable tie. It tracks that station until it sets or its rate
 becomes zero, then hands over to the best usable station. A faster station
@@ -113,8 +113,8 @@ those draws. Zero rejects the window; one accepts it. Availability is decided
 once over the full ephemeris, shared by dispatch and every replan.
 
 Set ``contact_policy="scheduled"`` to use whole-pass booking instead.
-:class:`~conops.simulation.PassTimes` then applies its eight-minute minimum
-and selects whole non-overlapping passes by downlink volume, duration and
+:class:`~conops.simulation.PassTimes` then drops visibility windows shorter than
+``min_pass_seconds`` (default 480, eight minutes) and selects whole non-overlapping passes by downlink volume, duration and
 earlier start. Range-dependent effective rates contribute to that volume.
 Body-fixed antennas always use this pass-booking path, with spacecraft
 tracking profiles and ``PASS`` activities that pause science; the contact
@@ -200,6 +200,10 @@ Main configuration class for the communications system.
 * ``contact_policy``: ``continuous`` (default) for station handovers without
   dropping overlaps, or ``scheduled`` for whole-pass booking; fixed antennas
   always use tracking passes
+* ``min_pass_seconds``: Shortest visibility window booked as a whole pass, for fixed
+  antennas and the ``scheduled`` policy (default 480). The window length is counted on
+  the ephemeris steps. Shorter passes return more data but each takes science time for
+  its slews. The ``continuous`` policy keeps windows of any length
 * ``acquisition_seconds``: Seconds to acquire the link during passes without
   spacecraft tracking; no data is downlinked during acquisition (default 0)
 * ``handover_seconds``: Seconds to switch the link straight from one ground station to

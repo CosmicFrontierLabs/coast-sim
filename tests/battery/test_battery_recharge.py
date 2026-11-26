@@ -233,10 +233,11 @@ class TestSolarPanel:
         mock_ephem.sun_dec_deg = [10.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
-        assert dec == 10.0
+        # On the celestial equator: exactly 90 degrees from the Sun.
+        assert dec == 0.0
 
     def test_optimal_charging_ra_bodymount(self) -> None:
-        """Test RA for body-mounted panels."""
+        """Test RA for panels on a Z face."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
@@ -248,10 +249,12 @@ class TestSolarPanel:
         mock_ephem.sun_dec_deg = [-15.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
-        assert ra == 120.0
+        # A Z panel lies across the boresight: point 90 degrees from the Sun
+        # and let the roll face the panel to it, not edge-on at the Sun.
+        assert ra == (120.0 + 90.0) % 360.0
 
     def test_optimal_charging_dec_bodymount(self) -> None:
-        """Test Dec for body-mounted panels."""
+        """Test Dec for panels on a Z face."""
         panel = SolarPanelSet(panels=[SolarPanel(normal=(0.0, 0.0, -1.0))])
         mock_ephem = Mock()
         mock_ephem.index.return_value = 0
@@ -263,7 +266,8 @@ class TestSolarPanel:
         mock_ephem.sun_dec_deg = [-15.0]
         utime = 1700000000.0
         ra, dec = panel.optimal_charging_pointing(utime, mock_ephem)
-        assert dec == -15.0
+        # Across the boresight: on the celestial equator, 90 degrees from the Sun.
+        assert dec == 0.0
 
     def test_optimal_charging_pointing_wraps_ra(self) -> None:
         """Test that RA wraps correctly at 360 degrees."""
@@ -379,7 +383,8 @@ class TestEmergencyCharging:
             emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
         )
         ppt = emergency_charging.create_charging_pointing(utime, mock_ephem)
-        assert ppt.ra == 180.0
+        # The -Z panel lies across the boresight: 90 degrees in RA from the Sun.
+        assert ppt.ra == 270.0
         assert ppt.dec == 0.0
         assert isinstance(
             ppt.roll, float
@@ -433,15 +438,15 @@ class TestEmergencyCharging:
         def mock_in_constraint(
             ra, dec, utime, hardonly=True, target_roll=None, acs_mode=None
         ):
-            return ra == 180.0
+            return ra == 270.0
 
         emergency_charging.constraint.in_constraint = mock_in_constraint
         emergency_charging.constraint.in_constraint_batch = make_batch_constraint_mock(
-            lambda ra, dec, utime: ra == 180.0
+            lambda ra, dec, utime: ra == 270.0
         )
 
         def mock_illumination(time, ra, dec, ephem, roll=0.0, acs_mode=None):
-            if ra == 210.0:
+            if ra == 300.0:
                 return 0.9
             return 0.5
 
@@ -455,7 +460,7 @@ class TestEmergencyCharging:
         )
         ppt = emergency_charging.create_charging_pointing(utime, mock_ephem)
         assert ppt is not None
-        assert ppt.ra == 210.0
+        assert ppt.ra == 300.0
 
     def test_create_charging_pointing_no_valid_pointing_returns_none_and_no_current(
         self, emergency_charging, mock_ephem, monkeypatch, utime
@@ -1465,6 +1470,129 @@ class TestBatteryRechargeScenarios:
         _ = battery.battery_alert
         battery.charge_level = battery.watthour * 0.95
         assert battery.battery_alert is True
+
+
+class TestOptimalChargingPointingGeometry:
+    """The chosen pointing, with the best roll, puts the Sun on the panel."""
+
+    @staticmethod
+    def _ephem(sun_ra: float, sun_dec: float) -> Mock:
+        ephem = Mock()
+        ephem.index.return_value = 0
+        ephem.sun_ra_deg = [sun_ra]
+        ephem.sun_dec_deg = [sun_dec]
+        return ephem
+
+    @staticmethod
+    def _unit(ra: float, dec: float) -> np.ndarray:
+        ra_r, dec_r = np.radians(ra), np.radians(dec)
+        return np.array(
+            [np.cos(dec_r) * np.cos(ra_r), np.cos(dec_r) * np.sin(ra_r), np.sin(dec_r)]
+        )
+
+    @pytest.mark.parametrize(
+        ("normal", "expected_sun_angle"),
+        [
+            ((1.0, 0.0, 0.0), 0.0),
+            ((-1.0, 0.0, 0.0), 180.0),
+            ((0.0, 1.0, 0.0), 90.0),
+            ((0.0, 0.0, 1.0), 90.0),
+            ((0.0, 0.0, -1.0), 90.0),
+        ],
+    )
+    def test_boresight_sun_angle_matches_panel_geometry(
+        self, normal: tuple[float, float, float], expected_sun_angle: float
+    ) -> None:
+        """The boresight sits at the panel normal's angle from the boresight.
+
+        With that separation some roll points the panel normal at the Sun.
+        """
+        panel = SolarPanelSet(panels=[SolarPanel(normal=normal)])
+        ra, dec = panel.optimal_charging_pointing(1700000000.0, self._ephem(30.0, 0.0))
+        cos_angle = float(
+            np.clip(self._unit(ra, dec) @ self._unit(30.0, 0.0), -1.0, 1.0)
+        )
+        assert np.degrees(np.arccos(cos_angle)) == pytest.approx(
+            expected_sun_angle, abs=1e-9
+        )
+
+    def test_negative_x_panel_points_away_from_sun(self) -> None:
+        panel = SolarPanelSet(panels=[SolarPanel(normal=(-1.0, 0.0, 0.0))])
+        ra, dec = panel.optimal_charging_pointing(
+            1700000000.0, self._ephem(350.0, 12.0)
+        )
+        assert ra == pytest.approx(170.0)
+        assert dec == pytest.approx(-12.0)
+
+
+class TestOptimalChargingPointingIllumination:
+    """End to end: the pointing plus the power-optimal roll lights the panel."""
+
+    @pytest.mark.parametrize(
+        "normal",
+        [
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+        ],
+    )
+    def test_panel_faces_sun_at_optimum_roll(self, example_ephem, normal) -> None:
+        from conops.simulation.roll import optimum_body_roll
+
+        panel = SolarPanelSet(panels=[SolarPanel(normal=normal, max_power=100.0)])
+        sunlit = None
+        probe = SolarPanelSet(
+            panels=[SolarPanel(normal=(1.0, 0.0, 0.0), max_power=100.0)]
+        )
+        for stamp in example_ephem.timestamp:
+            utime = stamp.timestamp()
+            sun_ra, sun_dec = probe.optimal_charging_pointing(utime, example_ephem)
+            if (
+                probe.panel_illumination_fraction(utime, example_ephem, sun_ra, sun_dec)
+                > 0.99
+            ):
+                sunlit = utime
+                break
+        assert sunlit is not None
+
+        ra, dec = panel.optimal_charging_pointing(sunlit, example_ephem)
+        roll = optimum_body_roll(
+            ra, dec, sunlit, example_ephem, panel, science_attitude=False
+        )
+        illumination = panel.panel_illumination_fraction(
+            sunlit, example_ephem, ra, dec, roll
+        )
+        # Y and Z panels sit exactly 90 degrees from the Sun, so the best roll
+        # lights them fully.
+        assert illumination > 0.999
+
+
+class TestSidemountSearchUsesSun:
+    """The side-mounted search builds its circle about the Sun itself."""
+
+    def test_sidemount_search_receives_sun_position(
+        self, emergency_charging, mock_ephem, monkeypatch, utime
+    ) -> None:
+        monkeypatch.setattr(
+            emergency_charging.constraint, "in_eclipse", lambda ra, dec, time: False
+        )
+        emergency_charging.sidemount = True
+        seen: list[tuple[float, float]] = []
+
+        def search(sun_ra, sun_dec, *_args, **_kwargs):
+            seen.append((sun_ra, sun_dec))
+            return 200.0, 5.0
+
+        monkeypatch.setattr(
+            emergency_charging, "_find_valid_pointing_sidemount", search
+        )
+        emergency_charging.create_charging_pointing(utime, mock_ephem)
+        index = mock_ephem.index(None)
+        assert seen == [
+            (float(mock_ephem.sun_ra_deg[index]), float(mock_ephem.sun_dec_deg[index]))
+        ]
 
 
 if __name__ == "__main__":

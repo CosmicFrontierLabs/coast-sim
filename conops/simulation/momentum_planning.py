@@ -6,11 +6,11 @@ the departure attitude is reserved, not executed if another target is admitted.
 This is deliberately not a global schedule/CMG-steering optimizer.
 """
 
-from dataclasses import dataclass
 from math import ceil, floor
 from typing import TYPE_CHECKING
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 
 from ..common import ACSMode, ObsType
 from ..common.vector import quaternion_attitude_delta
@@ -27,20 +27,22 @@ if TYPE_CHECKING:
 _IDLE_RECOVERY_ATTITUDE_TOLERANCE_DEG = 1e-8
 
 
-@dataclass(frozen=True)
-class MomentumObservation:
+class MomentumObservation(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     slew: Slew
     end: float
     recovery: Slew
 
 
-@dataclass(frozen=True)
-class IdleMomentumCertificate:
+class IdleMomentumCertificate(BaseModel):
     """A certified hold followed by an escape at one fixed absolute time.
 
     The departure is never slid forward on a cache hit. Execution must still
     match the original attitude, integration history and planning inputs.
     """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     initial: AttitudeState
     origin: MomentumForecast
@@ -275,7 +277,9 @@ class MomentumObservationPlanner:
                         slew._momentum_collection_begin = collection_begin
                         slew._momentum_collection_end = collection_begin + collection
                         if collection > best_collection:
-                            best = MomentumObservation(slew, end, recovery)
+                            best = MomentumObservation(
+                                slew=slew, end=end, recovery=recovery
+                            )
                             best_collection = collection
                         # A full snapshot needs no further roll search.
                         # Otherwise try other rolls before accepting
@@ -299,6 +303,7 @@ class MomentumObservationPlanner:
                 self.sim.config.solar_panel,
                 self.sim.constraint,
                 drive_state=self.acs.solar_array_drive_state,
+                science_attitude=False,
             )
             for roll in self.acs._idle_safe_roll_candidates(preferred):
                 # Re-certifying a short zero-motion hold is not proof that a
@@ -333,9 +338,7 @@ class MomentumObservationPlanner:
             id(self.sim.constraint),
             id(self.sim.constraint.ephem),
             id(self.sim._idle_safety),
-            self.budget.capacity,
-            self.budget.step,
-            self.budget.inertia.tobytes(),
+            self.budget._path_signature(),
             self.end,
             self.sim.step_size,
             len(self.acs.executed_commands),

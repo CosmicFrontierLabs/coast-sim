@@ -45,6 +45,11 @@ def _score_tolerances(reference_roll: float | None) -> tuple[float, float]:
 
 _ROLL_DEGREES = np.arange(360.0, dtype=np.float64)
 
+_SUN_ON_AXIS = 1e-6
+"""The length of the Sun's unit vector across the pointing axis below which
+the Sun is on that axis and no roll is better lit than another: about 0.2
+arcseconds, far above the difference between two ephemeris evaluations."""
+
 
 def _candidate_sun_vectors(
     sun_at_zero_roll: npt.NDArray[np.float64],
@@ -206,8 +211,9 @@ def optimum_body_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     drive_state: SolarArrayDriveState | None = None,
+    science_attitude: bool = True,
 ) -> float:
-    """Return the power-optimal physical body roll at the current array state."""
+    """Return the power-optimal body roll, keeping a roll-dependent science constraint clear."""
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
     sun_at_zero = _sun_at_zero_roll(ra, dec, utime, ephem)
     candidate_mask = _roll_valid_mask(ra, dec, utime, ephem, constraint)
@@ -218,13 +224,26 @@ def optimum_body_roll(
         if not candidate_mask.any():
             assert reference is not None
             return reference
+    # The constraint to test roll by roll; a test double has no science constraint.
+    science_filter = (
+        constraint
+        if science_attitude
+        and isinstance(constraint, Constraint)
+        and constraint.science_constraint_roll_dependent
+        else None
+    )
 
     if (
         (solar_panel is None or not solar_panel.panels)
         and candidate_mask is None
         and reference is None
+        and science_filter is None
     ):
         sun = sun_at_zero / np.linalg.norm(sun_at_zero)
+        if np.hypot(sun[1], sun[2]) < _SUN_ON_AXIS:
+            # The Sun is on the pointing axis, so every roll receives the
+            # same power and the angle below would be that of rounding error.
+            return 0.0
         return float((np.arctan2(sun[2], sun[1]) / DTOR) % 360.0)
 
     scores = _power_scores(
@@ -232,6 +251,12 @@ def optimum_body_roll(
     )
     if candidate_mask is not None:
         scores = np.where(candidate_mask, scores, -np.inf)
+    if science_filter is not None:
+        # The best-power roll that keeps the science constraint clear.
+        for candidate in _power_score_order(scores, reference):
+            roll = float(_ROLL_DEGREES[candidate])
+            if not science_filter.in_explicit_science(ra, dec, utime, target_roll=roll):
+                return roll
     return _best_power_roll(scores, reference)
 
 
@@ -246,8 +271,13 @@ def optimum_instrument_roll(
     reference_roll: float | None = None,
     max_roll_delta: float | None = None,
     drive_state: SolarArrayDriveState | None = None,
+    science_attitude: bool = True,
 ) -> float:
-    """Optimize science roll while scoring panels in the physical body frame."""
+    """Optimize reference-frame roll while scoring physical body panels.
+
+    Engineering guidance uses ``science_attitude=False`` and checks the
+    resulting body pose against its operating mode's constraints.
+    """
     if telescope.mounting.is_identity:
         return optimum_body_roll(
             ra,
@@ -259,6 +289,7 @@ def optimum_instrument_roll(
             reference_roll,
             max_roll_delta,
             drive_state,
+            science_attitude=science_attitude,
         )
 
     reference, reachable = _validate_reachable_rolls(reference_roll, max_roll_delta)
@@ -278,6 +309,29 @@ def optimum_instrument_roll(
         if not reachable.any():
             assert reference is not None
             return reference
+
+    if not science_attitude:
+        if (
+            constraint is not None
+            and constraint.ignore_roll
+            and constraint.roll_dependent_constraint is not None
+        ):
+            poses = [
+                telescope.target_body_attitude(ra, dec, float(roll))
+                for roll in _ROLL_DEGREES
+            ]
+            index = ephem.index(dtutcfromtimestamp(utime))
+            blocked = constraint.roll_dependent_constraint.in_constraint_batch(
+                ephemeris=ephem,
+                target_ras=[pose[0] for pose in poses],
+                target_decs=[pose[1] for pose in poses],
+                target_rolls=[pose[2] for pose in poses],
+                times=[ephem.timestamp[index]],
+            )
+            valid = ~np.asarray(blocked, dtype=bool).reshape(-1)
+            if valid.any() and not valid.all():
+                scores = np.where(valid, scores, -np.inf)
+        return _best_power_roll(scores, reference)
 
     order = _power_score_order(scores, reference)
     best_roll = None

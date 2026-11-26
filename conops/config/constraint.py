@@ -1,4 +1,6 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from enum import Enum
 from functools import cached_property, lru_cache
 from typing import cast
@@ -27,6 +29,7 @@ from .constants import (
     PANEL_CONSTRAINT,
     SUN_OCCULT,
 )
+from .frame import SpacecraftFrame
 
 # Cache precision for constraint results.
 # RA/Dec rounded to 0.01 deg (~36 arcsec) - small vs typical constraint zones (10+ deg)
@@ -35,6 +38,10 @@ _RA_DEC_PRECISION = 2  # decimal places
 
 # Integer-based rounding multipliers for faster key generation
 _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
+
+
+_INTERVAL_ENDS = 2
+"""An eclipse interval is a start and an end."""
 
 
 class AttitudeConstraintScope(str, Enum):
@@ -70,6 +77,20 @@ def _default_panel_constraint() -> ConstraintConfig:
         )
         & ~rust_ephem.EclipseConstraint()
     )
+
+
+def _sample_datetime(sample: object) -> datetime:
+    """An ephemeris sample as a timezone-aware datetime."""
+    if isinstance(sample, datetime):
+        return (
+            sample if sample.tzinfo is not None else sample.replace(tzinfo=timezone.utc)
+        )
+    seconds = float(np.asarray(sample, dtype="datetime64[us]").astype(np.int64)) / 1e6
+    return dtutcfromtimestamp(seconds)
+
+
+def _sample_utime(sample: object) -> float:
+    return _sample_datetime(sample).timestamp()
 
 
 @lru_cache(maxsize=65536)
@@ -124,6 +145,14 @@ class Constraint(ConfigModel):
     moon_constraint: ConstraintConfig | None = Field(
         default=None,
         description="Moon constraint configuration",
+    )
+    science_in_eclipse: bool = Field(
+        default=True,
+        description=(
+            "Whether observations may run in eclipse; categories can override "
+            "this default. A natural eclipse is the umbra only: the penumbra "
+            "counts as sunlit"
+        ),
     )
     eclipse_intervals: list[tuple[float, float]] = Field(
         default_factory=list,
@@ -229,8 +258,19 @@ class Constraint(ConfigModel):
     )
     _cache_hits: int = PrivateAttr(default=0)
     _cache_misses: int = PrivateAttr(default=0)
+    _body_frame_source: object | None = PrivateAttr(default=None)
+    _body_safety_key: tuple[object, ...] | None = PrivateAttr(default=None)
+    _body_safety: ConstraintConfig | None = PrivateAttr(default=None)
+    _held_over: list[float] | None = PrivateAttr(default=None)
+    """The times a pointing is being checked over, while it is (see
+    :meth:`held_over`): a miss then evaluates them all in one call."""
     _eclipse_constraint: rust_ephem.EclipseConstraint = PrivateAttr(
         default_factory=rust_ephem.EclipseConstraint
+    )
+
+    _sunlit_ephem: object | None = PrivateAttr(default=None)
+    _natural_sunlit_windows: list[tuple[float, float]] = PrivateAttr(
+        default_factory=list
     )
 
     # validate_assignment=False: this class holds external rust_ephem types
@@ -274,21 +314,64 @@ class Constraint(ConfigModel):
             self._cache_hits += 1
             return self._cache[key]
 
+        held = self._held_over
+        if held is not None and len(held) > 1:
+            # Evaluate all the times at once and keep each.
+            self._cache_misses += 1
+            flags = check_fn.in_constraint_batch(
+                ephemeris=cast(rust_ephem.Ephemeris, self.ephem),
+                target_ras=[ra],
+                target_decs=[dec],
+                times=[self._sample_time(t) for t in held],
+                target_rolls=None if target_roll is None else [target_roll],
+            )
+            for t, flag in zip(held, np.asarray(flags).reshape(-1), strict=True):
+                self._cache[
+                    self._cache_key(constraint_type, ra, dec, t, target_roll)
+                ] = bool(flag)
+            if key in self._cache:
+                return self._cache[key]
+
         # Cache miss - compute result (caller has already asserted ephem is not None)
         self._cache_misses += 1
-        dt = dtutcfromtimestamp(utime)
         result = cast(
             bool,
             check_fn.in_constraint(
                 ephemeris=cast(rust_ephem.Ephemeris, self.ephem),
                 target_ra=ra,
                 target_dec=dec,
-                time=dt,
+                time=self._sample_time(utime),
                 target_roll=target_roll,
             ),
         )
         self._cache[key] = result
         return result
+
+    @contextmanager
+    def held_over(self, utimes: Sequence[float]) -> Iterator[None]:
+        """While held, checks at ``utimes`` evaluate all of them in one call."""
+        previous = self._held_over
+        self._held_over = [float(t) for t in utimes]
+        try:
+            yield
+        finally:
+            self._held_over = previous
+
+    def _sample_time(self, utime: float) -> datetime:
+        """The ephemeris sample at or before ``utime``, where a check is made."""
+        dt = dtutcfromtimestamp(utime)
+        ephem = self.ephem
+        timestamps = getattr(ephem, "timestamp", None)
+        if (
+            ephem is None
+            or not isinstance(timestamps, np.ndarray)
+            or not timestamps.size
+        ):
+            return dt
+        index = min(max(int(ephem.index(dt)), 0), timestamps.size - 1)
+        if index > 0 and _sample_utime(timestamps[index]) > utime:
+            index -= 1
+        return _sample_datetime(timestamps[index])
 
     def clear_cache(self) -> None:
         """Clear the constraint result cache. Call at step boundaries."""
@@ -310,6 +393,8 @@ class Constraint(ConfigModel):
         self.__dict__.pop("safety_constraint_config", None)
         self.__dict__.pop("roll_independent_constraint", None)
         self.__dict__.pop("roll_dependent_constraint", None)
+        self._body_safety_key = None
+        self.__dict__.pop("science_constraint_roll_dependent", None)
 
     @staticmethod
     def _combine_constraints(
@@ -352,17 +437,35 @@ class Constraint(ConfigModel):
         """Combined ground-contact attitude constraints."""
         return self._combine_constraints([self.ground_contact_constraint])
 
+    @property
+    def body_safety_constraint(self) -> ConstraintConfig | None:
+        """Default-boresight safety follows the bus frame, explicit hardware does not."""
+        frame = getattr(self._body_frame_source, "frame", None)
+        if self.safety_constraint is None or not isinstance(frame, SpacecraftFrame):
+            return self.safety_constraint
+        key = (id(self.safety_constraint), frame.boresight, frame.sun_side)
+        if key != self._body_safety_key:
+            self._body_safety = frame.constraint_in_body(self.safety_constraint)
+            self._body_safety_key = key
+            self._cache.clear()
+            for name in (
+                "hardware_safety_constraint_config",
+                "safety_constraint_config",
+                "constraint",
+            ):
+                self.__dict__.pop(name, None)
+        return self._body_safety
+
     @cached_property
     def hardware_safety_constraint_config(self) -> ConstraintConfig | None:
         """Combined hardware-safety constraints."""
-        return self._combine_constraints(
-            [
-                self.safety_constraint,
-                self.star_tracker_hard_constraint,
-                self.radiator_hard_constraint,
-                self.telescope_hard_constraint,
-            ]
-        )
+        components = [
+            self.body_safety_constraint,
+            self.star_tracker_hard_constraint,
+            self.radiator_hard_constraint,
+            self.telescope_hard_constraint,
+        ]
+        return self._combine_constraints(components)
 
     @cached_property
     def constraint(self) -> ConstraintConfig | None:
@@ -396,10 +499,7 @@ class Constraint(ConfigModel):
             self.orbit_constraint,
             self.anti_sun_constraint,
         ]
-        if self.science_constraint is not None and not self._contains_boresight_offset(
-            self.science_constraint
-        ):
-            components.append(self.science_constraint)
+        components.append(self._roll_free_part(self.science_constraint))
         return self._combine_constraints(components)
 
     @cached_property
@@ -412,7 +512,8 @@ class Constraint(ConfigModel):
         """Combined constraint from roll-independent components only.
 
         Excludes star-tracker constraints (which are roll-dependent via
-        BoresightOffsetConstraint) so that the result can be passed to
+        BoresightOffsetConstraint) and stray light (which is evaluated at one
+        nominal roll when none is given) so that the result can be passed to
         ``ConstraintConfig.evaluate()`` without triggering the "visible only
         if visible at ALL rolls" semantics that ``evaluate(target_roll=None)``
         applies to roll-dependent constraints.
@@ -434,33 +535,83 @@ class Constraint(ConfigModel):
             self.anti_sun_constraint,
         ]
         components.extend(
-            constraint
+            self._roll_free_part(constraint)
             for constraint in (
                 self.science_constraint,
                 self.safety_constraint,
                 self.ground_contact_constraint,
             )
-            if constraint is not None
-            and not self._contains_boresight_offset(constraint)
         )
         return self._combine_constraints(components)
 
+    @cached_property
+    def science_constraint_roll_dependent(self) -> bool:
+        """Whether the explicit science constraint depends on the roll."""
+        return self.science_constraint is not None and self._tree_contains(
+            self.science_constraint, self._is_roll_dependent_node
+        )
+
     @staticmethod
-    def _contains_boresight_offset(constraint: ConstraintConfig) -> bool:
-        """Return whether a constraint tree contains a boresight-offset node."""
-        if isinstance(constraint, BoresightOffsetConstraint):
+    def _is_roll_dependent_node(constraint: ConstraintConfig) -> bool:
+        """Whether this node's result depends on the roll."""
+        return (
+            getattr(constraint, "type", None)
+            in {"boresight_offset", "solar_roll", "stray_light"}
+            or getattr(constraint, "fov_polygon", None) is not None
+        )
+
+    @staticmethod
+    def _is_stray_light(constraint: ConstraintConfig) -> bool:
+        """Whether this node is a rust_ephem stray-light constraint.
+
+        Matched by type name, which releases without the class also accept.
+        """
+        return getattr(constraint, "type", None) == "stray_light"
+
+    @staticmethod
+    def _roll_free_part(constraint: ConstraintConfig | None) -> ConstraintConfig | None:
+        """The part of a tree that can be evaluated without a roll, if any.
+
+        A tree holding a boresight offset has none. Stray light given no roll is
+        evaluated at its nominal attitude, not at any roll, so a tree holding it
+        has none either, unless it is an OR: each other member is then a
+        violation whatever the roll, and those members are kept.
+        """
+        if constraint is None or Constraint._contains_boresight_offset(constraint):
+            return None
+        if not Constraint._tree_contains(constraint, Constraint._is_stray_light):
+            return constraint
+        if isinstance(constraint, OrConstraint):
+            return Constraint._combine_constraints(
+                [Constraint._roll_free_part(c) for c in constraint.constraints]
+            )
+        return None
+
+    @staticmethod
+    def _tree_contains(
+        constraint: ConstraintConfig, leaf: Callable[[ConstraintConfig], bool]
+    ) -> bool:
+        """Return whether any node of a constraint tree satisfies ``leaf``."""
+        if leaf(constraint):
             return True
         if isinstance(constraint, NotConstraint):
-            return Constraint._contains_boresight_offset(constraint.constraint)
+            return Constraint._tree_contains(constraint.constraint, leaf)
         if isinstance(
             constraint,
             (AndConstraint, OrConstraint, XorConstraint, AtLeastConstraint),
         ):
             return any(
-                Constraint._contains_boresight_offset(subconstraint)
+                Constraint._tree_contains(subconstraint, leaf)
                 for subconstraint in constraint.constraints
             )
         return False
+
+    @staticmethod
+    def _contains_boresight_offset(constraint: ConstraintConfig) -> bool:
+        """Return whether a constraint tree contains a boresight-offset node."""
+        return Constraint._tree_contains(
+            constraint, lambda c: isinstance(c, BoresightOffsetConstraint)
+        )
 
     @staticmethod
     def _roll_dependent_subtree(
@@ -558,7 +709,10 @@ class Constraint(ConfigModel):
             return value
         intervals = []
         for interval in value:
-            if not isinstance(interval, (list, tuple)) or len(interval) != 2:
+            if (
+                not isinstance(interval, (list, tuple))
+                or len(interval) != _INTERVAL_ENDS
+            ):
                 raise ValueError("an eclipse interval is a (start, end) pair")
             start, end = (unixtime_from(interval[0]), unixtime_from(interval[1]))
             if end <= start:
@@ -574,6 +728,11 @@ class Constraint(ConfigModel):
             for start, end in self.eclipse_intervals
         ]
 
+    def _science_allowed_in_eclipse(self, override: bool | None) -> bool:
+        """The eclipse observing policy to apply: ``override`` where one is
+        given, else the mission default."""
+        return self.science_in_eclipse if override is None else override
+
     def in_eclipse_interval(self, time: float) -> bool:
         """Whether ``time`` falls in an interval given as eclipse."""
         return any(start <= time < end for start, end in self.eclipse_intervals_unix())
@@ -583,6 +742,64 @@ class Constraint(ConfigModel):
             return True
         assert self.ephem is not None, "Ephemeris must be set to use in_eclipse method"
         return self._cached_check("eclipse", ra, dec, time, self._eclipse_constraint)
+
+    def sunlit_windows(self) -> list[tuple[float, float]]:
+        """Natural sunlit windows less injected eclipses, using half-open bounds.
+
+        Rust computes natural boundaries. Only that immutable ephemeris result
+        is cached: injected intervals are read afresh so updates cannot reuse
+        stale admission windows.
+        """
+        assert self.ephem is not None, "An ephemeris is required for eclipse policy"
+        if self._sunlit_ephem is not self.ephem:
+            result = self._eclipse_constraint.evaluate(
+                ephemeris=self.ephem, target_ra=0.0, target_dec=0.0
+            )
+            self._natural_sunlit_windows = [
+                (w.start_time.timestamp(), w.end_time.timestamp())
+                for w in result.visibility
+            ]
+            self._sunlit_ephem = self.ephem
+        windows = list(self._natural_sunlit_windows)
+        for start, end in self.eclipse_intervals_unix():
+            cut = []
+            for lo, hi in windows:
+                if end <= lo or start >= hi:
+                    cut.append((lo, hi))
+                else:
+                    if lo < start:
+                        cut.append((lo, start))
+                    if end < hi:
+                        cut.append((end, hi))
+            windows = cut
+        return windows
+
+    def without_eclipses(
+        self, windows: Sequence[Sequence[float]]
+    ) -> list[tuple[float, float]]:
+        """Intersect observing windows with the shared sunlit intervals."""
+        sunlit = self.sunlit_windows()
+        return [
+            (max(a, lo), min(b, hi))
+            for a, b in windows
+            for lo, hi in sunlit
+            if max(a, lo) < min(b, hi)
+        ]
+
+    def first_eclipse_overlap(self, begin: float, end: float) -> float | None:
+        """First forbidden instant in ``[begin, end)``, or None if all is sunlit."""
+        cursor = begin
+        if end <= begin:
+            return None
+        for lo, hi in self.sunlit_windows():
+            if hi <= cursor:
+                continue
+            if lo > cursor:
+                return cursor
+            cursor = max(cursor, hi)
+            if cursor >= end:
+                return None
+        return cursor
 
     def in_moon(
         self, ra: float, dec: float, time: float, target_roll: float | None = None
@@ -627,12 +844,14 @@ class Constraint(ConfigModel):
         if self.safety_constraint is None:
             return False
         assert self.ephem is not None, "Ephemeris must be set to use in_explicit_safety"
+        safety = self.body_safety_constraint
+        assert safety is not None
         return self._cached_check(
             "explicit_safety",
             ra,
             dec,
             time,
-            self.safety_constraint,
+            safety,
             target_roll=target_roll,
         )
 
@@ -744,8 +963,22 @@ class Constraint(ConfigModel):
         utime: float,
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> bool:
-        """Check imaging-quality and power-generation constraints."""
+        """Check imaging-quality and power-generation constraints.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply.
+        None applies the mission default, :attr:`science_in_eclipse`. An
+        observation category can override that default, and this class
+        does not hold the categories, so for one request pass
+        ``config.science_in_eclipse_for(obsid)`` to get the answer the
+        planners and dispatch use for it.
+        """
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(ra, dec, utime)
+        ):
+            return True
         return in_attitude_constraint_scopes(
             self,
             [
@@ -844,8 +1077,20 @@ class Constraint(ConfigModel):
         utime: float,
         target_roll: float | None = None,
         acs_mode: ACSMode | int | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> str | None:
-        """Return the first violated science/scheduling constraint name."""
+        """Return the first violated science/scheduling constraint name.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply:
+        None for the mission default, or a request's own from
+        ``config.science_in_eclipse_for(obsid)`` (see
+        :meth:`in_science_constraint`).
+        """
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(ra, dec, utime)
+        ):
+            return "science_eclipse"
         return science_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
@@ -920,7 +1165,7 @@ class Constraint(ConfigModel):
             "Ephemeris must be set to use in_constraint_batch"
         )
 
-        dt = dtutcfromtimestamp(utime)
+        dt = self._sample_time(utime)
 
         # Check all constraint types and OR the results
         violations: npt.NDArray[np.bool_] | None = None
@@ -949,9 +1194,17 @@ class Constraint(ConfigModel):
         decs: list[float],
         utime: float,
         target_rolls: list[float] | None = None,
+        *,
+        science_in_eclipse: bool | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """Check imaging-quality and power-generation constraints."""
-        return self._in_constraint_batch_for_components(
+        """Check imaging-quality and power-generation constraints.
+
+        ``science_in_eclipse`` is the eclipse observing policy to apply to
+        every pointing: None for the mission default, or a request's own
+        from ``config.science_in_eclipse_for(obsid)`` (see
+        :meth:`in_science_constraint`).
+        """
+        result = self._in_constraint_batch_for_components(
             ras,
             decs,
             utime,
@@ -967,6 +1220,12 @@ class Constraint(ConfigModel):
             ],
             target_rolls=target_rolls,
         )
+
+        if not self._science_allowed_in_eclipse(science_in_eclipse) and (
+            self.in_eclipse(0, 0, utime)
+        ):
+            return np.ones_like(result, dtype=bool)
+        return result
 
     def in_imaging_quality_constraint_batch(
         self,
@@ -1037,7 +1296,7 @@ class Constraint(ConfigModel):
             decs,
             utime,
             [
-                self.safety_constraint,
+                self.body_safety_constraint,
                 self.star_tracker_hard_constraint,
                 self.radiator_hard_constraint,
                 self.telescope_hard_constraint,

@@ -81,6 +81,7 @@ The quaternion remains an inertial-to-body coordinate transform. Consequently, a
    - ``stored_momentum_norm_n_m_s``: Coordinate-invariant norm of accumulated stored momentum (N m s), or ``None`` when tracking is disabled
    - ``actuator_momentum_body_n_m_s``: What the wheels hold in body coordinates (N m s), the stored momentum less the body's own, :math:`I\omega`, while it turns; equal to the stored momentum at rest, or ``None`` when tracking is disabled
    - ``actuator_momentum_norm_n_m_s``: Norm of what the wheels hold (N m s), or ``None`` when tracking is disabled
+   - ``wheel_momentum_n_m_s``: Each configured wheel's momentum along its spin axis (N m s), in the order configured, or ``None`` without wheels
 
 **Power System**
    - ``panel_illumination``: Solar panel illumination fraction (0-1)

@@ -16,6 +16,7 @@ from ..common import (
 )
 from ..common.enums import ACSCommandType
 from ..common.ephemeris import position_vectors
+from ..common.numerics import ANGLE_TOLERANCE_DEG
 from ..common.vector import attitude_to_quat, quaternion_attitude_delta
 from ..config import AttitudeConstraintScope, MissionConfig
 from ..config.constraint import (
@@ -420,7 +421,15 @@ class DITL(DITLMixin, DITLStats):
             _pos = np.asarray(
                 position_vectors(self.ephem, "gcrs")[ephem_index], dtype=np.float64
             )
-            earth_body_vector: list[float] = list(-_pos / np.linalg.norm(_pos))
+            earth_body_vector: list[float] = [
+                float(value)
+                for value in scbodyvector(
+                    np.radians(ra),
+                    np.radians(dec),
+                    np.radians(roll),
+                    -_pos / np.linalg.norm(_pos),
+                )
+            ]
             for_solid_angle_sr = (
                 self.constraint.instantaneous_field_of_regard(utime=self.utime[i])
                 if self.calculate_field_of_regard
@@ -503,6 +512,7 @@ class DITL(DITLMixin, DITLStats):
                 roll_offset_deg=roll_offset_deg,
                 acs_mode=mode,
                 collection_seconds=collection_seconds,
+                calibration=self.ppt is not None and self.ppt.calibration is True,
                 panel_illumination=panel_illumination,
                 solar_array_drive_angles=drive_angles,
                 instrument_modes=self._instrument_modes_telemetry(mode, self.utime[i]),
@@ -564,6 +574,12 @@ class DITL(DITLMixin, DITLStats):
                 actuator_momentum_norm_n_m_s=(
                     momentum_sample.actuator_momentum_norm_n_m_s
                     if momentum_sample is not None
+                    else None
+                ),
+                wheel_momentum_n_m_s=(
+                    list(momentum_sample.wheel_momentum_n_m_s)
+                    if momentum_sample is not None
+                    and momentum_sample.wheel_momentum_n_m_s is not None
                     else None
                 ),
                 disturbance_torques_body_n_m=(
@@ -633,6 +649,12 @@ class DITL(DITLMixin, DITLStats):
                 self.telemetry.data.append(pd)
 
         if (
+            self._active_entry is not None
+            and self._active_entry.obstype == ObsType.ACTIVITY
+            and not self.acs.in_safe_mode
+        ):
+            self._finish_active_entry(self.uend)
+        if (
             self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_enabled
             is True
         ):
@@ -654,6 +676,10 @@ class DITL(DITLMixin, DITLStats):
                 and attitude-rate mismatches. Empty when the plan executed as
                 written.
         """
+        return self._plan_validator().validate()
+
+    def _plan_validator(self) -> PlanExecutionValidator:
+        """Build a validator over this run's plan and executed telemetry."""
         return PlanExecutionValidator(
             config=self.config,
             plan=self.plan,
@@ -680,7 +706,7 @@ class DITL(DITLMixin, DITLStats):
                 for violation in self._attitude_rate_violations()
             ],
             science_obstypes=PLAN_SCIENCE_OBSTYPES,
-        ).validate()
+        )
 
     def _credit_collection(self, entry: PlanEntry, start: float, stop: float) -> None:
         """Hook called for each step that collects science for ``entry``.
@@ -698,6 +724,20 @@ class DITL(DITLMixin, DITLStats):
             (entry for entry in self.plan if float(entry.end) > self.ustart),
             key=lambda entry: float(entry.begin),
         )
+        for entry in self._entries_to_command:
+            if entry_obstype(entry) not in PLAN_SCIENCE_OBSTYPES:
+                continue
+            begin = max(self.ustart, float(entry.begin) + float(entry.slewtime))
+            end = min(self.uend, float(entry.end))
+            eclipse = (
+                entry.eclipse_violation(begin, end)
+                if entry.forbids_eclipse() is True
+                else None
+            )
+            if eclipse is not None:
+                raise ValueError(
+                    f"Plan entry {entry.obsid} violates its science-in-eclipse policy at {eclipse}"
+                )
         self._next_entry_index = 0
         self._active_entry: PlanEntry | None = None
         self._active_pass: Pass | None = None
@@ -835,19 +875,24 @@ class DITL(DITLMixin, DITLStats):
             self.acs.request_end_battery_charge(utime)
         elif obstype == ObsType.ACTIVITY:
             self.acs.cancel_pending_slews(entry.obsid)
+            entry.end = min(float(entry.end), utime)
             self.log.log_event(
                 utime=utime,
                 event_type="ACTIVITY",
-                description=f"Scheduled activity {entry.name} ends",
+                description=(
+                    f"Scheduled activity {entry.name} "
+                    f"{'ends' if entry.activity_finishes else 'stops before completion'}"
+                ),
                 obsid=entry.obsid,
                 acs_mode=self.acs.acsmode,
             )
             if entry.desaturation:
                 self.acs.end_desaturation()
-                self._unload_stored_momentum(utime, entry.obsid)
+                if entry.activity_finishes:
+                    self._unload_stored_momentum(utime, entry.obsid)
         else:
             self.acs.cancel_pending_slews(entry.obsid)
-            self.acs.end_science_observation()
+            self.acs.end_science_observation(min(float(entry.end), utime))
         self._active_entry = None
 
     def _command_entry(self, entry: PlanEntry, utime: float) -> bool:
@@ -885,14 +930,24 @@ class DITL(DITLMixin, DITLStats):
     def _command_activity_entry(self, entry: PlanEntry, utime: float) -> None:
         """Hold the entry's attitude in IDLE for the activity, slewing to it
         first where the spacecraft is elsewhere."""
-        self.acs.end_science_observation()
+        self.acs.end_science_observation(utime)
         if entry.desaturation:
             self.acs.begin_desaturation()
-        self._add_activity_data(float(entry.fixed_data_gb), entry)
+        if entry.activity_hold_begin is None:
+            entry.activity_hold_begin = float(entry.begin) + entry.slewtime
+        if entry.activity_hold_end is None:
+            entry.activity_hold_end = float(entry.end)
+        resumed = entry.activity_hold_begin < max(float(entry.begin), self.ustart)
+        entry.begin = max(float(entry.begin), self.ustart)
+        entry.end = min(float(entry.end), self.uend)
+        if resumed:
+            entry.fixed_data_gb = 0.0
+        else:
+            self._add_activity_data(float(entry.fixed_data_gb), entry)
         distance, _ = quaternion_attitude_delta(
             self.acs.ra, self.acs.dec, self.acs.roll, entry.ra, entry.dec, entry.roll
         )
-        if distance > 1e-6:
+        if distance > ANGLE_TOLERANCE_DEG:
             self.acs._enqueue_slew(
                 entry.ra,
                 entry.dec,
@@ -904,7 +959,7 @@ class DITL(DITLMixin, DITLStats):
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
-            description=f"Scheduled activity {entry.name} begins",
+            description=f"Scheduled activity {entry.name} {'resumes' if resumed else 'begins'}",
             obsid=entry.obsid,
             acs_mode=self.acs.acsmode,
         )
@@ -984,6 +1039,8 @@ class DITL(DITLMixin, DITLStats):
         slew.obstype = ObsType.GSP
         slew.obsid = gspass.obsid
         slew.calc_slewtime()
+        if entry.contact_ingress == "reposition":
+            slew.obstype = ObsType.IDLE
         self.acs.enqueue_command(
             ACSCommand(
                 command_type=ACSCommandType.SLEW_TO_TARGET,
@@ -1014,8 +1071,9 @@ class DITL(DITLMixin, DITLStats):
             ra, dec, roll = acquired
             if (
                 angular_separation(ra, dec, entry.track_start_ra, entry.track_start_dec)
-                <= 1e-6
-                and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0) <= 1e-6
+                <= ANGLE_TOLERANCE_DEG
+                and abs((roll - entry.track_start_roll + 180.0) % 360.0 - 180.0)
+                <= ANGLE_TOLERANCE_DEG
             ):
                 return profile
         return None

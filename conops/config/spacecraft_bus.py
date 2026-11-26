@@ -6,6 +6,7 @@ from ._base import ConfigModel
 from .acs import AttitudeControlSystem
 from .communications import CommunicationsSystem
 from .data_generator import HousekeepingData
+from .frame import SpacecraftFrame
 from .power import PowerDraw
 from .radiator import DefaultRadiatorConfiguration, RadiatorConfiguration
 from .star_tracker import DefaultStarTrackerConfiguration, StarTrackerConfiguration
@@ -29,6 +30,13 @@ class SpacecraftBus(ConfigModel):
     ) = Field(
         default=None,
         description="Spacecraft inertia tensor about its center of mass in body coordinates, in kg m².",
+    )
+    frame: SpacecraftFrame = Field(
+        default_factory=SpacecraftFrame,
+        description=(
+            "The body axes the science boresight and the Sun's side lie along; "
+            "the default is boresight +X, Sun's side +Y"
+        ),
     )
     power_draw: PowerDraw = Field(
         default_factory=PowerDraw,

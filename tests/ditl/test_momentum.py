@@ -1,4 +1,5 @@
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -99,8 +100,8 @@ def test_update_reuses_supplied_position_and_quaternion(simulation):
 def test_a_slew_within_a_coarse_step_is_sampled_from_the_acs(simulation, monkeypatch):
     """At a 120 s step with a 2.5 s attitude step, a slew flown during the
     step is integrated at 48 samples taken from the ACS, each at the
-    attitude it had then, with the orbit interpolated between the step's
-    ends; a step in which nothing moved is one sample."""
+    attitude it had then, with the orbit there from the ephemeris; a step
+    in which nothing moved is one sample."""
     simulation._reset_stored_momentum_tracker()
     tracker = Mock()
     simulation._stored_momentum_tracker = tracker
@@ -108,6 +109,19 @@ def test_a_slew_within_a_coarse_step_is_sampled_from_the_acs(simulation, monkeyp
     first = np.array([7000.0, 0.0, 0.0])
     second = np.array([6000.0, 3000.0, 0.0])
     quaternion = attitude_to_quat(0.0, 45.0, 0.0)
+
+    def orbit(when):
+        elapsed = when.timestamp() - time
+        return SimpleNamespace(
+            position=np.array([[7000.0 - elapsed, 2.0 * elapsed, 0.0]]),
+            velocity=np.array([[-1.0, 2.0, 0.0]]),
+        )
+
+    simulation.ephem.gcrs_pv_at = orbit
+    simulation.ephem.itrs_pv_at = orbit
+    simulation.ephem.sun_pv_at = lambda when: SimpleNamespace(
+        position=np.array([[1.5e8, 0.0, 0.0]])
+    )
     monkeypatch.setattr(simulation.acs, "attitude_moved", lambda begin, end: False)
     simulation._update_stored_momentum(time, first, quaternion)
     assert tracker.update.call_count == 1
@@ -123,7 +137,9 @@ def test_a_slew_within_a_coarse_step_is_sampled_from_the_acs(simulation, monkeyp
     times = [call.kwargs["utime"] for call in calls]
     assert times == pytest.approx([time + 2.5 * k for k in range(1, 49)])
     halfway = calls[23].kwargs
-    assert halfway["position_eci_km"] == pytest.approx((first + second) / 2.0)
+    assert halfway["position_eci_km"] == pytest.approx([6940.0, 120.0, 0.0])
+    assert halfway["velocity_eci_km_s"] == pytest.approx([-1.0, 2.0, 0.0])
+    assert halfway["sun_eci_km"] == pytest.approx([1.5e8 - 6940.0, -120.0, 0.0])
     assert halfway["attitude_quaternion_eci_to_body"] == pytest.approx(
         attitude_to_quat(0.0, 45.0 + 0.2 * 60.0, 0.0)
     )

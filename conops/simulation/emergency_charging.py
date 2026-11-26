@@ -10,19 +10,32 @@ import rust_ephem
 
 from conops.config.battery import Battery
 
-from ..common import unixtime2date
+from ..common import dtutcfromtimestamp, unixtime2date
 from ..common.enums import ACSMode, DITLEventType, ObsType
 from ..common.vector import angular_separation, sort_by_angular_separation
-from ..config import AttitudeConstraintScope, MissionConfig, SolarArrayDriveState
+from ..config import (
+    AttitudeConstraintScope,
+    MissionConfig,
+    SolarArrayDriveState,
+    SpacecraftFrame,
+    Telescope,
+)
 from ..config.constraint import (
     in_attitude_constraint_scopes,
     in_attitude_constraint_scopes_batch,
 )
-from .roll import optimum_body_roll
+from .roll import optimum_body_roll, optimum_instrument_roll
 
 if TYPE_CHECKING:
     from ..ditl.ditl_log import DITLLog
     from ..targets import Pointing
+
+
+_DISTINCT_DEC_DEG = 0.1
+"""A charging candidate within this of the optimal declination is the same."""
+_NEAR_AXIS_COMPONENT = 0.9
+"""A unit vector whose component along an axis reaches this lies too near
+the axis for a cross product with it to give a direction."""
 
 
 class EmergencyCharging:
@@ -80,6 +93,15 @@ class EmergencyCharging:
         self.solar_panel = config.solar_panel
         self.acs_config = config.spacecraft_bus.attitude_control
         self.battery = config.battery
+        frame = getattr(config.spacecraft_bus, "frame", None)
+        self._frame = frame if isinstance(frame, SpacecraftFrame) else SpacecraftFrame()
+        self._reference_telescope = (
+            None
+            if self._frame.is_identity
+            else Telescope(mounting=self._frame.mounting)
+        )
+        self._ephem = self.constraint.ephem
+        self._drive_state: SolarArrayDriveState | None = None
 
         self.next_charging_obsid = starting_obsid
         self.current_charging_ppt: Pointing | None = None
@@ -112,9 +134,48 @@ class EmergencyCharging:
     def _charging_scopes(self) -> list[AttitudeConstraintScope]:
         return self.config.attitude_constraint_scopes_for_mode(ACSMode.CHARGING)
 
+    def _optimal_roll(
+        self,
+        ra: float,
+        dec: float,
+        utime: float,
+        ephem: rust_ephem.Ephemeris,
+        *,
+        drive_state: SolarArrayDriveState | None = None,
+    ) -> float:
+        if self._reference_telescope is not None:
+            return optimum_instrument_roll(
+                ra,
+                dec,
+                utime,
+                ephem,
+                self._reference_telescope,
+                self.solar_panel,
+                self.constraint,
+                drive_state=drive_state,
+                science_attitude=False,
+            )
+        return optimum_body_roll(
+            ra,
+            dec,
+            utime,
+            ephem,
+            self.solar_panel,
+            self.constraint,
+            drive_state=drive_state,
+            science_attitude=False,
+        )
+
     def _charging_attitude_violates_scopes(
         self, ra: float, dec: float, utime: float, roll: float | None = None
     ) -> bool:
+        if self._reference_telescope is not None:
+            assert self._ephem is not None
+            if roll is None:
+                roll = self._optimal_roll(
+                    ra, dec, utime, self._ephem, drive_state=self._drive_state
+                )
+            ra, dec, roll = self._frame.body_attitude(ra, dec, roll)
         return in_attitude_constraint_scopes(
             self.constraint,
             self._charging_scopes(),
@@ -128,6 +189,26 @@ class EmergencyCharging:
     def _charging_candidate_violations(
         self, ras: list[float], decs: list[float], utime: float
     ) -> npt.NDArray[np.bool_]:
+        if self._reference_telescope is not None:
+            assert self._ephem is not None
+            poses = [
+                self._frame.body_attitude(
+                    ra,
+                    dec,
+                    self._optimal_roll(
+                        ra, dec, utime, self._ephem, drive_state=self._drive_state
+                    ),
+                )
+                for ra, dec in zip(ras, decs, strict=True)
+            ]
+            return in_attitude_constraint_scopes_batch(
+                self.constraint,
+                self._charging_scopes(),
+                [p[0] for p in poses],
+                [p[1] for p in poses],
+                utime,
+                target_rolls=[p[2] for p in poses],
+            )
         return in_attitude_constraint_scopes_batch(
             self.constraint, self._charging_scopes(), ras, decs, utime
         )
@@ -140,6 +221,8 @@ class EmergencyCharging:
         lastdec: float = 0.0,
         *,
         drive_state: SolarArrayDriveState | None = None,
+        lastroll: float = 0.0,
+        preview: bool = False,
     ) -> Pointing | None:
         """
         Create an emergency charging pointing to recover battery charge.
@@ -154,26 +237,47 @@ class EmergencyCharging:
             ephem: Ephemeris object for spacecraft position/eclipse info
             lastra: Current pointing RA in degrees
             lastdec: Current pointing Dec in degrees
+            preview: Only find out whether charging could begin at ``utime``:
+                nothing is logged, and the pointing is not the current one
 
         Returns:
             Pointing object for emergency charging, or None if not possible
         """
         # Check if we're in sunlight (eclipse check)
         if not self._is_in_sunlight(utime, ephem):
-            self._log_or_print(
-                utime, "ERROR", "Cannot start emergency charging: in eclipse"
-            )
+            if not preview:
+                self._log_or_print(
+                    utime, "ERROR", "Cannot start emergency charging: in eclipse"
+                )
             return None
 
-        # Get optimal charging pointing from solar panel
-        optimal_ra, optimal_dec = self.solar_panel.optimal_charging_pointing(
-            utime, ephem
-        )
+        self._ephem, self._drive_state = ephem, drive_state
+        # Search about the declared reference boresight, then command a
+        # physical body attitude. Renaming body axes must not change the grid.
+        if self._reference_telescope is None:
+            optimal_ra, optimal_dec = self.solar_panel.optimal_charging_pointing(
+                utime, ephem
+            )
+        else:
+            optimal_ra, optimal_dec = self.solar_panel.optimal_charging_pointing(
+                utime, ephem, frame=self._frame
+            )
+            lastra, lastdec, _ = self._frame.canonical_attitude(
+                lastra, lastdec, lastroll
+            )
 
         # Find valid pointing that doesn't violate constraints
         if self.sidemount:
+            # The search builds the great circle 90 degrees from the Sun, so it
+            # needs the Sun itself, not the optimal pointing.
+            index = ephem.index(dtutcfromtimestamp(utime))
             charging_ra, charging_dec = self._find_valid_pointing_sidemount(
-                optimal_ra, optimal_dec, utime, lastra, lastdec
+                float(ephem.sun_ra_deg[index]),
+                float(ephem.sun_dec_deg[index]),
+                utime,
+                lastra,
+                lastdec,
+                preview=preview,
             )
         else:
             charging_ra, charging_dec = self._find_valid_pointing(
@@ -184,27 +288,33 @@ class EmergencyCharging:
                 lastra,
                 lastdec,
                 drive_state=drive_state,
+                preview=preview,
             )
 
         if charging_ra is None or charging_dec is None:
-            self._log_or_print(utime, "ERROR", "No valid charging pointing found")
+            if not preview:
+                self._log_or_print(utime, "ERROR", "No valid charging pointing found")
             return None
 
         # Calculate optimal roll angle for solar panel pointing
-        roll_angle = optimum_body_roll(
+        roll_angle = self._optimal_roll(
             charging_ra,
             charging_dec,
             utime,
             ephem,
-            self.solar_panel,
-            self.constraint,
             drive_state=drive_state,
         )
 
         # Create the charging PPT
+        charging_ra, charging_dec, roll_angle = self._frame.body_attitude(
+            charging_ra, charging_dec, roll_angle
+        )
         charging_ppt = self._create_pointing(
             charging_ra, charging_dec, roll_angle, utime
         )
+        if preview:
+            self.next_charging_obsid -= 1
+            return charging_ppt
 
         self._log_or_print(
             utime,
@@ -224,6 +334,7 @@ class EmergencyCharging:
         current_ppt: Pointing | None,
         *,
         drive_state: SolarArrayDriveState | None = None,
+        lastroll: float = 0.0,
     ) -> Pointing | None:
         """End the current science visit (if any) and create a charging PPT.
 
@@ -235,7 +346,7 @@ class EmergencyCharging:
         Returns the created charging Pointing or None if not possible.
         """
         charging_ppt = self.create_charging_pointing(
-            utime, ephem, lastra, lastdec, drive_state=drive_state
+            utime, ephem, lastra, lastdec, drive_state=drive_state, lastroll=lastroll
         )
         if charging_ppt is None:
             return None
@@ -275,6 +386,7 @@ class EmergencyCharging:
         current_dec: float = 0.0,
         *,
         drive_state: SolarArrayDriveState | None = None,
+        preview: bool = False,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing that doesn't violate constraints.
@@ -291,18 +403,18 @@ class EmergencyCharging:
             ephem: Ephemeris object for calculating panel illumination
             current_ra: Current pointing RA in degrees
             current_dec: Current pointing Dec in degrees
+            preview: Log nothing
 
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
         """
         # Validate optimal pointing
-        optimal_roll = optimum_body_roll(
+        self._ephem, self._drive_state = ephem, drive_state
+        optimal_roll = self._optimal_roll(
             optimal_ra,
             optimal_dec,
             utime,
             ephem,
-            self.solar_panel,
-            self.constraint,
             drive_state=drive_state,
         )
         if not self._charging_attitude_violates_scopes(
@@ -314,21 +426,23 @@ class EmergencyCharging:
                     current_ra, current_dec, optimal_ra, optimal_dec
                 )
                 if slew > self.max_slew_deg:
-                    self._log_or_print(
-                        utime,
-                        "CHARGING",
-                        f"Optimal charging pointing requires {slew:.1f}° slew (limit: {self.max_slew_deg:.1f}°), searching for closer alternative",
-                    )
+                    if not preview:
+                        self._log_or_print(
+                            utime,
+                            "CHARGING",
+                            f"Optimal charging pointing requires {slew:.1f}° slew (limit: {self.max_slew_deg:.1f}°), searching for closer alternative",
+                        )
                 else:
                     return optimal_ra, optimal_dec
             else:
                 return optimal_ra, optimal_dec
 
-        self._log_or_print(
-            utime,
-            "CHARGING",
-            "Emergency charging pointing violates constraints, searching for alternative",
-        )
+        if not preview:
+            self._log_or_print(
+                utime,
+                "CHARGING",
+                "Emergency charging pointing violates constraints, searching for alternative",
+            )
 
         # Search strategy: Try multiple RA/Dec combinations and select the one
         # with best solar panel illumination that doesn't violate constraints
@@ -348,7 +462,7 @@ class EmergencyCharging:
 
         for dec_offset in (10, -10, 20, -20, 30, -30):
             alt_dec = max(-90.0, min(90.0, optimal_dec + dec_offset))
-            if abs(alt_dec - optimal_dec) > 0.1:  # Only if actually different
+            if abs(alt_dec - optimal_dec) > _DISTINCT_DEC_DEG:
                 raw_candidates.append((optimal_ra, alt_dec))
 
         for ra_offset in (45, -45, 90, -90, 135, -135):
@@ -382,32 +496,33 @@ class EmergencyCharging:
                     continue  # Skip pointings beyond slew limit
 
             # Calculate optimal roll angle for this pointing
-            optimal_roll = optimum_body_roll(
+            optimal_roll = self._optimal_roll(
                 alt_ra,
                 alt_dec,
                 utime,
                 ephem,
-                self.solar_panel,
-                self.constraint,
                 drive_state=drive_state,
+            )
+            body_ra, body_dec, body_roll = self._frame.body_attitude(
+                alt_ra, alt_dec, optimal_roll
             )
 
             # Calculate solar panel illumination for this pointing with optimal roll
             illumination = (
                 self.solar_panel.panel_illumination_fraction(
                     time=utime,
-                    ra=alt_ra,
-                    dec=alt_dec,
+                    ra=body_ra,
+                    dec=body_dec,
                     ephem=ephem,
-                    roll=optimal_roll,
+                    roll=body_roll,
                 )
                 if drive_state is None
                 else self.solar_panel.panel_illumination_fraction(
                     time=utime,
-                    ra=alt_ra,
-                    dec=alt_dec,
+                    ra=body_ra,
+                    dec=body_dec,
                     ephem=ephem,
-                    roll=optimal_roll,
+                    roll=body_roll,
                     drive_state=drive_state,
                 )
             )
@@ -418,11 +533,12 @@ class EmergencyCharging:
 
             # Early exit: if illumination is good enough, use this pointing immediately
             if illumination >= good_enough_illumination:
-                self._log_or_print(
-                    utime,
-                    "CHARGING",
-                    f"Found alternative charging pointing at RA={alt_ra:.2f}, Dec={alt_dec:.2f} with {illumination:.1%} illumination",
-                )
+                if not preview:
+                    self._log_or_print(
+                        utime,
+                        "CHARGING",
+                        f"Found alternative charging pointing at RA={alt_ra:.2f}, Dec={alt_dec:.2f} with {illumination:.1%} illumination",
+                    )
                 return alt_ra, alt_dec
 
             # Keep track of the best unconstrained pointing (fallback)
@@ -432,11 +548,12 @@ class EmergencyCharging:
                 best_dec = alt_dec
 
         if best_ra is not None:
-            self._log_or_print(
-                utime,
-                "CHARGING",
-                f"Found alternative charging pointing at RA={best_ra:.2f}, Dec={best_dec:.2f} with {best_illumination:.1%} illumination",
-            )
+            if not preview:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found alternative charging pointing at RA={best_ra:.2f}, Dec={best_dec:.2f} with {best_illumination:.1%} illumination",
+                )
             return best_ra, best_dec
 
         return None, None
@@ -448,6 +565,8 @@ class EmergencyCharging:
         utime: float,
         current_ra: float | None = None,
         current_dec: float | None = None,
+        *,
+        preview: bool = False,
     ) -> tuple[float | None, float | None]:
         """
         Find a valid pointing for side-mounted solar panels.
@@ -468,6 +587,7 @@ class EmergencyCharging:
             utime: Current unix timestamp
             current_ra: Current pointing RA in degrees
             current_dec: Current pointing Dec in degrees
+            preview: Log nothing
 
         Returns:
             Tuple of (ra, dec) if valid pointing found, or (None, None) if not
@@ -491,7 +611,7 @@ class EmergencyCharging:
 
         # Create two orthogonal vectors perpendicular to Sun
         # First perpendicular vector: use cross product with z-axis (or x if Sun near pole)
-        if abs(sun_z) < 0.9:
+        if abs(sun_z) < _NEAR_AXIS_COMPONENT:
             perp1 = np.cross(sun_vec, [0, 0, 1])
         else:
             perp1 = np.cross(sun_vec, [1, 0, 0])
@@ -560,19 +680,21 @@ class EmergencyCharging:
         if best_candidate is not None:
             candidate_ra, candidate_dec = best_candidate
             slew_clause = f", {best_slew:.1f}° slew" if best_slew is not None else ""
-            self._log_or_print(
-                utime,
-                "CHARGING",
-                f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
-                f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
-            )
+            if not preview:
+                self._log_or_print(
+                    utime,
+                    "CHARGING",
+                    f"Found side-mount charging pointing at RA={candidate_ra:.2f}, Dec={candidate_dec:.2f} "
+                    f"(90° from Sun at RA={sun_ra:.2f}, Dec={sun_dec:.2f}{slew_clause})",
+                )
             return best_candidate
 
-        self._log_or_print(
-            utime,
-            "ERROR",
-            "No valid side-mount charging pointing found (all perpendicular pointings violate constraints)",
-        )
+        if not preview:
+            self._log_or_print(
+                utime,
+                "ERROR",
+                "No valid side-mount charging pointing found (all perpendicular pointings violate constraints)",
+            )
         return None, None
 
     def _create_pointing(

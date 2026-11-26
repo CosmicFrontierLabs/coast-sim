@@ -31,6 +31,8 @@ class ObservationCategory(ConfigModel):
     time_share : float or None
         Fraction of science time allocated to the program, used by the
         completion-deficit merit term.
+    time_budget_seconds : float or None
+        The most science the category's targets may collect over a run.
     """
 
     name: str = Field(description="Category name")
@@ -53,6 +55,20 @@ class ObservationCategory(ConfigModel):
         ge=0,
         le=1,
         description="Fraction of science time allocated to the program",
+    )
+    time_budget_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "The most science the category's targets may collect over a run, "
+            "in seconds, counting what they had collected before it: dispatch, "
+            "the planners and the allocator give the category no more. None "
+            "for no cap"
+        ),
+    )
+    science_in_eclipse: bool | None = Field(
+        default=None,
+        description="Override eclipse observing policy; None inherits Constraint.science_in_eclipse",
     )
     interruptible: bool = Field(
         default=True,

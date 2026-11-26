@@ -6,7 +6,6 @@ expression gives body angular acceleration. Bernstein convex-hull bounds check
 both envelopes over whole intervals, not just a grid of evaluation times.
 """
 
-from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from math import comb, isclose, isfinite
 from typing import cast
@@ -14,8 +13,16 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 from numpy.polynomial.polynomial import polyval
+from pydantic import BaseModel, ConfigDict, model_validator
 
+from .numerics import ROUNDOFF
 from .vector import _quat_mul
+
+_RELATIVE_TOLERANCE = 1e-10
+"""The relative slack that absorbs floating-point roundoff in the
+coefficients when a bound is certified."""
+_MAX_SUBDIVISION_DEPTH = 14
+"""How many times an interval is halved before a bound is given up on."""
 
 
 @lru_cache(maxsize=16)
@@ -53,27 +60,31 @@ def _certify(
     """
     lower = float(np.min(denominator))
     upper = float(np.max(np.linalg.norm(numerator, axis=1)))
-    if lower > 1e-12 and upper <= lower**power * (1 + 1e-10):
+    if lower > ROUNDOFF and upper <= lower**power * (1 + _RELATIVE_TOLERANCE):
         return True
-    if depth == 14:
+    if depth == _MAX_SUBDIVISION_DEPTH:
         return False
     dl, dr = _split(denominator)
     nl, nr = _split(numerator)
     # An actual violation at the midpoint permits immediate rejection.
-    if dl[-1] <= 1e-12 or np.linalg.norm(nl[-1]) > dl[-1] ** power * (1 + 1e-10):
+    if dl[-1] <= ROUNDOFF or np.linalg.norm(nl[-1]) > dl[-1] ** power * (
+        1 + _RELATIVE_TOLERANCE
+    ):
         return False
     return _certify(dl, nl, power, depth + 1) and _certify(dr, nr, power, depth + 1)
 
 
-@dataclass(frozen=True)
-class QuaternionHermite:
+class QuaternionHermite(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     first: tuple[float, float, float, float]
     last: tuple[float, float, float, float]
     first_rate: tuple[float, float, float]
     last_rate: tuple[float, float, float]
     duration: float
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _validate_state(self) -> "QuaternionHermite":
         if not isfinite(self.duration) or self.duration <= 0:
             raise ValueError("Curve duration must be finite and positive")
         for quaternion in (self.first, self.last):
@@ -87,6 +98,7 @@ class QuaternionHermite:
             for value in rate
         ):
             raise ValueError("Curve endpoint rates must be finite")
+        return self
 
     @cached_property
     def _coefficients(self) -> npt.NDArray[np.float64]:
@@ -180,6 +192,7 @@ class QuaternionHermite:
         inertia: npt.NDArray[np.float64],
         momentum_eci: npt.NDArray[np.float64],
         capacity: float,
+        wheel_limits: npt.NDArray[np.float64] | None = None,
     ) -> bool:
         """Bound actuator demand over a subinterval, not just its endpoints.
 
@@ -188,6 +201,10 @@ class QuaternionHermite:
         linearly interpolated external torque, matching trapezoidal integration.
         The rotating inertial momentum and I omega are combined before bounding
         their norm, retaining off-axis inertia and vector cancellation.
+
+        ``wheel_limits`` replaces the norm with each wheel's own limit: one
+        row a wheel, giving its fraction of its capacity per unit of body
+        momentum, each bounded within 1.
         """
         if not (0 <= first < last <= 1 and isfinite(capacity) and capacity > 0):
             return False
@@ -212,10 +229,15 @@ class QuaternionHermite:
         numerator[:7] -= np.deg2rad(transform[:, :6] @ rate) @ inertia.T
         if not np.isfinite(numerator).all() or not np.isfinite(denominator).all():
             return False
-        return _certify(
-            _bernstein_matrix(6) @ denominator,
-            _bernstein_matrix(8) @ (numerator / capacity),
-            1,
+        bound = _bernstein_matrix(6) @ denominator
+        if wheel_limits is None:
+            return _certify(bound, _bernstein_matrix(8) @ (numerator / capacity), 1)
+        if not np.isfinite(wheel_limits).all():
+            return False
+        shares = _bernstein_matrix(8) @ (numerator @ np.asarray(wheel_limits).T)
+        return all(
+            _certify(bound, shares[:, index : index + 1], 1)
+            for index in range(shares.shape[1])
         )
 
     def within_limits(

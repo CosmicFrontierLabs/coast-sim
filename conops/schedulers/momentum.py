@@ -11,6 +11,7 @@ reaches a level. The planners reserve a thruster dump there and plan again.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -18,10 +19,10 @@ import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
 
 from ..common import ObsType
-from ..common.ephemeris import position_vectors, velocity_vectors
+from ..common.ephemeris import orbit_at
 from ..common.vector import attitude_to_quat
 from ..ditl.plan_validator import entry_obstype
-from ..simulation.attitude import Attitude, slew_angular_velocity
+from ..simulation.attitude import Attitude, AttitudeTrajectory, slew_angular_velocity
 from ..simulation.momentum import (
     MomentumState,
     StoredMomentumTracker,
@@ -29,6 +30,7 @@ from ..simulation.momentum import (
     tracker_from_config,
 )
 from ..simulation.slew import Slew
+from .context import contact_tracking, science_tracking
 
 if TYPE_CHECKING:
     from ..config import MissionConfig
@@ -36,7 +38,15 @@ if TYPE_CHECKING:
     from .priority_scheduler import _Block
 
 
-_SpanKey = tuple[float, float, Attitude | None, tuple[float, ...] | None, float | None]
+_MotionKey = tuple[tuple[float, ...], ...]
+_SpanKey = tuple[
+    float,
+    float,
+    Attitude | None,
+    tuple[float, ...] | None,
+    float | None,
+    _MotionKey | None,
+]
 
 
 class _Span(BaseModel):
@@ -52,6 +62,21 @@ class _Span(BaseModel):
     """The slew flown, with an ``attitude(utime)`` of its own."""
     unload_at_end: float | None = None
     """The residual fraction a thruster dump leaves when the span ends."""
+
+    motion: AttitudeTrajectory | None = None
+    """A continuous tracking trajectory, including its terminal brake."""
+
+    @cached_property
+    def motion_key(self) -> _MotionKey | None:
+        if self.motion is None:
+            return None
+        # Exact states and knot times describe the Hermite/spin intervals.
+        # Equal endpoints alone do not distinguish different tracked paths.
+        return tuple(
+            (at, *state.quaternion, *state.angular_velocity_body)
+            for at in self.motion.boundaries
+            for state in [self.motion.state(at)]
+        )
 
     @property
     def key(self) -> _SpanKey:
@@ -75,7 +100,14 @@ class _Span(BaseModel):
             if slew is not None
             else None
         )
-        return (self.begin, self.end, self.attitude, path, self.unload_at_end)
+        return (
+            self.begin,
+            self.end,
+            self.attitude,
+            path,
+            self.unload_at_end,
+            self.motion_key,
+        )
 
 
 _Integrated = tuple[
@@ -85,9 +117,11 @@ _Integrated = tuple[
     MomentumState,
 ]
 """A span integrated: its sample times, the norm at each, what the wheels
-hold at each and the state at its end."""
+hold at each and the state at its end. The norm and what the wheels hold are
+as they are checked against the capacity: with wheel limits, the fullest
+wheel's share."""
 
-SpanCache = dict[tuple[_SpanKey, MomentumState], _Integrated]
+SpanCache = dict[tuple[object, ...], _Integrated]
 """Spans integrated, by the span's key and the state they started from.
 A plan's passes share one: each reserves a dump and plans again from the
 start, so the timeline up to the new dump is the one before and its spans
@@ -134,11 +168,7 @@ class MomentumForecast:
         self._times = np.array(
             [t.timestamp() for t in ephem.timestamp], dtype=np.float64
         )
-        self._positions = np.asarray(position_vectors(ephem, "gcrs"), dtype=np.float64)
-        self._sun = np.asarray(position_vectors(ephem, "sun"), dtype=np.float64)
-        ecef = getattr(getattr(ephem, "itrs_pv", None), "position", None)
-        self._ecef = np.asarray(ecef, dtype=np.float64) if ecef is not None else None
-        self._velocities = velocity_vectors(ephem)
+        self._ephem = ephem
 
     @property
     def active(self) -> bool:
@@ -153,17 +183,18 @@ class MomentumForecast:
 
     @property
     def capacity_n_m_s(self) -> float | None:
-        return (
-            self.config.spacecraft_bus.attitude_control.stored_momentum.capacity_n_m_s
-        )
+        return self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
 
     # ── The timeline as attitudes ─────────────────────────────────────────
 
-    def _spans(self, timeline: Sequence[_Block]) -> list[_Span]:
+    def _spans(
+        self, timeline: Sequence[_Block], *, until: float | None = None
+    ) -> list[_Span]:
         """The timeline as spans at one attitude or along one slew, from the
         horizon's start to its end, holding the attitude it is at between
         blocks; a visit's steps are spans of their own."""
         spans: list[_Span] = []
+        horizon_end = self.ctx.uend if until is None else until
         cursor = self.ctx.ustart
         attitude: Attitude | None = None
         """What is held between blocks; None before the first command."""
@@ -188,30 +219,61 @@ class MomentumForecast:
                             _Span(begin=cursor, end=slew_end, attitude=None, slew=slew)
                         )
                         cursor = slew_end
-                end = float(step.end)
+                motion = science_tracking(
+                    step, self.config.spacecraft_bus.attitude_control
+                )
+                if entry_obstype(step) == ObsType.GSP and block.gspass is not None:
+                    motion = contact_tracking(
+                        block.gspass,
+                        float(step.contact_begin or step.begin),
+                        self.config.spacecraft_bus.attitude_control,
+                    )
+                if motion is not None and motion.start > cursor:
+                    # Ingress can finish before acquisition. Hold that pose
+                    # until the physical tracking command takes over.
+                    hold_end = min(float(motion.start), horizon_end)
+                    if hold_end > cursor:
+                        spans.append(_Span(begin=cursor, end=hold_end, attitude=target))
+                        cursor = hold_end
+                end = (
+                    min(max(float(motion.end), float(step.end)), horizon_end)
+                    if motion is not None
+                    else float(step.end)
+                )
                 unload = None
                 if (
                     entry_obstype(block.entry) == ObsType.ACTIVITY
                     and block.entry.desaturation
+                    and block.entry.activity_finishes
                     and dump is not None
                 ):
                     unload = dump.residual_fraction
                 if end > cursor:
                     spans.append(
                         _Span(
-                            begin=cursor, end=end, attitude=target, unload_at_end=unload
+                            begin=cursor,
+                            end=end,
+                            attitude=target if motion is None else None,
+                            unload_at_end=unload,
+                            motion=motion,
                         )
                     )
                     cursor = end
-                attitude = target
-        if self.ctx.uend > cursor:
-            spans.append(_Span(begin=cursor, end=self.ctx.uend, attitude=attitude))
+                attitude = (
+                    motion.state(max(float(motion.start), end)).attitude
+                    if motion is not None
+                    else target
+                )
+        if horizon_end > cursor:
+            spans.append(_Span(begin=cursor, end=horizon_end, attitude=attitude))
         return spans
 
     def _attitude_at(self, span: _Span, utime: float) -> Attitude:
         if span.slew is not None:
             sampled = span.slew.attitude(utime)
             return (float(sampled[0]), float(sampled[1]), float(sampled[2]))
+        if span.motion is not None:
+            return span.motion.state(utime).attitude
         if span.attitude is not None:
             return span.attitude
         if self.start_attitude is not None:
@@ -219,14 +281,6 @@ class MomentumForecast:
         return self.ctx.initial_attitude(utime)
 
     # ── Integration ───────────────────────────────────────────────────────
-
-    def _interpolate(
-        self, table: npt.NDArray[np.float64], utime: float
-    ) -> npt.NDArray[np.float64]:
-        return np.array(
-            [np.interp(utime, self._times, table[:, k]) for k in range(3)],
-            dtype=np.float64,
-        )
 
     def _sunlit(self, utime: float) -> bool:
         index = int(
@@ -258,7 +312,7 @@ class MomentumForecast:
         return times, demands
 
     def _profile(
-        self, timeline: Sequence[_Block]
+        self, timeline: Sequence[_Block], reset_at: Sequence[float] = ()
     ) -> tuple[
         npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
     ]:
@@ -269,7 +323,7 @@ class MomentumForecast:
             tracker.start_from_eci(self.start_momentum_eci_n_m_s)
         else:
             tracker.reset()
-        return self._integrate(tracker, self._spans(timeline))
+        return self._integrate(tracker, self._spans(timeline), reset_at)
 
     def loading(self, block: _Block) -> float:
         """The most the block alone asks of the wheels, from empty: its slew
@@ -279,16 +333,24 @@ class MomentumForecast:
             return 0.0
         begin = float(block.entry.begin)
         spans = [
-            span
-            for span in self._spans([block])
-            if span.begin >= begin and span.end <= float(block.end)
+            span.model_copy(
+                update={
+                    "begin": max(begin, span.begin),
+                    "end": min(float(block.end), span.end),
+                }
+            )
+            for span in self._spans([block], until=float(block.end))
+            if span.end > begin and span.begin < float(block.end)
         ]
         tracker.start_from_eci((0.0, 0.0, 0.0))
         _, _, demands = self._integrate(tracker, spans)
         return float(demands.max()) if len(demands) else 0.0
 
     def _integrate(
-        self, tracker: StoredMomentumTracker, spans: Sequence[_Span]
+        self,
+        tracker: StoredMomentumTracker,
+        spans: Sequence[_Span],
+        reset_at: Sequence[float] = (),
     ) -> tuple[
         npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
     ]:
@@ -299,8 +361,18 @@ class MomentumForecast:
         times: list[float] = []
         norms: list[float] = []
         demands: list[float] = []
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        residual = dump.residual_fraction if dump is not None else 0.0
+        pending = sorted(reset_at)
         for span in spans:
-            key = (span.key, tracker.state)
+            while pending and span.begin >= pending[0]:
+                tracker.unload(residual)
+                pending.pop(0)
+            # Resets inside the span apply at the first sample at or after
+            # each; a span integrated with them is cached apart.
+            inside = tuple(reset for reset in pending if reset < span.end)
+            pending = pending[len(inside) :]
+            key = (span.key, tracker.state, inside)
             cached = self.cache.get(key)
             if cached is not None:
                 times.extend(cached[0])
@@ -310,9 +382,14 @@ class MomentumForecast:
                 continue
             first = len(times)
             interval = (
-                self.slew_sample_s if span.slew is not None else self.hold_sample_s
+                self.slew_sample_s
+                if span.slew is not None
+                or (span.motion is not None and self.slew_momentum)
+                else self.hold_sample_s
             )
-            samples = np.arange(span.begin, span.end, interval)
+            samples: npt.NDArray[np.floating] = np.arange(
+                span.begin, span.end, interval
+            )
             if len(samples) == 0 or samples[-1] < span.end:
                 samples = np.append(samples, span.end)
             rate_at = (
@@ -320,41 +397,43 @@ class MomentumForecast:
                 if span.slew is not None and self.slew_momentum
                 else None
             )
+            resets = list(inside)
             for utime in samples:
-                position = self._interpolate(self._positions, float(utime))
+                while resets and float(utime) >= resets[0]:
+                    tracker.unload(residual)
+                    resets.pop(0)
+                orbit = orbit_at(self._ephem, float(utime))
                 attitude = self._attitude_at(span, float(utime))
                 sample = tracker.update(
                     utime=float(utime),
-                    position_eci_km=position,
+                    position_eci_km=orbit.position_eci_km,
                     attitude_quaternion_eci_to_body=attitude_to_quat(*attitude),
-                    sun_eci_km=self._interpolate(self._sun, float(utime)) - position,
+                    sun_eci_km=orbit.sun_position_eci_km - orbit.position_eci_km,
                     sunlit=self._sunlit(float(utime)),
-                    velocity_eci_km_s=(
-                        self._interpolate(self._velocities, float(utime))
-                        if self._velocities is not None
-                        else None
-                    ),
-                    position_ecef_km=(
-                        self._interpolate(self._ecef, float(utime))
-                        if self._ecef is not None
-                        else None
-                    ),
+                    velocity_eci_km_s=orbit.velocity_eci_km_s,
+                    position_ecef_km=orbit.position_ecef_km,
                     angular_velocity_body_rad_s=(
-                        rate_at(float(utime)) if rate_at is not None else None
+                        np.deg2rad(
+                            span.motion.state(float(utime)).angular_velocity_body
+                        )
+                        if span.motion is not None and self.slew_momentum
+                        else rate_at(float(utime))
+                        if rate_at is not None
+                        else None
                     ),
                 )
                 times.append(float(utime))
-                norms.append(sample.stored_momentum_norm_n_m_s)
+                norms.append(sample.stored_momentum_load_n_m_s)
                 demands.append(
-                    sample.actuator_momentum_norm_n_m_s
-                    if sample.actuator_momentum_norm_n_m_s is not None
-                    else sample.stored_momentum_norm_n_m_s
+                    sample.actuator_momentum_load_n_m_s
+                    if sample.actuator_momentum_load_n_m_s is not None
+                    else sample.stored_momentum_load_n_m_s
                 )
             if span.unload_at_end is not None:
                 tracker.unload(span.unload_at_end)
                 times.append(span.end)
-                norms.append(tracker.stored_momentum_norm_n_m_s)
-                demands.append(tracker.stored_momentum_norm_n_m_s)
+                norms.append(tracker.stored_momentum_load_n_m_s)
+                demands.append(tracker.stored_momentum_load_n_m_s)
             self.cache[key] = (
                 np.array(times[first:]),
                 np.array(norms[first:]),
@@ -368,13 +447,14 @@ class MomentumForecast:
         timeline: Sequence[_Block],
         level: float,
         after: float | None = None,
+        reset_at: Sequence[float] = (),
         *,
         demand: bool = False,
     ) -> float | None:
         """When the stored momentum, or with ``demand`` what the wheels hold,
         first reaches ``level`` along the timeline, after ``after`` if given;
         None if it never does."""
-        times, norms, demands = self._profile(timeline)
+        times, norms, demands = self._profile(timeline, reset_at)
         for utime, norm in zip(times, demands if demand else norms, strict=True):
             if after is not None and utime <= after:
                 continue

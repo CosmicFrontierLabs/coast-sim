@@ -29,7 +29,7 @@ Example:
 from __future__ import annotations
 
 from functools import cached_property
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -39,6 +39,7 @@ from rust_ephem import AtLeastConstraint, EarthLimbConstraint, SunConstraint
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
+from ..common.numerics import UNIT_MAGNITUDE_TOLERANCE
 from ..common.vector import (
     _zero_roll_body_axes,
     normal_to_boresight_offset_euler_deg,
@@ -49,9 +50,19 @@ from ..common.vector import (
 from ._base import ConfigModel
 from .constraint import Constraint
 
+if TYPE_CHECKING:
+    from .frame import SpacecraftFrame
+
+_ALIGNED_WITH_Z = 0.99
+"""A boresight whose Z component reaches this lies along the Z axis, and
+the second axis is built from X instead."""
+
 
 def create_star_tracker_vector(
-    roll_deg: float = 0.0, pitch_deg: float = 0.0, yaw_deg: float = 0.0
+    roll_deg: float = 0.0,
+    pitch_deg: float = 0.0,
+    yaw_deg: float = 0.0,
+    frame: SpacecraftFrame | None = None,
 ) -> tuple[float, float, float]:
     """Create a star tracker boresight vector from Euler angles.
 
@@ -59,7 +70,10 @@ def create_star_tracker_vector(
     Positive pitch rotates the default +X boresight toward body +Z.  This is a
     body-frame configuration convention, not the rust-ephem boresight-offset
     convention; :func:`normal_to_boresight_offset_euler_deg` performs that
-    conversion at the constraint API boundary.
+    conversion at the constraint API boundary. The angles are in the
+    canonical frame, boresight +X; with ``frame``, the bus's
+    :class:`SpacecraftFrame`, the vector is returned in the mission's body
+    frame, so the default points along the frame's boresight.
 
     Args:
         roll_deg: Rotation about X axis (degrees). Default is 0.
@@ -91,6 +105,8 @@ def create_star_tracker_vector(
     # Normalize to ensure unit vector
     boresight = vecnorm(boresight)
 
+    if frame is not None and not frame.is_identity:
+        return frame.body_vector((boresight[0], boresight[1], boresight[2]))
     return tuple(boresight)
 
 
@@ -120,7 +136,7 @@ class StarTrackerOrientation(ConfigModel):
     ) -> tuple[float, float, float]:
         """Validate that boresight is a unit vector."""
         magnitude = np.sqrt(sum(x**2 for x in v))
-        if magnitude < 0.99 or magnitude > 1.01:
+        if abs(magnitude - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(
                 f"Boresight must be a unit vector. Got magnitude {magnitude}"
             )
@@ -160,7 +176,7 @@ class StarTrackerOrientation(ConfigModel):
         # Construct orthonormal basis
         # Choose second axis perpendicular to boresight
         # If boresight is not parallel to Z, use cross product with Z
-        if abs(bore[2]) < 0.99:  # Not aligned with Z
+        if abs(bore[2]) < _ALIGNED_WITH_Z:
             # Second axis: perpendicular to both boresight and Z-axis
             second = np.cross(np.array([0.0, 0.0, 1.0]), bore)
         else:

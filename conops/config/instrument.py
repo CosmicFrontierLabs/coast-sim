@@ -14,6 +14,7 @@ from pydantic import (
 from rust_ephem.constraints import ConstraintConfig
 
 from ..common.enums import ACSMode
+from ..common.numerics import NEGLIGIBLE_NORM, ROUNDOFF, UNIT_MAGNITUDE_TOLERANCE
 from ..common.vector import (
     mounted_attitude_to_quat,
     mounting_quaternion_from_boresight,
@@ -301,7 +302,7 @@ class InstrumentMounting(ConfigModel):
         if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
             raise ValueError("mounting quaternion must contain four finite values")
         norm = float(np.linalg.norm(quaternion))
-        if norm < 1e-12:
+        if norm < ROUNDOFF:
             raise ValueError("mounting quaternion must have nonzero norm")
         quaternion /= norm
         if quaternion[0] < 0.0:
@@ -337,7 +338,7 @@ class InstrumentMounting(ConfigModel):
     @property
     def boresight_body(self) -> tuple[float, float, float]:
         vector = np.asarray(self.body_vector((1.0, 0.0, 0.0)))
-        vector[np.abs(vector) < 1e-15] = 0.0
+        vector[np.abs(vector) < NEGLIGIBLE_NORM] = 0.0
         return float(vector[0]), float(vector[1]), float(vector[2])
 
     @property
@@ -472,7 +473,7 @@ class Telescope(Instrument):
         if boresight.shape != (3,) or not np.all(np.isfinite(boresight)):
             raise ValueError("Telescope boresight must contain three finite values")
         magnitude = float(np.linalg.norm(boresight))
-        if magnitude < 0.99 or magnitude > 1.01:
+        if abs(magnitude - 1.0) > UNIT_MAGNITUDE_TOLERANCE:
             raise ValueError(
                 f"Telescope boresight must be a unit vector (magnitude {magnitude:.4f})"
             )
@@ -518,23 +519,7 @@ class Telescope(Instrument):
     @staticmethod
     def _contains_local_roll_semantics(constraint: ConstraintConfig) -> bool:
         """Return whether a local constraint needs instrument-frame roll."""
-        data = constraint.model_dump(mode="json")
-
-        def contains(node: Any) -> bool:
-            if not isinstance(node, dict):
-                return False
-            node_type = node.get("type")
-            if node_type in {"boresight_offset", "solar_roll"}:
-                return True
-            if node_type in {"bright_star", "body"}:
-                return node.get("fov_polygon") is not None
-            if node_type in {"and", "or", "xor", "at_least"}:
-                return any(contains(child) for child in node.get("constraints", []))
-            if node_type == "not":
-                return contains(node.get("constraint"))
-            return False
-
-        return contains(data)
+        return Constraint._tree_contains(constraint, Constraint._is_roll_dependent_node)
 
     def target_body_attitude(
         self, ra_deg: float, dec_deg: float, roll_deg: float

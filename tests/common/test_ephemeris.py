@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import rust_ephem
 
-from conops.common.ephemeris import _position_snapshot, position_vectors
+from conops.common.ephemeris import _position_snapshot, orbit_at, position_vectors
 from conops.simulation.momentum import OrbitTables
 
 
@@ -92,3 +92,48 @@ def test_orbit_tables_accept_adapter_epochs_without_optional_vectors(
     assert orbit.velocities_eci_km_s is None
     assert orbit.positions_ecef_km is None
     assert orbit.sun_positions_eci_km is None
+
+
+ORBIT_BEGIN = datetime(2025, 11, 1, tzinfo=timezone.utc)
+
+
+def _orbit(step_size: int) -> rust_ephem.TLEEphemeris:
+    return rust_ephem.TLEEphemeris(
+        tle="examples/example.tle",
+        begin=ORBIT_BEGIN,
+        end=ORBIT_BEGIN + timedelta(minutes=30),
+        step_size=step_size,
+    )
+
+
+class TestOrbitAt:
+    def test_a_sample_time_gives_the_stored_orbit(self):
+        ephem = _orbit(60)
+        orbit = orbit_at(ephem, ephem.timestamp[7].timestamp())
+        np.testing.assert_array_equal(orbit.position_eci_km, ephem.gcrs_pv.position[7])
+        np.testing.assert_array_equal(
+            orbit.velocity_eci_km_s, ephem.gcrs_pv.velocity[7]
+        )
+        np.testing.assert_array_equal(
+            orbit.sun_position_eci_km, ephem.sun_pv.position[7]
+        )
+        np.testing.assert_array_equal(orbit.position_ecef_km, ephem.itrs_pv.position[7])
+
+    def test_between_samples_it_follows_the_orbit(self):
+        """Midway between 60 s samples, against the orbit propagated there:
+        within a metre, where the chord between the samples cuts kilometres
+        inside it."""
+        coarse, fine = _orbit(60), _orbit(30)
+        truth = fine.gcrs_pv.position[11]
+        orbit = orbit_at(coarse, fine.timestamp[11].timestamp())
+        assert np.linalg.norm(orbit.position_eci_km - truth) < 1e-3
+        velocity_error = orbit.velocity_eci_km_s - fine.gcrs_pv.velocity[11]
+        assert np.linalg.norm(velocity_error) < 1e-4
+        assert np.linalg.norm(orbit.position_ecef_km - fine.itrs_pv.position[11]) < 1e-3
+        chord = (coarse.gcrs_pv.position[5] + coarse.gcrs_pv.position[6]) / 2.0
+        assert np.linalg.norm(chord) < np.linalg.norm(truth) - 1.0
+
+    def test_outside_the_ephemeris_it_raises(self):
+        ephem = _orbit(60)
+        with pytest.raises(ValueError, match="outside ephemeris range"):
+            orbit_at(ephem, ephem.timestamp[-1].timestamp() + 5.0)

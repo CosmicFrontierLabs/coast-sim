@@ -17,6 +17,21 @@ from conops.simulation.momentum import StoredMomentumTracker
 from conops.simulation.momentum_budget import MomentumBudget, MomentumLimitError
 
 
+def _fixed_orbit(timestamp, position=(7000.0, 0.0, 0.0)):
+    """An ephemeris double at rest at ``position``, with the Sun along +x."""
+    at_rest = SimpleNamespace(
+        position=np.array([position], dtype=float), velocity=np.zeros((1, 3))
+    )
+    sun = SimpleNamespace(position=np.array([[1.5e8, 0.0, 0.0]]))
+    return SimpleNamespace(
+        timestamp=timestamp,
+        gcrs_pv=SimpleNamespace(position=np.tile(position, (len(timestamp), 1))),
+        gcrs_pv_at=lambda time: at_rest,
+        itrs_pv_at=lambda time: at_rest,
+        sun_pv_at=lambda time: sun,
+    )
+
+
 def setup_budget(
     *,
     capacity=20.0,
@@ -26,12 +41,7 @@ def setup_budget(
     step=2,
 ):
     epoch = datetime(2027, 1, 1, tzinfo=timezone.utc)
-    ephem = SimpleNamespace(
-        timestamp=[epoch + timedelta(seconds=i) for i in range(0, 3601, step)],
-        gcrs_pv=SimpleNamespace(
-            position=np.tile([7000.0, 0.0, 0.0], (3600 // step + 1, 1))
-        ),
-    )
+    ephem = _fixed_orbit([epoch + timedelta(seconds=i) for i in range(0, 3601, step)])
     config = MissionConfig(
         spacecraft_bus=SpacecraftBus(
             inertia_tensor_body_kg_m2=np.diag(inertia),
@@ -52,7 +62,7 @@ def setup_budget(
     return config, ephem, executor
 
 
-def test_orbit_columns_are_contiguous_and_interpolation_is_unchanged():
+def test_orbit_tables_are_owned_read_only_snapshots():
     config, ephem, executor = setup_budget(gravity=True)
     times = np.arange(len(ephem.timestamp)) * 0.01
     positions = np.column_stack(
@@ -74,11 +84,7 @@ def test_orbit_columns_are_contiguous_and_interpolation_is_unchanged():
         assert all(table[:, i].flags.c_contiguous for i in range(3))
         assert not table.flags.writeable
         assert original.flags.writeable and not np.shares_memory(table, original)
-        for time in np.linspace(budget.times[0], budget.times[-1], 53):
-            expected = np.array(
-                [np.interp(time, budget.times, original[:, i]) for i in range(3)]
-            )
-            assert np.array_equal(budget._interpolate(table, time), expected)
+        assert np.array_equal(table, original)
 
 
 @pytest.mark.parametrize("capacity", [10.0, 100.0])
@@ -330,11 +336,11 @@ def test_feasible_short_tracking_curve_is_not_rejected_by_the_bound():
 @pytest.mark.parametrize("first,last", [(0.0, 1.0), (0.2, 0.7), (0.47, 0.52)])
 def test_tracking_momentum_bound_matches_dense_vector_demand(first, last):
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(20, -10, 35)),
-        tuple(attitude_to_quat(23, -8, 40)),
-        (0.1, -0.2, 0.15),
-        (-0.15, 0.1, 0.2),
-        30.0,
+        first=tuple(attitude_to_quat(20, -10, 35)),
+        last=tuple(attitude_to_quat(23, -8, 40)),
+        first_rate=(0.1, -0.2, 0.15),
+        last_rate=(-0.15, 0.1, 0.2),
+        duration=30.0,
     )
     inertia = np.array(
         [[1000.0, 120.0, 90.0], [120.0, 850.0, -70.0], [90.0, -70.0, 600.0]]
@@ -357,11 +363,11 @@ def test_tracking_momentum_bound_matches_dense_vector_demand(first, last):
 
 def test_tracking_momentum_bound_retains_vector_cancellation():
     curve = QuaternionHermite(
-        tuple(attitude_to_quat(0, 0, 0)),
-        tuple(attitude_to_quat(0.005, 0, 0)),
-        (0, 0, 0),
-        (0, 0, 0),
-        0.2,
+        first=tuple(attitude_to_quat(0, 0, 0)),
+        last=tuple(attitude_to_quat(0.005, 0, 0)),
+        first_rate=(0, 0, 0),
+        last_rate=(0, 0, 0),
+        duration=0.2,
     )
     inertia = np.eye(3) * 1000
     momentum = np.array([[0.0, 0.0, 0.35], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
@@ -529,7 +535,11 @@ def test_fixed_axis_bound_covers_changing_quadratic_momentum(coefficients):
 
     _, _, executor = setup_budget(capacity=1000, inertia=(1000, 800, 600))
     budget = executor.momentum
-    initial = AttitudeState(0, tuple(attitude_to_quat(15, 25, 10)), (0, 0, 20))
+    initial = AttitudeState(
+        utime=0,
+        quaternion=tuple(attitude_to_quat(15, 25, 10)),
+        angular_velocity_body=(0, 0, 20),
+    )
     duration = 3.0
     coefficients = np.asarray(coefficients, dtype=float)
     # Independent dense evaluation of the physical demand, without the
