@@ -42,7 +42,7 @@ from ..config.constraint import (
 )
 from ..config.data_storage import DataStorage, RecorderView
 from ..config.observation_timing import ObservationTiming
-from ..schedulers import DispatchPolicy, SchedulingContext
+from ..schedulers import ActivitySchedulingError, DispatchPolicy, SchedulingContext
 from ..schedulers.allocator import Allocation, LongRangeAllocator
 from ..schedulers.recorder import contact_downlink_gb
 from ..simulation.acs_command import ACSCommand
@@ -284,6 +284,17 @@ class QueueDITL(DITLMixin, DITLStats):
         """The activities that have not begun, in time order."""
         self._activity_started: float = 0.0
         self._activity_hold_begin: float = 0.0
+        self._automatic_dumps: set[int] = set()
+        # When safe mode was first on during the activity under way, and
+        # whether it took the spacecraft from an attitude the activity asked for.
+        self._activity_safe_mode: float | None = None
+        self._activity_left_pose = False
+        # The last answer of _momentum_cannot_wait, asked several times a step.
+        self._dump_wait_forecast: tuple[float | None, bool] = (None, False)
+        """The obsids of the dumps the simulation called for itself. Such a
+        dump has no start it must keep, and waits for its firing attitude."""
+        self._activity_slew: Slew | None = None
+        self._activity_context: SchedulingContext | None = None
         self._activity_end: float = 0.0
         self._activity_attitude: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._activity_waiting: ScheduledActivity | None = None
@@ -1102,12 +1113,30 @@ class QueueDITL(DITLMixin, DITLStats):
         full length. Returns whether the spacecraft's state changed."""
         changed = False
         active = self._active_activity
+        if active is not None and self.acs.in_safe_mode:
+            self._activity_meets_safe_mode(utime, (ra, dec, roll))
         if active is not None and utime >= self._activity_end:
             self._end_activity(utime)
             changed = True
+        elif (
+            active is not None
+            and active.desaturation
+            and active.attitude.fixed_pointing is not None
+            and utime >= self._activity_hold_begin
+        ):
+            self.acs.begin_desaturation()
         if self._active_activity is None:
             self._call_for_desaturation(utime)
-            due = next((a for a in self._activities_left if a.begin <= utime), None)
+            due = next(
+                (
+                    a
+                    for a in self._activities_left
+                    if a.begin <= utime and not self._dump_held_back(a, utime)
+                ),
+                None,
+            )
+            if due is None:
+                due = self._activity_needing_ingress(utime)
             if due is not None:
                 waits_for = self._activity_waits_for(due, utime)
                 if waits_for is not None:
@@ -1123,9 +1152,258 @@ class QueueDITL(DITLMixin, DITLStats):
                             acs_mode=self.acs.acsmode,
                         )
                     return changed
+                if (
+                    due.attitude.fixed_pointing is not None
+                    and self._reserve_activity_cleanup(due, utime)
+                ):
+                    return changed
                 self._begin_activity(due, utime, (ra, dec, roll))
                 changed = True
         return changed
+
+    def _activity_meets_safe_mode(
+        self, utime: float, attitude: tuple[float, float, float]
+    ) -> None:
+        """Safe mode is on during the activity under way. It takes the
+        spacecraft to its own attitude, so an activity that asked for one is
+        no longer recorded as holding it: it runs on as one that holds the
+        attitude it finds, recorded where safe mode has the spacecraft by
+        the activity's end. A dump does not fire in safe mode, and is ended
+        there (see :meth:`_end_activity`)."""
+        active = self._active_activity
+        assert active is not None
+        if self._activity_safe_mode is None:
+            self._activity_safe_mode = utime
+        if self._activity_slew is not None:
+            self._activity_slew = None
+            self._activity_left_pose = True
+            self.log.log_event(
+                utime=utime,
+                event_type="ACTIVITY",
+                description=(
+                    f"Safe mode began during scheduled activity {active.name}: "
+                    "its requested attitude is not held, and it holds the "
+                    "attitude safe mode has"
+                ),
+                obsid=active.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+        if self._activity_left_pose:
+            self._activity_attitude = attitude
+
+    def _activity_model(self) -> SchedulingContext:
+        """Geometry shared with the planners, for explicit activity ingress."""
+        ctx = self._activity_context
+        if ctx is None or ctx.begin != self.begin or ctx.end != self.end:
+            ctx = self._activity_context = SchedulingContext(
+                self.config, self.begin, self.end, step_size=self.step_size
+            )
+        return ctx
+
+    def _activity_ingress(self, activity: ScheduledActivity, utime: float) -> Slew:
+        fixed = activity.attitude.fixed_pointing
+        assert fixed is not None
+        assert activity.obsid is not None
+        ctx = self._activity_model()
+        start = ctx.ceil_step(self.acs.handoff_ready_time(utime))
+        return ctx.slew(
+            self.acs.predicted_attitude(start),
+            fixed,
+            start,
+            obstype=ObsType.IDLE,
+            obsid=activity.obsid,
+        )
+
+    def _explicit_attitude_allowed(
+        self, activity: ScheduledActivity, utime: float
+    ) -> bool:
+        """Whether an activity that asks for an attitude can begin now: the
+        slew to the attitude is clear, and the attitude can be held from the
+        slew's end through the activity. These are the checks made when the
+        activity begins (see :meth:`_begin_activity`)."""
+        ingress = self._activity_ingress(activity, utime)
+        ctx = self._activity_model()
+        pose = (float(ingress.endra), float(ingress.enddec), float(ingress.endroll))
+        hold_begin = max(activity.begin, utime, ctx.ceil_step(float(ingress.slewend)))
+        end = min(hold_begin + activity.duration_seconds, self.uend)
+        mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        return (
+            ctx.first_slew_violation(ingress, ACSMode.SLEWING) is None
+            and ctx.first_hold_violation(
+                pose, ingress.slewend, hold_begin, ACSMode.IDLE
+            )
+            is None
+            and ctx.first_hold_violation(pose, hold_begin, end, mode) is None
+        )
+
+    def _dump_held_back(self, activity: ScheduledActivity, utime: float) -> bool:
+        """Whether ``activity`` is a dump the simulation called for that
+        cannot begin yet. Such a dump has no start it must keep. Its fixed
+        firing attitude can be blocked for part of every orbit, so it waits
+        for the slew and the whole firing to be allowed, and gives way to a
+        scheduled activity it would make late, unless the wheels would reach
+        their capacity meanwhile. Until then it is not due, so the other
+        activities are begun and prepared as usual. One still held back when
+        the run ends is left to the next plan."""
+        fixed = activity.attitude.fixed_pointing
+        if (
+            activity.obsid not in self._automatic_dumps
+            or fixed is None
+            or self.acs.in_safe_mode
+        ):
+            return False
+        if not self._explicit_attitude_allowed(activity, utime):
+            return True
+        arrival = self._activity_model().ceil_step(
+            float(self._activity_ingress(activity, utime).slewend)
+        )
+        firing_end = max(activity.begin, utime, arrival) + activity.duration_seconds
+        # A scheduled activity that begins as the firing ends, holding the
+        # attitude it finds, holds the firing attitude: so does each such
+        # activity that follows at once. The attitude has to be allowed for
+        # as long, or the spacecraft is kept at one it has to leave.
+        kept = firing_end
+        for a in self._activities_left:
+            if (
+                a.obsid in self._automatic_dumps
+                or a.begin + a.duration_seconds <= utime
+            ):
+                continue
+            if a.attitude.fixed_pointing is not None or a.begin > kept:
+                break
+            kept += a.duration_seconds
+        ctx = self._activity_model()
+        if (
+            kept > firing_end
+            and ctx.first_hold_violation(
+                fixed, firing_end, min(kept, self.uend), ACSMode.IDLE
+            )
+            is not None
+        ):
+            return True
+        late = self._activity_a_dump_delays(utime, firing_end, fixed)
+        return late is not None and not self._momentum_cannot_wait(
+            utime, firing_end - utime, fixed
+        )
+
+    def _activity_a_dump_delays(
+        self, started: float, firing_end: float, fixed: tuple[float, float, float]
+    ) -> ScheduledActivity | None:
+        """The scheduled activity that could not begin by its latest start
+        after a dump whose firing at ``fixed`` ends at ``firing_end``: the
+        turn from the firing attitude to the activity's own has to fit
+        between them, and an activity that holds the attitude it finds needs
+        none. An activity that may slide is late only past its latest start.
+        One that has run from its start by ``started``, when the turn to the
+        firing attitude begins, is over."""
+        ctx = self._activity_model()
+        for a in self._activities_left:
+            if (
+                a.obsid in self._automatic_dumps
+                or a.begin + a.duration_seconds <= started
+            ):
+                continue
+            own = a.attitude.fixed_pointing
+            turn = (
+                ctx.ceil_step(
+                    float(
+                        ctx.slew(fixed, own, firing_end, obstype=ObsType.IDLE).slewend
+                    )
+                )
+                - firing_end
+                if own is not None
+                else 0.0
+            )
+            if firing_end + turn > a.latest_start:
+                return a
+        return None
+
+    def _momentum_cannot_wait(
+        self, utime: float, length: float, fixed: tuple[float, float, float]
+    ) -> bool:
+        """Whether the wheels would reach their capacity if a dump that takes
+        ``length`` from its turn to the end of its firing at ``fixed`` gave
+        way to the scheduled activities: the stored momentum is forecast at
+        the attitude held now, until the first time the dump could have
+        fired without making an activity late."""
+        capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
+        if self._stored_momentum_tracker is None or capacity is None:
+            return False
+        if self._dump_wait_forecast[0] == utime:
+            return self._dump_wait_forecast[1]
+        ctx = self._activity_model()
+        opening = utime
+        while opening + length < self.uend:
+            late = self._activity_a_dump_delays(opening, opening + length, fixed)
+            if late is None:
+                break
+            opening = ctx.ceil_step(
+                max(opening + self.step_size, late.begin + late.duration_seconds)
+            )
+        attitude = (float(self.acs.ra), float(self.acs.dec), float(self.acs.roll))
+        _, norms, _, _ = self._forecast_momentum(
+            self._momentum_forecast_begin(utime),
+            min(self.uend, opening + length),
+            lambda _at: attitude,
+            start_eci_n_m_s=self._momentum_forecast_state(attitude),
+        )
+        cannot = bool(len(norms) and norms.max() >= capacity)
+        self._dump_wait_forecast = (utime, cannot)
+        return cannot
+
+    def _activity_needing_ingress(self, utime: float) -> ScheduledActivity | None:
+        """Prepare a future explicit hold before its latest start is missed."""
+        if self.acs.in_safe_mode:
+            # Safe mode takes no turn but its own.
+            return None
+        for activity in self._activities_left:
+            if (
+                activity.attitude.fixed_pointing is None
+                or activity.begin <= utime
+                or self._dump_held_back(activity, utime)
+            ):
+                continue
+            slew = self._activity_ingress(
+                activity, self._activity_release_time(utime, anticipate_collection=True)
+            )
+            if slew.slewend + self.step_size >= activity.latest_start:
+                return activity
+        return None
+
+    def _activity_release_time(
+        self, utime: float, *, anticipate_collection: bool = False
+    ) -> float:
+        """Earliest release after stopping future collection and paying teardown."""
+        ppt = self.ppt
+        if (
+            ppt is None
+            or ppt is self.charging_ppt
+            or ppt.collection_begin is None
+            or ppt.collection_end is None
+        ):
+            return utime
+        if utime <= ppt.collection_begin and not anticipate_collection:
+            return utime
+        post = self._ppt_timing(ppt).post_collection_seconds
+        return self._activity_model().ceil_step(
+            max(utime, min(ppt.end, max(utime, ppt.collection_begin) + post))
+        )
+
+    def _reserve_activity_cleanup(
+        self, activity: ScheduledActivity, utime: float
+    ) -> bool:
+        """Cut only future collection, then wait for its reserved teardown."""
+        release = self._activity_release_time(utime)
+        if release <= utime:
+            return False
+        self._reserve_cleanup(
+            utime,
+            decision_time=utime,
+            event_type="ACTIVITY",
+            before=f"scheduled activity {activity.name}",
+            waiting="the activity ingress",
+        )
+        return True
 
     def _activity_waits_for(
         self, activity: ScheduledActivity, utime: float
@@ -1135,12 +1413,25 @@ class QueueDITL(DITLMixin, DITLStats):
         window, the observation under way."""
         if not activity.fixed and self._slew_under_way(utime):
             return "the slew under way"
+        if (
+            activity.desaturation
+            and activity.attitude.fixed_pointing is not None
+            and self._sequence is not None
+        ):
+            return "the indivisible visit under way"
         ppt = self.ppt
         if (
             ppt is not None
             and ppt is not self.charging_ppt
             and utime < activity.latest_start
         ):
+            if activity.attitude.fixed_pointing is not None:
+                ingress = self._activity_ingress(
+                    activity,
+                    self._activity_release_time(utime, anticipate_collection=True),
+                )
+                if ingress.slewend + self.step_size >= activity.latest_start:
+                    return None
             return (
                 f"observation {ppt.obsid} under way, until "
                 f"{unixtime2date(activity.latest_start)} at the latest"
@@ -1162,6 +1453,9 @@ class QueueDITL(DITLMixin, DITLStats):
         if level is None or tracker is None:
             return
         if any(a.desaturation for a in self._activities_left):
+            return
+        if self.acs.in_safe_mode:
+            # The thrusters do not fire in safe mode.
             return
         stored = tracker.stored_momentum_load_n_m_s
         capacity = self.config.spacecraft_bus.attitude_control.stored_momentum.total_capacity_n_m_s
@@ -1220,23 +1514,76 @@ class QueueDITL(DITLMixin, DITLStats):
             self._add_dump(utime)
 
     def _add_dump(self, begin: float) -> None:
-        """Add a thruster dump due at ``begin`` to the activities."""
+        """Add a thruster dump due at ``begin`` to the activities, unless
+        one the simulation called for is still to fire."""
+        if self._dump_called_for() is not None:
+            return
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
         assert dump is not None
+        obsid = DESATURATION_OBSID + self._desaturations
+        fixed = dump.attitude.fixed_pointing
+        if fixed is not None and not self.acs.in_safe_mode:
+            # A fixed firing attitude can be blocked when the dump is called
+            # for, by the Earth's limb once an orbit for one. The firing
+            # begins at the first time the attitude can be held through it,
+            # counted from when the slew to it would arrive.
+            ctx = self._activity_model()
+            start = ctx.ceil_step(self.acs.handoff_ready_time(begin))
+            slew = ctx.slew(
+                self.acs.predicted_attitude(start),
+                fixed,
+                start,
+                obstype=ObsType.IDLE,
+                obsid=obsid,
+            )
+            arrival = ctx.ceil_step(float(slew.slewend))
+            # Whether it then gives way to a scheduled activity is decided
+            # when it is due (see _dump_held_back), with the wheels as they
+            # are by then.
+            legal = ctx.first_legal_hold(
+                fixed,
+                arrival,
+                dump.duration_seconds,
+                ACSMode.DESAT,
+                self.uend - dump.duration_seconds,
+            )
+            if legal is not None and legal > arrival:
+                self.log.log_event(
+                    utime=begin,
+                    event_type="MOMENTUM",
+                    description=(
+                        "The dump's firing attitude cannot be held from "
+                        f"{unixtime2date(arrival)}; the firing begins at "
+                        f"{unixtime2date(legal)}"
+                    ),
+                    obsid=obsid,
+                    acs_mode=self.acs.acsmode,
+                )
+                begin = legal
         activity = ScheduledActivity(
             name="Desaturation",
             begin=begin,
             duration_seconds=dump.duration_seconds,
             desaturation=True,
-            obsid=DESATURATION_OBSID + self._desaturations,
+            obsid=obsid,
+            attitude=dump.attitude,
         )
         self._desaturations += 1
+        self._automatic_dumps.add(obsid)
         self.activities = sorted([*self.activities, activity], key=lambda a: a.begin)
         self._activities_left = sorted(
             [*self._activities_left, activity], key=lambda a: a.begin
         )
         # The dump answers any dump called for while an observation ran.
         self._dump_pending = False
+
+    def _dump_called_for(self) -> ScheduledActivity | None:
+        """The dump the simulation called for that has not begun, if any. One
+        with a fixed firing attitude can wait some time for that attitude."""
+        return next(
+            (a for a in self._activities_left if a.obsid in self._automatic_dumps),
+            None,
+        )
 
     def _within_momentum(self, utime: float, ra: float, dec: float, slew: Slew) -> bool:
         """Whether the observation just selected begins as bounded, given
@@ -1281,6 +1628,16 @@ class QueueDITL(DITLMixin, DITLStats):
         )
         if len(norms) == 0 or norms.max() < level:
             return True
+        if self._dump_called_for() is not None:
+            # A dump is waiting for its firing attitude. The observation ends
+            # by the dump's start, or, where that start has passed and the
+            # dump is still held back, is ended when the dump can begin.
+            # Science goes on until then within the capacity; past it, the
+            # observation is passed over, and no second dump is called for.
+            if norms.max() < capacity:
+                return True
+            self._retry_fetch_without_current_ppt(utime, ra, dec)
+            return False
         visit = self._sequence is not None
         name = (
             f"the visit of {self._sequence.parent.obsid}"
@@ -1692,10 +2049,9 @@ class QueueDITL(DITLMixin, DITLStats):
                     interrupted=True,
                 )
         self.acs.end_science_observation(utime)
-        if activity.desaturation:
-            self.acs.begin_desaturation()
         self._activities_left = [a for a in self._activities_left if a is not activity]
         self._active_activity = activity
+        assert activity.obsid is not None
         self._activity_started = utime
         self._activity_attitude = attitude
         # Delayed by a slew, an observation or the activity that was under
@@ -1712,7 +2068,70 @@ class QueueDITL(DITLMixin, DITLStats):
             self._activity_hold_begin = utime
         else:
             self._activity_hold_begin = activity.begin
+        self._activity_slew = None
+        self._activity_safe_mode = utime if self.acs.in_safe_mode else None
+        self._activity_left_pose = False
+        fixed = activity.attitude.fixed_pointing
+        if fixed is not None and self.acs.in_safe_mode:
+            # Safe mode keeps the attitude it has: the ACS refuses any turn
+            # but its own. The activity is held there, as one that holds the
+            # attitude it finds, and is not recorded as flown at an attitude
+            # the spacecraft never took.
+            fixed = None
+            self._activity_left_pose = True
+            self.log.log_event(
+                utime=utime,
+                event_type="ACTIVITY",
+                description=(
+                    f"Scheduled activity {activity.name} begins in safe mode: "
+                    "its requested attitude is not flown, and it holds the "
+                    "attitude safe mode has"
+                ),
+                obsid=activity.obsid,
+                acs_mode=self.acs.acsmode,
+            )
+        if fixed is not None:
+            ctx = self._activity_model()
+            ingress = self._activity_ingress(activity, utime)
+            arrival = ctx.ceil_step(float(ingress.slewend))
+            hold_begin = max(self._activity_hold_begin, arrival)
+            if (
+                (activity.fixed and hold_begin > activity.begin)
+                or (activity.slides and hold_begin > activity.latest_start)
+                or (resumed and arrival > utime)
+            ):
+                raise ActivitySchedulingError(
+                    activity,
+                    "its requested attitude cannot be reached in its start window",
+                )
+            mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+            end = min(hold_begin + activity.duration_seconds, self.uend)
+            if (
+                ctx.first_slew_violation(ingress, ACSMode.SLEWING) is not None
+                or ctx.first_hold_violation(
+                    fixed, ingress.slewend, hold_begin, ACSMode.IDLE
+                )
+                is not None
+                or ctx.first_hold_violation(fixed, hold_begin, end, mode) is not None
+            ):
+                raise ActivitySchedulingError(
+                    activity, "its ingress or full hold violates attitude constraints"
+                )
+            if not resumed:
+                self._activity_hold_begin = hold_begin
+            self._activity_attitude = fixed
+            self._activity_slew = ingress
+            if ingress.slewtime > 0:
+                self.acs.enqueue_command(
+                    ACSCommand(
+                        command_type=ACSCommandType.SLEW_TO_TARGET,
+                        execution_time=float(ingress.slewstart),
+                        slew=ingress,
+                    )
+                )
         self._activity_end = self._activity_hold_begin + activity.duration_seconds
+        if activity.desaturation and utime >= self._activity_hold_begin:
+            self.acs.begin_desaturation()
         if not resumed:
             self._add_activity_data(float(activity.data_gb), activity)
         description = (
@@ -1731,20 +2150,43 @@ class QueueDITL(DITLMixin, DITLStats):
     def _end_activity(self, utime: float) -> None:
         activity = self._active_activity
         assert activity is not None
+        if self.acs.in_safe_mode or self.fault_management.safe_mode_requested:
+            # Also where safe mode began, or was asked for, after the step's
+            # activities were managed, as on the run's last step.
+            self._activity_meets_safe_mode(
+                utime, (float(self.acs.ra), float(self.acs.dec), float(self.acs.roll))
+            )
         entry = activity.plan_entry(
             self.config, self._activity_attitude, begin=self._activity_started
         )
         entry.end = min(utime, self._activity_end)
+        interrupted = activity.desaturation and self._activity_safe_mode is not None
+        if interrupted:
+            # The thrusters do not fire in safe mode: the dump stops where
+            # safe mode began, and unloads nothing.
+            assert self._activity_safe_mode is not None
+            entry.end = min(
+                entry.end, max(self._activity_safe_mode, self._activity_started)
+            )
         entry.activity_hold_begin = self._activity_hold_begin
         entry.activity_hold_end = self._activity_end
+        if self._activity_slew is not None:
+            self._apply_slew_metadata(entry, self._activity_slew)
+            entry.begin = self._activity_started
+            entry.slewtime = int(
+                ceil(float(self._activity_slew.slewend) - self._activity_started)
+            )
+            entry.activity_requires_stationary = True
         if self._activity_hold_begin < self._activity_started:
             entry.fixed_data_gb = 0.0
-        # Recorded at its end so the plan stays in begin order.
-        entries = self.plan.entries
-        index = len(entries)
-        while index > 0 and float(entries[index - 1].begin) > float(entry.begin):
-            index -= 1
-        entries.insert(index, entry)
+        # Recorded at its end so the plan stays in begin order. A dump that
+        # safe mode stopped before it began has no length to record.
+        if entry.end > entry.begin:
+            entries = self.plan.entries
+            index = len(entries)
+            while index > 0 and float(entries[index - 1].begin) > float(entry.begin):
+                index -= 1
+            entries.insert(index, entry)
         self.log.log_event(
             utime=utime,
             event_type="ACTIVITY",
@@ -1758,7 +2200,7 @@ class QueueDITL(DITLMixin, DITLStats):
         self._active_activity = None
         if activity.desaturation:
             self.acs.end_desaturation()
-            if entry.activity_finishes:
+            if entry.activity_finishes and not interrupted:
                 self._unload_stored_momentum(utime, activity.obsid)
                 # The wheels are empty: nothing called for before the dump stands.
                 self._dump_pending = False
@@ -1795,12 +2237,25 @@ class QueueDITL(DITLMixin, DITLStats):
         deadline = getattr(ppt, "deadline", None)
         return float(deadline) if isinstance(deadline, (int, float)) else None
 
-    def _next_activity_begin(self, after: float) -> float | None:
+    def _next_activity_begin(
+        self, after: float, *, protected_visit: bool = False
+    ) -> float | None:
         """When the next scheduled activity begins after ``after``: its
         latest start where it may slide, since an observation may run until
         then."""
         return next(
-            (a.latest_start for a in self._activities_left if a.latest_start > after),
+            (
+                a.latest_start
+                for a in self._activities_left
+                if a.latest_start > after
+                and not (
+                    protected_visit
+                    and a.desaturation
+                    and a.attitude.fixed_pointing is not None
+                    and not a.fixed
+                    and not a.slides
+                )
+            ),
             None,
         )
 
@@ -1870,7 +2325,9 @@ class QueueDITL(DITLMixin, DITLStats):
                 return False
             previous = pose
         visit_end = context.ceil_step(cursor)
-        activity_begin = self._next_activity_begin(float(slew.slewstart))
+        activity_begin = self._next_activity_begin(
+            float(slew.slewstart), protected_visit=True
+        )
         if activity_begin is not None and visit_end > activity_begin:
             return False
         return (
@@ -4510,11 +4967,15 @@ class QueueDITL(DITLMixin, DITLStats):
         # The next activity from now, not from the slew's end: a slew that
         # would cross the activity's start leaves no collection before it, so
         # the candidate is passed over rather than flown into the block.
-        activity_begin = self._next_activity_begin(current_time)
+        candidate = target or self.ppt
+        activity_begin = self._next_activity_begin(
+            current_time,
+            protected_visit=self._sequence is not None
+            or getattr(candidate, "sequence", None) is not None,
+        )
         if activity_begin is not None:
             deadlines.append((activity_begin, "scheduled activity"))
 
-        candidate = target or self.ppt
         if candidate is not None and deadline_inputs.request_openings:
             # End for a higher-ranked start, or a lower one it can wait for (not mid-sequence).
             visit_under_way = (

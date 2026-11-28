@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum, auto
+from math import ceil
 from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,7 +39,7 @@ from ..targets import (
     ScheduledActivity,
     assign_obsids,
 )
-from ..targets.activity import CHARGE_OBSID
+from ..targets.activity import CHARGE_OBSID, DUMP_WAIT_OBSID
 from ..targets.merit import MeritBreakdown, MeritModel
 from ..targets.plan_entry import snapshot_min_seconds
 from .allocator import AllocatedTime
@@ -528,6 +529,14 @@ class PriorityScheduler:
         self.dumps: list[ScheduledActivity] = []
         """The thruster dumps this scheduler has reserved where its momentum
         forecast reached the level, in time order."""
+        self._dump_waits: dict[int, ScheduledActivity] = {}
+        """For a reserved dump whose fixed firing attitude cannot be reached
+        from what precedes it, by the dump's obsid, the hold reserved before
+        it (see :meth:`_park_before_dump`)."""
+        self._dump_floors: dict[int, float] = {}
+        """The earliest each dump the planner called for may be reserved, by
+        obsid, once an earlier reservation of it could not be placed (see
+        :meth:`_postpone_dump`)."""
         self._momentum_rejected: set[int] = set()
         """Targets whose visit stores more than the wheels' capacity from
         empty, or whose slew asks more of them at the slowest configured
@@ -667,6 +676,8 @@ class PriorityScheduler:
         # Share integrations across this plan's momentum passes.
         self._momentum_cache: SpanCache = {}
         self._momentum_seed = None
+        self._dump_floors = {}
+        build = self._postponing_dumps(build)
         plan = build()
         forecast = self._momentum
         if forecast is None:
@@ -675,16 +686,12 @@ class PriorityScheduler:
         capacity = forecast.capacity_n_m_s
         dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
 
-        def reserve(begin: float, seconds: float) -> ScheduledActivity:
+        def reserve(begin: float) -> ScheduledActivity | None:
             # Keep the dumps ending by begin and reserve another there.
             kept = [d for d in self.dumps if d.end <= begin]
-            reserved = ScheduledActivity(
-                name="Desaturation",
-                begin=begin,
-                duration_seconds=seconds,
-                desaturation=True,
-                obsid=DESATURATION_OBSID + len(kept),
-            )
+            reserved = self._dump_activity(begin, DESATURATION_OBSID + len(kept))
+            if reserved is None or reserved.end > self.ctx.uend:
+                return None
             self.dumps = [*kept, reserved]
             return reserved
 
@@ -720,7 +727,9 @@ class PriorityScheduler:
                                 f"{why} with a dump already reserved; the plan stands",
                             )
                             return plan
-                        reserved = reserve(begin, dump.duration_seconds)
+                        reserved = reserve(begin)
+                        if reserved is None:
+                            return plan
                         self._log(
                             begin,
                             f"{why}: thruster dump reserved before observation {obsid}, "
@@ -758,7 +767,9 @@ class PriorityScheduler:
                         f"reserved {where}; the plan stands",
                     )
                     break
-                reserved = reserve(begin, dump.duration_seconds)
+                reserved = reserve(begin)
+                if reserved is None:
+                    break
                 self._log(
                     begin,
                     f"Stored momentum reaches the planning level {level:.3f} N m s "
@@ -781,6 +792,280 @@ class PriorityScheduler:
             f"{_MAX_DUMPS} thruster dumps reserved; the plan may still fill the wheels",
         )
         return plan
+
+    def _dump_activity(self, begin: float, obsid: int) -> ScheduledActivity | None:
+        """Reserve a dump's firing after any configured ingress from ``begin``;
+        None where its fixed firing attitude stays blocked to the end of the
+        horizon, and the dump is left to the next plan."""
+        dump = self.config.spacecraft_bus.attitude_control.stored_momentum.thruster_dump
+        assert dump is not None
+        begin = max(begin, self._dump_floors.get(obsid, begin))
+        if begin + dump.duration_seconds > self.ctx.uend:
+            return None
+        fixed = dump.attitude.fixed_pointing
+        if fixed is not None:
+            before = [b for b in self.timeline if b.end <= begin]
+            pred = before[-1] if before else self._origin
+            slew = self.ctx.slew(
+                self._start_attitude(pred, begin),
+                fixed,
+                begin,
+                obstype=ObsType.IDLE,
+                obsid=obsid,
+            )
+            firing = self._firing_start(
+                fixed,
+                begin,
+                self.ctx.ceil_step(float(slew.slewend)),
+                dump.duration_seconds,
+                obsid,
+            )
+            if firing is None:
+                return None
+            begin = firing
+        return ScheduledActivity(
+            name="Desaturation",
+            begin=begin,
+            duration_seconds=dump.duration_seconds,
+            desaturation=True,
+            obsid=obsid,
+            attitude=dump.attitude,
+        )
+
+    def _postponing_dumps(self, build: Callable[[], Plan]) -> Callable[[], Plan]:
+        """``build``, with a dump the planner called for tried later where
+        it cannot be reserved. Such a dump is the planner's own to move; a
+        mission activity that cannot be reserved still raises."""
+
+        def postponing() -> Plan:
+            while True:
+                try:
+                    return build()
+                except ActivitySchedulingError as error:
+                    if not self._postpone_dump(error.activity):
+                        raise
+
+        return postponing
+
+    def _postpone_dump(self, activity: ScheduledActivity) -> bool:
+        """Move a dump the planner called for later, where it or the hold
+        before it could not be reserved: by one longest slew, and again each
+        time that fails. The dumps after it are found again from the plan
+        built with it. One with no start left inside the horizon is left to
+        the next plan. False where ``activity`` is not such a dump."""
+        index = next(
+            (
+                k
+                for k, dump in enumerate(self.dumps)
+                if activity.obsid == dump.obsid
+                or self._dump_waits.get(dump.obsid or -1) is activity
+            ),
+            None,
+        )
+        if index is None:
+            return False
+        dump = self.dumps[index]
+        assert dump.obsid is not None
+        self.dumps = self.dumps[:index]
+        self._dump_waits.pop(dump.obsid, None)
+        self._dump_floors[dump.obsid] = dump.begin + self._longest_slew_steps()
+        later = self._dump_activity(dump.begin, dump.obsid)
+        if later is None:
+            self._dump_floors[dump.obsid] = self.ctx.uend
+            self._log(
+                dump.begin,
+                "The dump cannot be reserved before the horizon ends; it is "
+                "left to the next plan",
+                dump.obsid,
+            )
+        else:
+            self._log(
+                dump.begin,
+                f"The dump cannot be reserved at {unixtime2date(dump.begin)}; "
+                f"it is tried at {unixtime2date(later.begin)}",
+                dump.obsid,
+            )
+            self.dumps.append(later)
+        return True
+
+    def _activities_to_reserve(self) -> list[ScheduledActivity]:
+        """The activities the plan reserves: the mission's, the dumps the
+        planner called for, and the hold before each dump that waits for
+        its firing attitude."""
+        reserved = {dump.obsid for dump in self.dumps}
+        waits = [wait for obsid, wait in self._dump_waits.items() if obsid in reserved]
+        return [*self.activities, *self.dumps, *waits]
+
+    def _firing_start(
+        self,
+        fixed: Attitude,
+        called: float,
+        arrival: float,
+        duration: float,
+        obsid: int,
+    ) -> float | None:
+        """When a dump at the fixed attitude ``fixed`` begins firing: at
+        ``arrival``, when the slew from where the dump is called for
+        reaches it, or later where the attitude cannot be held from then.
+
+        A fixed firing attitude can be blocked when the dump is called for,
+        by the Earth's limb once an orbit for one. The firing then waits
+        for the first time the attitude can be held through it, before the
+        wheels would reach their capacity, as dispatch waits. The spacecraft
+        cannot stay where it is or wait at the firing attitude until then,
+        so a hold is reserved from ``called`` until the attitude is allowed,
+        at a safe attitude the planner finds as for any activity that holds
+        the attitude it has. The firing begins one longest slew after the
+        hold ends, so the slew to the firing attitude is flown wholly while
+        that attitude is allowed.
+
+        None where the attitude stays blocked to the end of the horizon with
+        the wheels under their capacity: the dump is left to the next plan.
+        """
+        self._dump_waits.pop(obsid, None)
+        step = self.ctx.step_size
+
+        def across(begin: float, end: float) -> ScheduledActivity | None:
+            # The mission's activity reserved across the approach, the firing
+            # or the turn away from it. One that may slide is reserved at its
+            # latest start and settles earlier where there is room, so only
+            # the time from its latest start is taken.
+            return next(
+                (
+                    a
+                    for a in self.activities
+                    if a.latest_start < end
+                    and a.latest_start + a.duration_seconds > begin
+                ),
+                None,
+            )
+
+        bound = self._longest_slew_steps()
+        # Reached directly, only the firing itself has to be allowed where
+        # the plan has something after it to turn to. With nothing after it
+        # the spacecraft stays at the firing attitude, so that has to be
+        # allowed for one longest slew more, the time to leave it.
+        followed = any(block.ready >= called for block in self.timeline)
+        stay = duration if followed else duration + bound
+        if (
+            self.ctx.first_hold_violation(fixed, arrival, arrival + stay, ACSMode.DESAT)
+            is None
+            and across(called, arrival + duration + bound) is None
+        ):
+            return arrival
+        latest = self._dump_latest_start(called, duration)
+        search = arrival
+        gave_way = False
+        while True:
+            legal = self.ctx.first_legal_hold(
+                fixed, search, duration + bound, ACSMode.DESAT, latest
+            )
+            if legal is None:
+                break
+            # The hold before the firing, the slew, the firing and the turn
+            # away from it keep clear of the mission's activities: a later
+            # start is tried past one.
+            other = across(legal - step, legal + bound + duration + bound)
+            if other is None:
+                break
+            gave_way = True
+            search = self.ctx.ceil_step(
+                other.latest_start + other.duration_seconds + step
+            )
+        if legal is None and latest >= self.ctx.uend - duration:
+            self._log(
+                called,
+                (
+                    "The dump's firing finds no start clear of the scheduled "
+                    "activities at which its attitude can be held before the "
+                    "horizon ends"
+                    if gave_way
+                    else "The dump's firing attitude cannot be held before the "
+                    "horizon ends"
+                )
+                + "; the dump is left to the next plan",
+                obsid,
+            )
+            return None
+        if legal is None:
+            return arrival
+        self._log(
+            called,
+            "The dump's firing attitude cannot be held from "
+            f"{unixtime2date(arrival)}; it can from {unixtime2date(legal)}, and "
+            f"the firing is reserved at {unixtime2date(legal + bound)}",
+            obsid,
+        )
+        return legal + bound
+
+    def _longest_slew_steps(self) -> float:
+        """The longest slew's time, as a whole number of steps."""
+        return (
+            ceil(
+                float(
+                    Slew.duration_upper_bound(
+                        self.config.spacecraft_bus.attitude_control
+                    )
+                )
+                / self.ctx.step_size
+            )
+            * self.ctx.step_size
+        )
+
+    def _park_before_dump(self, activity: ScheduledActivity) -> bool:
+        """Reserve a hold at a safe attitude just before a dump the planner
+        called for, where the dump's fixed firing attitude cannot be reached
+        from what precedes it; False where the activity is not such a dump
+        or the hold is reserved already.
+
+        The spacecraft can neither stay where it is until the slew to the
+        firing attitude nor arrive there early and wait, where both become
+        unsafe in between. The hold is an activity that holds the attitude
+        it finds, so the planner gives it a safe attitude with a validated
+        slew, as for any such activity, and the spacecraft waits there. It
+        ends one longest slew before the firing, which is then reached from
+        it. Science may still be placed before the hold.
+        """
+        obsid = activity.obsid
+        if (
+            obsid is None
+            or obsid in self._dump_waits
+            or activity.attitude.fixed_pointing is None
+            or not any(dump.obsid == obsid for dump in self.dumps)
+        ):
+            return False
+        step = self.ctx.step_size
+        begin = activity.begin - self._longest_slew_steps() - step
+        if begin < self.ctx.ceil_step(self.ctx.ustart):
+            return False
+        wait = ScheduledActivity(
+            name="Hold before thruster dump",
+            begin=begin,
+            duration_seconds=step,
+            obsid=DUMP_WAIT_OBSID + (obsid - DESATURATION_OBSID),
+        )
+        self._dump_waits[obsid] = wait
+        self._log(
+            begin,
+            "The dump's firing attitude cannot be reached from what precedes "
+            "it; a hold at a safe attitude is reserved before it",
+            obsid,
+        )
+        self._place_activity(wait)
+        return True
+
+    def _dump_latest_start(self, begin: float, duration: float) -> float:
+        """The latest a dump called for at ``begin`` may start firing: where
+        the plan as it stands would reach the wheels' capacity, or the last
+        start that ends inside the horizon."""
+        latest = self.ctx.uend - duration
+        forecast = self._momentum
+        capacity = forecast.capacity_n_m_s if forecast is not None else None
+        if forecast is not None and capacity is not None:
+            crossing = forecast.first_crossing(self.timeline, capacity, after=begin)
+            if crossing is not None:
+                latest = min(latest, crossing)
+        return max(begin, latest)
 
     def _block_of(self, obsid: int) -> _Block | None:
         """The science block of ``obsid`` on the timeline, if placed."""
@@ -1080,7 +1365,7 @@ class PriorityScheduler:
             if id(entry) not in kept:
                 self._place_locked(entry)
         # Mandatory holds reserve their windows before optional contacts.
-        for activity in sorted([*self.activities, *self.dumps], key=lambda a: a.begin):
+        for activity in sorted(self._activities_to_reserve(), key=lambda a: a.begin):
             if (
                 activity.begin < self.ctx.uend
                 and activity.latest_start + activity.duration_seconds > self.ctx.ustart
@@ -2420,7 +2705,7 @@ class PriorityScheduler:
             if block.arrival > block.ready or violation is not None:
                 activity = block.activity or next(
                     a
-                    for a in [*self.activities, *self.dumps]
+                    for a in self._activities_to_reserve()
                     if a.obsid == block.entry.obsid
                 )
                 raise ActivitySchedulingError(
@@ -2539,6 +2824,9 @@ class PriorityScheduler:
             )
         )
         mode = ACSMode.DESAT if activity.desaturation else ACSMode.IDLE
+        fixed_attitude = activity.attitude.fixed_pointing
+        if fixed_attitude is not None:
+            attitude = fixed_attitude
         entry = activity.plan_entry(self.config, attitude)
         entry.activity_requires_stationary = True
         if resumed:
@@ -2559,11 +2847,33 @@ class PriorityScheduler:
             attitude_out=attitude,
             ready=ready,
             end=end,
-            follows=True,
-            activity=activity if late else None,
+            follows=fixed_attitude is None,
+            activity=activity if late and fixed_attitude is None else None,
             latest_ready=ready if late else None,
         )
-        if not self._insert_fixed(block):
+        if fixed_attitude is not None and activity.slides and not resumed:
+            # A required pose cannot be replaced by another attitude. Search
+            # its start window, then keep that validated reservation fixed.
+            earliest = self.ctx.ceil_step(max(activity.begin, self.ctx.ustart))
+            trial = self.ctx.floor_step(ready)
+            while trial >= earliest:
+                block.ready = trial
+                block.end = self._activity_end(activity, trial)
+                block.latest_ready = trial
+                block.entry.activity_hold_begin = trial
+                block.entry.activity_hold_end = trial + activity.duration_seconds
+                block.entry.end = block.end
+                if self._insert_fixed(block):
+                    return
+                trial -= self.ctx.step_size
+            placed = False
+        else:
+            placed = self._insert_fixed(block)
+        if not placed and self._park_before_dump(activity):
+            # The dump is reserved again, now reached from the safe hold.
+            self._place_activity(activity)
+            return
+        if not placed:
             error = ActivitySchedulingError(
                 activity,
                 f"no path-validated {mode.name} attitude holds for its full duration "

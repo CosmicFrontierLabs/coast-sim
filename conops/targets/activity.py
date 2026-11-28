@@ -19,7 +19,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..common import ObsType
-from ..config import MissionConfig
+from ..config import ActivityAttitude, MissionConfig
 from .plan_entry import PlanEntry
 
 ACTIVITY_OBSID = 998000
@@ -29,6 +29,10 @@ CHARGE_OBSID = 999000
 lie below the synthetic ones."""
 DESATURATION_OBSID = 997000
 """Obsids given to the thruster dumps dispatch calls for, in order."""
+DUMP_WAIT_OBSID = 996000
+"""Obsids given to the holds a planner reserves before a thruster dump that
+has to wait for its firing attitude, in the order of the dumps. They lie
+below the dumps' own, so the two never meet however many dumps there are."""
 
 
 class ScheduledActivity(BaseModel):
@@ -39,6 +43,10 @@ class ScheduledActivity(BaseModel):
     name: str
     begin: float = Field(description="When the activity starts, in Unix seconds")
     duration_seconds: float = Field(gt=0.0)
+    attitude: ActivityAttitude = Field(
+        default_factory=ActivityAttitude,
+        description="Inherited or fixed body attitude for the full hold, after ingress",
+    )
     instrument_modes: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -175,6 +183,7 @@ def periodic_activities(
     data_gb: float = 0.0,
     fixed: bool = False,
     slide_seconds: float = 0.0,
+    attitude: ActivityAttitude | None = None,
 ) -> list[ScheduledActivity]:
     """Activities named ``name`` every ``interval_seconds`` from ``first``,
     each ``duration_seconds`` long, ``count`` of them or as many as begin by
@@ -200,6 +209,7 @@ def periodic_activities(
                 data_gb=data_gb,
                 fixed=fixed,
                 slide_seconds=slide_seconds,
+                attitude=attitude or ActivityAttitude(),
             )
         )
         k += 1
