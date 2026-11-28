@@ -18,7 +18,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..common import ObsType
+from ..common import ACSMode, ObsType
 from ..config import ActivityAttitude, MissionConfig
 from .plan_entry import PlanEntry
 
@@ -45,7 +45,7 @@ class ScheduledActivity(BaseModel):
     duration_seconds: float = Field(gt=0.0)
     attitude: ActivityAttitude = Field(
         default_factory=ActivityAttitude,
-        description="Inherited or fixed body attitude for the full hold, after ingress",
+        description="Inherited, fixed or power-positive body attitude for the full hold",
     )
     instrument_modes: dict[str, str] = Field(
         default_factory=dict,
@@ -69,6 +69,10 @@ class ScheduledActivity(BaseModel):
             "Whether the activity is a thruster momentum dump: the wheels are "
             "unloaded when it ends"
         ),
+    )
+    safe_hold: bool = Field(
+        default=False,
+        description="Recoverable SAFE-mode hold, without latching fault safe mode",
     )
     fixed: bool = Field(
         default=False,
@@ -101,9 +105,23 @@ class ScheduledActivity(BaseModel):
 
     @model_validator(mode="after")
     def _fixed_does_not_slide(self) -> ScheduledActivity:
+        if self.desaturation and self.attitude.kind == "power_positive":
+            raise ValueError("a firing attitude must be inherited or fixed")
+        if self.safe_hold and self.desaturation:
+            raise ValueError("a safe hold cannot also be a desaturation")
         if self.fixed and self.slide_seconds > 0.0:
             raise ValueError("a fixed activity begins at its start and cannot slide")
         return self
+
+    @property
+    def hold_mode(self) -> ACSMode:
+        return (
+            ACSMode.SAFE
+            if self.safe_hold
+            else ACSMode.DESAT
+            if self.desaturation
+            else ACSMode.IDLE
+        )
 
     @property
     def end(self) -> float:
@@ -145,6 +163,7 @@ class ScheduledActivity(BaseModel):
         entry.instrument_modes = dict(self.instrument_modes)
         entry.fixed_data_gb = float(self.data_gb)
         entry.desaturation = self.desaturation
+        entry.safe_hold = self.safe_hold
         entry.activity_hold_begin = self.begin
         entry.activity_hold_end = self.end
         entry.obsid = self.obsid
@@ -184,6 +203,7 @@ def periodic_activities(
     fixed: bool = False,
     slide_seconds: float = 0.0,
     attitude: ActivityAttitude | None = None,
+    safe_hold: bool = False,
 ) -> list[ScheduledActivity]:
     """Activities named ``name`` every ``interval_seconds`` from ``first``,
     each ``duration_seconds`` long, ``count`` of them or as many as begin by
@@ -210,6 +230,7 @@ def periodic_activities(
                 fixed=fixed,
                 slide_seconds=slide_seconds,
                 attitude=attitude or ActivityAttitude(),
+                safe_hold=safe_hold,
             )
         )
         k += 1

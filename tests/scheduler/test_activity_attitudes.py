@@ -13,6 +13,7 @@ from conops.config import (
     ActivityAttitude,
     MissionConfig,
     ObservationTiming,
+    SolarPanel,
     SpacecraftFrame,
     StoredMomentumConfig,
     ThrusterDumpConfig,
@@ -561,8 +562,9 @@ def test_dispatch_budgets_teardown_before_fixed_pose_ingress(fixed):
 
 @pytest.mark.parametrize("fixed_start", [False, True])
 @pytest.mark.parametrize("fault", ["battery", "recorder"])
-def test_a_fixed_attitude_activity_due_in_safe_mode_holds_what_safe_mode_has(
-    fault: str, fixed_start: bool
+@pytest.mark.parametrize("attitude_kind", ["fixed", "power_positive"])
+def test_an_explicit_attitude_activity_due_in_safe_mode_holds_what_safe_mode_has(
+    fault: str, fixed_start: bool, attitude_kind: str
 ) -> None:
     """Safe mode takes no turn but its own, so an activity that asks for an
     attitude cannot be flown there. It is held at the attitude safe mode has
@@ -579,11 +581,18 @@ def test_a_fixed_attitude_activity_due_in_safe_mode_holds_what_safe_mode_has(
         config.battery.charge_level = 550.0
     else:
         config.recorder.current_volume_gb = 0.95 * config.recorder.capacity_gb
+    if attitude_kind == "fixed":
+        attitude = ActivityAttitude(kind="fixed", ra_deg=150, dec_deg=20, roll_deg=0)
+    else:
+        config.solar_panel.panels = [
+            SolarPanel(normal=config.spacecraft_bus.frame.sun_side, max_power=3000)
+        ]
+        attitude = ActivityAttitude(kind="power_positive", minimum_margin_w=100)
     activity = ScheduledActivity(
         name="Hold",
         begin=T0 + 20 * MIN,
         duration_seconds=40 * MIN,
-        attitude=ActivityAttitude(kind="fixed", ra_deg=150, dec_deg=20, roll_deg=0),
+        attitude=attitude,
         fixed=fixed_start,
     )
     target = make_target(config, 100, 105.0, 10.0, minutes=60, snapshot=20)
@@ -596,5 +605,6 @@ def test_a_fixed_attitude_activity_due_in_safe_mode_holds_what_safe_mode_has(
     assert run.validate_plan_matches_execution() == []
     [entry] = [e for e in run.plan if e.obstype == ObsType.ACTIVITY]
     assert entry.slewtime == 0
-    assert (float(entry.ra), float(entry.dec)) != (150.0, 20.0)
+    if attitude_kind == "fixed":
+        assert (float(entry.ra), float(entry.dec)) != (150.0, 20.0)
     assert any("begins in safe mode" in e.description for e in run.log.events)
