@@ -8,11 +8,20 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import rust_ephem
-from pydantic import ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+)
 from rust_ephem.constraints import (
     AndConstraint,
     AtLeastConstraint,
     BoresightOffsetConstraint,
+    CombinedConstraintConfig,
     ConstraintConfig,
     NotConstraint,
     OrConstraint,
@@ -42,6 +51,61 @@ _RA_DEC_ROUNDER = 10**_RA_DEC_PRECISION
 
 _INTERVAL_ENDS = 2
 """An eclipse interval is a start and an end."""
+
+_VARIANT_IGNORED_FIELDS = frozenset({"bestroll", "bestpointing"})
+"""Scratch fields, which no constraint check reads."""
+
+
+class _TargetVariants(BaseModel):
+    """The constraints derived for targets with constraints of their own.
+
+    Each is kept with the state of the mission constraint it was built from,
+    and is discarded when a configuration is copied deeply."""
+
+    entries: dict[str, tuple[tuple[int, ...], object]] = Field(default_factory=dict)
+
+    def __deepcopy__(self, memo: dict[int, object] | None = None) -> "_TargetVariants":
+        result = type(self)()
+        if memo is not None:
+            memo[id(self)] = result
+        return result
+
+
+ConstraintOverrides = dict[str, dict[str, JsonValue]]
+"""Parameter values by rust_ephem constraint ``type``, then by parameter
+name, to set on every constraint of that type in a tree."""
+
+
+def _with_overrides(
+    node: object, overrides: ConstraintOverrides, found: set[str]
+) -> object:
+    """A dumped constraint tree with the parameters in ``overrides`` set on
+    every node of each named type. The types met are added to ``found``."""
+    if isinstance(node, list):
+        return [_with_overrides(child, overrides, found) for child in node]
+    if not isinstance(node, dict):
+        return node
+    result: dict[object, object] = {}
+    for name, value in node.items():
+        # The children of a combining node are under "constraints" (and, or,
+        # xor, at least) or "constraint" (not, boresight offset).
+        if name in ("constraints", "constraint"):
+            value = _with_overrides(value, overrides, found)
+        result[name] = value
+    kind = node.get("type")
+    values = overrides.get(kind) if isinstance(kind, str) else None
+    if values is not None:
+        assert isinstance(kind, str)
+        unknown = sorted(set(values) - set(node))
+        if unknown:
+            raise ValueError(
+                f"constraint_overrides names {unknown} for a {kind!r} "
+                f"constraint, which has no such parameter; it has "
+                f"{sorted(str(name) for name in node if name != 'type')}"
+            )
+        found.add(kind)
+        result.update(values)
+    return result
 
 
 class AttitudeConstraintScope(str, Enum):
@@ -261,6 +325,7 @@ class Constraint(ConfigModel):
     _body_frame_source: object | None = PrivateAttr(default=None)
     _body_safety_key: tuple[object, ...] | None = PrivateAttr(default=None)
     _body_safety: ConstraintConfig | None = PrivateAttr(default=None)
+    _target_variants: _TargetVariants = PrivateAttr(default_factory=_TargetVariants)
     _held_over: list[float] | None = PrivateAttr(default=None)
     """The times a pointing is being checked over, while it is (see
     :meth:`held_over`): a miss then evaluates them all in one call."""
@@ -1120,6 +1185,92 @@ class Constraint(ConfigModel):
         return all_attitude_constraint_name(
             self, ra, dec, utime, target_roll=target_roll, acs_mode=acs_mode
         )
+
+    def _variant_state(self) -> tuple[int, ...]:
+        """What a target's constraint was derived from: the identity of every
+        configured component, the ephemeris and the bus frame's source."""
+        return (
+            *(
+                id(getattr(self, name))
+                for name in type(self).model_fields
+                if name not in _VARIANT_IGNORED_FIELDS
+            ),
+            id(self._body_frame_source),
+        )
+
+    def target_science_constraint(
+        self,
+        science_constraint: ConstraintConfig | None,
+        extra_constraint: ConstraintConfig | None,
+        overrides: ConstraintOverrides | None,
+    ) -> ConstraintConfig | None:
+        """The explicit science constraint for one target.
+
+        ``science_constraint`` replaces the mission's. ``overrides`` then sets
+        parameters on the constraints of the types it names, wherever they are
+        in the result, and ``extra_constraint`` is applied as well.
+        """
+        science = (
+            science_constraint
+            if science_constraint is not None
+            else self.science_constraint
+        )
+        if overrides:
+            found: set[str] = set()
+            dumped = None if science is None else science.model_dump(mode="python")
+            changed = _with_overrides(dumped, overrides, found)
+            missing = sorted(set(overrides) - found)
+            if missing:
+                raise ValueError(
+                    f"constraint_overrides names {missing}, but neither the "
+                    "target's nor the mission's science_constraint holds a "
+                    "constraint of that type to apply it to"
+                )
+            try:
+                science = CombinedConstraintConfig.validate_python(changed)
+            except ValidationError as error:
+                raise ValueError(
+                    f"constraint_overrides {overrides} does not give a valid "
+                    f"science constraint: {error.errors()[0]['msg']}"
+                ) from error
+        return self._combine_constraints([science, extra_constraint])
+
+    def for_target(
+        self,
+        key: str,
+        science_constraint: ConstraintConfig | None = None,
+        extra_constraint: ConstraintConfig | None = None,
+        overrides: ConstraintOverrides | None = None,
+    ) -> "Constraint":
+        """This constraint with one target's own science constraints in place
+        of the mission's explicit science constraint (see
+        :meth:`target_science_constraint`). Everything else is shared.
+
+        Targets giving the same ``key`` share one derived constraint and its
+        lookup caches. It is rebuilt when a component of this constraint, its
+        ephemeris or the bus frame is replaced.
+        """
+        state = self._variant_state()
+        held = self._target_variants.entries.get(key)
+        if held is not None and held[0] == state:
+            return cast(Constraint, held[1])
+        values = {name: getattr(self, name) for name in type(self).model_fields}
+        science = self.target_science_constraint(
+            science_constraint, extra_constraint, overrides
+        )
+        # Runtime caches belong to the derived constraint, never to the
+        # mutable request whose values supplied this shared variant.
+        values["science_constraint"] = (
+            None
+            if science is None
+            else CombinedConstraintConfig.validate_python(
+                science.model_dump(mode="python")
+            )
+        )
+        variant = type(self).model_construct(**values)
+        variant._body_frame_source = self._body_frame_source
+        self._target_variants.entries[key] = (state, variant)
+        return variant
 
     def instantaneous_field_of_regard(self, utime: float) -> float:
         """Calculate the instantaneous field of regard (FOR) solid angle at a given time.

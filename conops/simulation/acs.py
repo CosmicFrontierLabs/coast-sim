@@ -1436,9 +1436,9 @@ class ACS:
         ):
             scopes = self.config.attitude_constraint_scopes_for_mode(self.acsmode)
             target = self.last_slew.at
-            if (
-                self.acsmode == ACSMode.SCIENCE
-                and target.uses_mounted_attitude() is True
+            if self.acsmode == ACSMode.SCIENCE and (
+                target.uses_mounted_attitude() is True
+                or target.has_own_constraints() is True
             ):
                 constraint_names = target.attitude_constraint_names(
                     scopes,

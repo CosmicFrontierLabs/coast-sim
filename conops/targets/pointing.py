@@ -233,6 +233,9 @@ class Pointing(PlanEntry):
             instrument_name=self.instrument_name,
             science_data=dict(self.science_data),
             instrument_modes=dict(self.instrument_modes),
+            science_constraint=self.science_constraint,
+            extra_constraint=self.extra_constraint,
+            constraint_overrides=self.constraint_overrides,
             own_timing=self.own_timing,
             sequence=self.sequence,
             ss_min=self.ss_min,
@@ -446,6 +449,9 @@ class Pointing(PlanEntry):
                 else self.instrument_name
             ),
             science_data=dict(self.science_data) if step.science else {},
+            science_constraint=self.science_constraint,
+            extra_constraint=self.extra_constraint,
+            constraint_overrides=self.constraint_overrides,
             instrument_modes=dict(
                 step.instrument_modes
                 if step.instrument_modes is not None

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
+from hashlib import sha256
 from typing import ClassVar, Literal
 
 import numpy as np
@@ -19,7 +21,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from rust_ephem.constraints import ConstraintConfig
+from rust_ephem.constraints import CombinedConstraintConfig, ConstraintConfig
 
 from ..common import givename, unixtime2date, unixtime_from
 from ..common.enums import ACSMode, ObsType
@@ -40,6 +42,7 @@ from ..config import (
 from ..config.acs import scheduled_slew_time
 from ..config.constraint import (
     AttitudeConstraintScope,
+    ConstraintOverrides,
     attitude_constraint_names_for_scopes,
     mounted_science_attitude_constraint_names,
 )
@@ -107,6 +110,16 @@ def instrument_modes_of(entry: object) -> dict[str, str] | None:
     modes = getattr(entry, "effective_instrument_modes", None)
     resolved = modes() if callable(modes) else None
     return resolved if isinstance(resolved, dict) else None
+
+
+def observing_constraint_of(target: object, mission: Constraint) -> Constraint:
+    """The constraint ``target`` is observed under: its own where it has one
+    (see :meth:`PlanEntry.observing_constraint`), and ``mission`` otherwise."""
+    if isinstance(target, PlanEntry) and target.has_own_constraints():
+        own = target.observing_constraint()
+        if own is not None:
+            return own
+    return mission
 
 
 class AttitudePointingSchema(BaseModel):
@@ -210,6 +223,35 @@ class PlanEntry(BaseModel):
             "The instruments this observation uses and the mode each is in, "
             "by name; instruments not named idle. Empty: the instrument the "
             "observation names, or every instrument with modes, in SCIENCE"
+        ),
+    )
+    science_constraint: ConstraintConfig | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "A constraint on observing this target that replaces the mission's "
+            "explicit science constraint (constraint.science_constraint) while "
+            "this target is observed. None: the mission's applies"
+        ),
+    )
+    extra_constraint: ConstraintConfig | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "A constraint on observing this target applied in addition to "
+            "every other science constraint: the target is not observed where "
+            "it is violated"
+        ),
+    )
+    constraint_overrides: ConstraintOverrides = Field(
+        default_factory=dict,
+        exclude_if=lambda v: not v,
+        description=(
+            "Parameter values for this target, by rust_ephem constraint type "
+            "and then by parameter name: each is set on every constraint of "
+            "that type in the science constraint that applies to this target. "
+            "{'stray_light': {'max_ratio': 0.5}} gives the target its own "
+            "stray-light limit. Empty: every constraint keeps its own values"
         ),
     )
     science_data: dict[str, ScienceData] = Field(
@@ -358,9 +400,25 @@ class PlanEntry(BaseModel):
     _interruptions: list[float] = PrivateAttr(default_factory=list)
     _serialized_target_attitude: TargetAttitudeSchema | None = PrivateAttr(default=None)
     _frame_telescope: Telescope | None = PrivateAttr(default=None)
+    _own_constraints: tuple[str | None, str | None, str, str] | None = PrivateAttr(
+        default=None
+    )
+    """The entry's own constraints as serialized values, and their shared
+    key (see :meth:`observing_constraint`)."""
     _frame_axes: (
         tuple[tuple[float, float, float], tuple[float, float, float]] | None
     ) = PrivateAttr(default=None)
+
+    def __deepcopy__(self, memo: dict[int, object] | None = None) -> PlanEntry:
+        """Copy request constraints without their native evaluation caches."""
+        if memo is None:
+            memo = {}
+        for constraint in (self.science_constraint, self.extra_constraint):
+            if constraint is not None and id(constraint) not in memo:
+                memo[id(constraint)] = CombinedConstraintConfig.validate_python(
+                    constraint.model_dump(mode="python")
+                )
+        return super().__deepcopy__(memo)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -410,6 +468,10 @@ class PlanEntry(BaseModel):
         if self.constraint is None:
             self.constraint = self.config.constraint
         assert self.constraint is not None, "Constraint must be set for PlanEntry class"
+        if self.has_own_constraints():
+            # A value with no constraint to apply it to is reported here, when
+            # the entry is made, and not during a run.
+            self.observing_constraint()
         if self.ephem is None:
             self.ephem = self.constraint.ephem
         assert self.ephem is not None, "Ephemeris must be set for PlanEntry class"
@@ -886,6 +948,53 @@ class PlanEntry(BaseModel):
             return self.constraint.without_eclipses(windows)
         return [(a, b) for a, b in windows]
 
+    def has_own_constraints(self) -> bool:
+        """Whether this entry is observed under constraints of its own."""
+        return (
+            self.science_constraint is not None
+            or self.extra_constraint is not None
+            or bool(self.constraint_overrides)
+        )
+
+    def observing_constraint(self) -> Constraint | None:
+        """The constraint this entry is observed under: the mission's, with
+        the entry's own science constraints in place when it has any (see
+        :meth:`Constraint.for_target`). Entries with equal constraints of
+        their own share one, so its lookups are computed once for them all."""
+        base = self.constraint
+        # A test double for the constraint has nothing to derive from.
+        if not self.has_own_constraints() or not isinstance(base, Constraint):
+            return base
+        science, extra = self.science_constraint, self.extra_constraint
+        # Serialize values, including nested rules, so changes made in place
+        # select a new variant without changing another target's rules.
+        science_json = None if science is None else science.model_dump_json()
+        extra_json = None if extra is None else extra.model_dump_json()
+        overrides = json.dumps(self.constraint_overrides, sort_keys=True)
+        held = self._own_constraints
+        if (
+            held is None
+            or held[0] != science_json
+            or held[1] != extra_json
+            or held[2] != overrides
+        ):
+            digest = sha256()
+            for part in (science_json, extra_json):
+                digest.update(b"-" if part is None else part.encode())
+                digest.update(b"|")
+            digest.update(overrides.encode())
+            held = (science_json, extra_json, overrides, digest.hexdigest())
+            self._own_constraints = held
+        return base.for_target(held[3], science, extra, self.constraint_overrides)
+
+    def own_constraints_key(self) -> str | None:
+        """What identifies this entry's own constraints among entries: equal
+        for entries with equal ones, None for an entry with none."""
+        if not self.has_own_constraints():
+            return None
+        self.observing_constraint()
+        return None if self._own_constraints is None else self._own_constraints[3]
+
     def attitude_constraint_names(
         self,
         scopes: Sequence[str | Enum],
@@ -894,12 +1003,13 @@ class PlanEntry(BaseModel):
         acs_mode: ACSMode | int | None = None,
     ) -> list[str]:
         """Return violations using science and body attitudes in native frames."""
-        if self.constraint is None:
+        constraint = self.observing_constraint()
+        if constraint is None:
             return []
         if self.uses_mounted_attitude():
             science_ra, science_dec = self.position_at(utime)
             names = mounted_science_attitude_constraint_names(
-                self.constraint,
+                constraint,
                 scopes,
                 (science_ra, science_dec, self.roll),
                 spacecraft_attitude,
@@ -908,7 +1018,7 @@ class PlanEntry(BaseModel):
             )
         else:
             names = attitude_constraint_names_for_scopes(
-                self.constraint,
+                constraint,
                 scopes,
                 spacecraft_attitude[0],
                 spacecraft_attitude[1],
@@ -920,7 +1030,7 @@ class PlanEntry(BaseModel):
             acs_mode == ACSMode.SCIENCE
             and AttitudeConstraintScope.IMAGING_QUALITY in scopes
             and self.forbids_eclipse() is True
-            and self.constraint.in_eclipse(0, 0, utime)
+            and constraint.in_eclipse(0, 0, utime)
         ):
             names.append("science_eclipse")
         return names
@@ -936,12 +1046,13 @@ class PlanEntry(BaseModel):
         telescope's own) apply here; body constraints belong to the concrete
         attitude checks.
         """
-        if self.constraint is None:
+        constraint = self.observing_constraint()
+        if constraint is None:
             return None
         if not self.uses_mounted_attitude():
-            return self.constraint.roll_independent_constraint
+            return constraint.roll_independent_constraint
         telescope = self.science_telescope()
-        combined = self.constraint.science_line_of_sight_constraint
+        combined = constraint.science_line_of_sight_constraint
         telescope_constraint = (
             telescope.constraint.roll_independent_constraint
             if telescope is not None and telescope.constraint is not None
@@ -1005,13 +1116,16 @@ class PlanEntry(BaseModel):
         assert self.constraint is not None, (
             "Constraint must be set to calculate visibility"
         )
+        # The mission's constraint, or this entry's own in its place.
+        constraint = self.observing_constraint()
+        assert constraint is not None
         if self.uses_mounted_attitude():
             # Visibility belongs to the selected science line of sight. Physical
             # bus hardware constraints are checked after a concrete instrument
             # roll has been converted to a body attitude.
             combined_constraint = self.roll_independent_visibility_constraint()
             effective_roll = None
-        elif self.constraint.ignore_roll:
+        elif constraint.ignore_roll:
             # ignore_roll=True → field-of-regard scheduling.
             #
             # The combined constraint may include star-tracker components wrapped in
@@ -1027,10 +1141,10 @@ class PlanEntry(BaseModel):
             # earth, moon, panel) and rely on the runtime in_constraint() checks —
             # which DO use the correct FOR semantics (violated only if violated at
             # ALL rolls) — to reject any observation that has no valid roll at all.
-            combined_constraint = self.constraint.roll_independent_constraint
+            combined_constraint = constraint.roll_independent_constraint
             effective_roll = None
         else:
-            combined_constraint = self.constraint.constraint
+            combined_constraint = constraint.constraint
             effective_roll = self.roll
 
         if combined_constraint is None:
